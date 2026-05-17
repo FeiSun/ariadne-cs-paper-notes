@@ -74,7 +74,7 @@ ariadne_notes_<paper-stem>_<YYYYMMDD>/
 
 完整报告通常包含：
 
-- **Executive Diagnosis and Salvageable Core / 总诊断与可救骨架**  
+- **Executive Diagnosis and Salvageable Core / 总评诊断与可救骨架**
   一眼说明论文最核心的问题、最可救的主线、下一稿应该优先救什么。
 
 - **Issue Index / Finding Ledger / 问题索引**  
@@ -86,13 +86,13 @@ ariadne_notes_<paper-stem>_<YYYYMMDD>/
 - **Deep Reading Notes / 逐章精读批注**  
   按论文顺序组织 section、paragraph、sentence notes。这里是最像导师边读边批注的部分。
 
-- **Submission Readiness / 投稿前风险**  
+- **Submission Readiness / 数字/公式/图表/版式/提交就绪**
   检查数值一致性、figure/table/caption、layout、匿名性、引用、符号、artifact 等。
 
 - **Local Patterns / 共性问题汇总**  
   汇总反复出现的写作习惯问题，比如 paragraph job 不清、claim 过强、transition 缺失。
 
-- **Revision Plan / 下一稿计划**  
+- **Revision Plan / 修改路线**
   把问题转成下一稿可以执行的任务，而不是停在评价。
 
 - **Coverage Receipt and Artifacts / 覆盖回执与 artifacts**  
@@ -277,8 +277,11 @@ ariadne-cs-paper-notes/
     ├── agents/
     │   └── openai.yaml
     ├── references/
-    │   ├── html_report.md
-    │   └── reviewer_checklist.md
+    │   ├── workflow.md
+    │   ├── review_lenses.md
+    │   ├── report_contract.md
+    │   ├── html_contract.md
+    │   └── numeric_contract.md
     ├── scripts/
     │   ├── audit_html_report.py
     │   ├── audit_review_artifacts.py
@@ -292,9 +295,12 @@ ariadne-cs-paper-notes/
 
 主要文件：
 
-- `SKILL.md`：skill 入口，定义什么时候触发、如何调度 workflow。
-- `references/reviewer_checklist.md`：导师式读论文流程、coverage 标准、severity 规则和批注风格。
-- `references/html_report.md`：HTML 报告结构、artifact contract、链接和审计要求。
+- `SKILL.md`：短入口，定义什么时候触发、如何调度 workflow、按需加载哪些 reference。
+- `references/workflow.md`：导师式 reader-journey workflow、artifact extraction、coverage 标准和 QA gates。
+- `references/review_lenses.md`：source principles、paper-type calibration、结构/论证/句段/图表/版式/提交审阅镜头。
+- `references/report_contract.md`：Revision Workbench 顺序、finding/claim/coverage schema 和 JSON artifact contract。
+- `references/html_contract.md`：HTML 报告结构、filters、PDF linkage、输出路径和审计要求。
+- `references/numeric_contract.md`：严格数值/表格信号渲染、reported/computed/delta 规则和 numeric audit contract。
 - `scripts/extract_paper_text.py`：从 PDF / LaTeX 提取 review signals、表格和数值信号。
 - `scripts/build_paper_pdf.py`：尝试编译 LaTeX 项目，供 source + PDF 联合审阅。
 - `scripts/audit_html_report.py`：检查 HTML 报告结构、链接、coverage 和严重程度呈现。

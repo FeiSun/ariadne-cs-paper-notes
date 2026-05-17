@@ -124,11 +124,11 @@ class AriadneHTMLParser(HTMLParser):
         elif tag == "th" and self.table_stack:
             if "scope" not in attr:
                 self.table_stack[-1]["header_without_scope"] = int(self.table_stack[-1]["header_without_scope"]) + 1
-        if element_id and re.fullmatch(r"[FBMLN]\d+[A-Za-z]?", element_id):
+        if element_id and re.fullmatch(r"F\d+[A-Za-z]?", element_id):
             self.defined_finding_ids.add(element_id)
         if tag == "a":
             text_ref = attr.get("href", "")
-            if text_ref.startswith("#") and re.fullmatch(r"#[FBMLN]\d+[A-Za-z]?", text_ref):
+            if text_ref.startswith("#") and re.fullmatch(r"#F\d+[A-Za-z]?", text_ref):
                 self.linked_finding_refs.append((text_ref[1:], text_ref))
         if tag in NUMERIC_TEXT_TAGS:
             self.text_stack.append((tag, []))

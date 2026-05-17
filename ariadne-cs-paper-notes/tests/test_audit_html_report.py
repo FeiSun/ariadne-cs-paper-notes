@@ -200,7 +200,7 @@ def test_audit_rejects_undefined_linked_finding() -> None:
     extra = """
 <section id="extra-links">
   <h2>Extra</h2>
-  <a class="finding-link" href="#N3">N3</a>
+  <a class="finding-link" href="#F3">F3</a>
 </section>
 """
     path = write_temp_html(minimal_html(extra))
@@ -208,7 +208,7 @@ def test_audit_rejects_undefined_linked_finding() -> None:
         errors, _ = module.audit(path)
     finally:
         path.unlink(missing_ok=True)
-    if not any("linked finding `N3`" in error for error in errors):
+    if not any("linked finding `F3`" in error for error in errors):
         raise AssertionError(f"Expected undefined linked finding error, got {errors}")
 
 
