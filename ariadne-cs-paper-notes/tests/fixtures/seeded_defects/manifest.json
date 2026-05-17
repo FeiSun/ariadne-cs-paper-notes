@@ -1,0 +1,37 @@
+{
+  "cases": [
+    {
+      "file": "wrong_average.tex",
+      "must_find": [
+        "reported 95.77",
+        "visible arithmetic mean of column(s) 2, 3, 4 = 95.52",
+        "delta +0.25",
+        "Signal (ambiguous gap 0.25pp",
+        "Rendered finding must be Blocker",
+        "state the concrete reported value"
+      ],
+      "must_not_claim": ["wrong"]
+    },
+    {
+      "file": "deterministic_average_error.tex",
+      "must_find": [
+        "reported 47.70",
+        "visible arithmetic mean of column(s) 2, 3, 4, 5, 6, 7 = 37.64",
+        "Signal (deterministic gap",
+        "Rendered finding must be Blocker",
+        "Gap exceeds the broad plausible aggregation range"
+      ],
+      "must_not_claim": ["wrong"]
+    },
+    {
+      "file": "symbol_drift.tex",
+      "must_find": [
+        "Macro \\risk has 2 distinct expansions",
+        "Command-like math token \\mystery",
+        "Variant symbol pair \\epsilon and \\varepsilon",
+        "Signal only"
+      ],
+      "must_not_claim": ["equation is wrong"]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "output_files": ["expected_html_report.html"],
+  "sections": [
+    {"id": "executive-diagnosis", "status": "rendered"},
+    {"id": "issue-index", "status": "rendered"},
+    {"id": "claim-evidence-audit", "status": "rendered"},
+    {"id": "deep-reading-notes", "status": "rendered"},
+    {"id": "submission-readiness", "status": "rendered"},
+    {"id": "local-comments", "status": "rendered"},
+    {"id": "revision-plan", "status": "rendered"},
+    {"id": "coverage-receipt", "status": "rendered"}
+  ],
+  "deferred_findings": [],
+  "pdf_linkage_level": "Level 0"
+}

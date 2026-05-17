@@ -1,0 +1,36 @@
+{
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "Blocker",
+      "location": "Abstract / PDF p.1",
+      "diagnosis": "The abstract is missing, so the first-page reader cannot recover the paper's problem, gap, idea, evidence, or boundary.",
+      "reader_friction": "The reader starts the paper without a map of what belief should change.",
+      "writing_principle": "改变读者理解状态; first-page reader test.",
+      "next_draft_task": "Write an abstract that states problem, gap, idea, evidence, and boundary without increasing claim strength.",
+      "evidence_basis": "rendered PDF visual pass",
+      "verification_method": "PDF first-page inspection",
+      "confidence": "high",
+      "severity_rationale": "A missing abstract breaks first-page recoverability for a full-paper review.",
+      "downgrade_condition": "A complete abstract is added and matches the paper's actual evidence."
+    },
+    {
+      "id": "F2",
+      "severity": "Blocker",
+      "location": "Table 1 / Method A Score X",
+      "diagnosis": "The table signal reports 95.77 while the visible arithmetic mean of the preceding cells is 95.52; the manuscript must explain any weighted/micro aggregation before this can support the claim.",
+      "reader_friction": "A reader who recomputes the visible cells cannot reproduce the displayed summary value.",
+      "writing_principle": "不要让读者做算术题; explicit denominator and aggregation.",
+      "next_draft_task": "State the aggregation denominator/procedure or correct the visible summary value.",
+      "evidence_basis": "LaTeX tabular visible-cell arithmetic signal",
+      "verification_method": "scripts/extract_paper_text.py Table Numeric Recalculation Signals",
+      "confidence": "medium",
+      "severity_rationale": "The affected number is in a main evidence table; the signal is concrete but aggregation may be weighted.",
+      "downgrade_condition": "The paper documents a valid weighted/micro aggregation or updates the table.",
+      "reported_value": "95.77",
+      "visible_computed_value": "95.52",
+      "delta": "+0.25",
+      "aggregation_caveat": "visible arithmetic mean only; weighted/micro average or hidden denominator may differ"
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "pass_0_engagement_contract": [
+    {
+      "location": "review scope",
+      "observation": "Full-paper HTML fixture with structured artifacts and body-backed coverage."
+    }
+  ],
+  "pass_1_cold_start_skim": [
+    {
+      "location": "Abstract",
+      "what_tripped_me": "The reader cannot recover the paper story because the abstract is missing.",
+      "linked_findings": ["F1"]
+    }
+  ],
+  "pass_2_linear_deep_read": [
+    {
+      "location": "Intro ¶1",
+      "paragraph_job": "motivation setup",
+      "sentence_checks": 2,
+      "reflection": "The paragraph is too short to carry the motivation alone."
+    }
+  ],
+  "pass_3_section_reflections": [
+    {
+      "location": "Introduction",
+      "suggested_skeleton": ["deployment need", "metric intuition", "prior route gap", "method insight", "evidence boundary"]
+    }
+  ],
+  "pass_4_whole_paper_argument": [
+    {
+      "location": "Claim ledger C1",
+      "observation": "The central claim depends on Table 1 aggregation being reproducible.",
+      "linked_findings": ["F2"]
+    }
+  ],
+  "pass_5_submission_walk": [
+    {
+      "location": "Table 1",
+      "observation": "Numeric signal requires table/caption aggregation clarification.",
+      "linked_findings": ["F2"]
+    }
+  ],
+  "pass_6_output_calibration": [
+    {
+      "location": "report",
+      "observation": "Finding ids, coverage counts, and HTML contract are checked before delivery."
+    }
+  ]
+}

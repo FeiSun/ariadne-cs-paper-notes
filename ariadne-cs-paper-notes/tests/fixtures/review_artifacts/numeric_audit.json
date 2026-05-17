@@ -1,0 +1,44 @@
+{
+  "input": "paper.pdf",
+  "signal_count": 1,
+  "signals": [
+    {
+      "source": "pdf-layout-text",
+      "table_id": "Table 1",
+      "line_number": 42,
+      "row_label": "Method A",
+      "reported_value": "95.77",
+      "visible_computed_value": "95.52",
+      "delta": "+0.25",
+      "gap_tier": "ambiguous",
+      "required_severity": "Blocker",
+      "gap_abs": 0.255,
+      "gap_rel_percent": 0.267,
+      "component_values": [
+        "98.00",
+        "91.62",
+        "89.50",
+        "90.00",
+        "100.00",
+        "97.50"
+      ],
+      "component_count": 6,
+      "formula": "component_mean_of_means",
+      "component_groups": {
+        "DSRP": [
+          98.0,
+          91.62,
+          89.5,
+          90.0
+        ],
+        "DSRH": [
+          100.0,
+          97.5
+        ]
+      },
+      "aggregation_caveat": "Visible group markers were used to compute a mean of component means.",
+      "rendering_instruction": "Rendered finding must be Blocker and state table/row, reported value, visible recomputed value, and delta."
+    }
+  ],
+  "note": "Signals only. Rendered reports must cite reported_value, visible_computed_value, and delta. Table-number discrepancies are required-severity Blocker unless a signal is explicitly marked render_required=false with a parser-false-positive reason."
+}

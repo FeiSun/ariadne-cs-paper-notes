@@ -1,0 +1,49 @@
+{
+  "requested_scope": "fixture full-paper HTML contract",
+  "units": [
+    {
+      "unit": "Reader-Journey passes",
+      "total": 7,
+      "reviewed": 7,
+      "with_issues": 0,
+      "clean": 7,
+      "skipped": 0
+    },
+    {
+      "unit": "Sentence notes",
+      "total": 14,
+      "reviewed": 14,
+      "with_issues": 13,
+      "clean": 1,
+      "skipped": 0
+    },
+    {
+      "unit": "Paragraph rows",
+      "total": 2,
+      "reviewed": 2,
+      "with_issues": 1,
+      "clean": 1,
+      "skipped": 0
+    },
+    {
+      "unit": "Section reflection rows",
+      "total": 1,
+      "reviewed": 1,
+      "with_issues": 1,
+      "clean": 0,
+      "skipped": 0
+    }
+  ],
+  "reader_journey_passes": [
+    {"pass": "Pass 0", "status": "done"},
+    {"pass": "Pass 1", "status": "done"},
+    {"pass": "Pass 2", "status": "done"},
+    {"pass": "Pass 3", "status": "done"},
+    {"pass": "Pass 4", "status": "done"},
+    {"pass": "Pass 5", "status": "done"},
+    {"pass": "Pass 6", "status": "done"}
+  ],
+  "known_blind_spots": [
+    "No seed-level results are available; numerical audit is visible-cell only."
+  ]
+}

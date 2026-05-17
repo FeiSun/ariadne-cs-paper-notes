@@ -1,0 +1,16 @@
+{
+  "claims": [
+    {
+      "claim_id": "C1",
+      "claim_text": "The method achieves controllable abstention without sacrificing risk.",
+      "location": "Abstract / Introduction",
+      "claim_type": "empirical scope",
+      "strength": "strong",
+      "required_evidence": "risk-coverage curves, matched baselines, and stable aggregation",
+      "visible_evidence": "Table 1 and Figure 1, with a numerical aggregation signal in Table 1",
+      "status": "ambiguous",
+      "next_draft_task": "Narrow the claim until the numerical and baseline evidence can support it.",
+      "linked_findings": ["F2"]
+    }
+  ]
+}

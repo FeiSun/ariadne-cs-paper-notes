@@ -1,0 +1,16 @@
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+.claude/settings.local.json
+ariadne_notes_*.html
+ariadne_notes_*/
+paper_review_extract_*.md
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.log
+*.out
+*.synctex.gz
