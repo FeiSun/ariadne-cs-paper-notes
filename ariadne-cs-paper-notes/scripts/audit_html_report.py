@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 REQUIRED_SECTIONS = {
+    "paper-reader",
     "executive-diagnosis",
     "issue-index",
     "claim-evidence-audit",
@@ -46,11 +47,16 @@ LEGACY_SPLIT_NOTE_SECTIONS = {
     "keep-notes",
 }
 
+PAPER_HTML_SOURCES = {"latexml", "ar5iv", "pandoc", "extracted-text", "manual-fixture"}
+DELIVERABLE_PAPER_HTML_SOURCES = {"latexml", "ar5iv", "pandoc", "extracted-text"}
+SOURCE_FIDELITY_VALUES = {"deterministic", "limited-scope", "fixture"}
+
 
 class AriadneHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.ids: set[str] = set()
+        self.report_kind = ""
         self.href_anchors: set[str] = set()
         self.section_stack: list[str] = []
         self.counts = {
@@ -72,10 +78,25 @@ class AriadneHTMLParser(HTMLParser):
         self.section_texts: dict[str, str] = {}
         self.issue_item_stack: list[dict[str, str | list[str]]] = []
         self.issue_items: list[dict[str, str]] = []
+        self.paper_sentence_ids: set[str] = set()
+        self.paper_paragraph_ids: set[str] = set()
+        self.paper_section_ids: set[str] = set()
+        self.paper_overview_ids: set[str] = set()
+        self.issue_sentences: list[dict[str, str]] = []
+        self.issue_anchors: list[dict[str, str]] = []
+        self.annotation_targets: set[tuple[str, str]] = set()
+        self.annotation_cards: list[dict[str, str]] = []
+        self.unanchored_annotation_cards: list[dict[str, str]] = []
+        self.annotation_issue_refs: list[tuple[str, str]] = []
+        self.issue_sentence_refs: list[tuple[str, str]] = []
+        self.paper_panes: list[dict[str, str]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr = {key: value or "" for key, value in attrs}
         element_id = attr.get("id")
+        class_names = attr.get("class", "").split()
+        if "review-report" in class_names and attr.get("data-report-kind"):
+            self.report_kind = attr.get("data-report-kind", "")
         if element_id:
             self.ids.add(element_id)
         href = attr.get("href", "")
@@ -106,6 +127,119 @@ class AriadneHTMLParser(HTMLParser):
                 if note_kind == "section":
                     self.counts["section_review_rows"] += 1
 
+        if "paper-reader" in self.section_stack:
+            if "paper-pane" in class_names:
+                self.paper_panes.append(
+                    {
+                        "source": attr.get("data-paper-html-source", ""),
+                        "fidelity": attr.get("data-source-fidelity", ""),
+                        "artifact": attr.get("data-source-artifact", ""),
+                        "hash": attr.get("data-source-hash", ""),
+                        "sentence_id_scheme": attr.get("data-sentence-id-scheme", ""),
+                        "annotation_mode": attr.get("data-annotation-mode", ""),
+                        "visible_scope": attr.get("data-visible-scope", ""),
+                    }
+                )
+            sentence_id = attr.get("data-sentence-id", "")
+            is_paper_sentence = "paper-sentence" in class_names
+            is_issue_sentence = (
+                is_paper_sentence
+                and (
+                    "has-annotation" in class_names
+                    or attr.get("data-has-issue") == "true"
+                    or bool(attr.get("data-issue-ids"))
+                )
+            )
+            if is_paper_sentence:
+                if sentence_id:
+                    self.paper_sentence_ids.add(sentence_id)
+                if is_issue_sentence:
+                    issue_ids = attr.get("data-issue-ids", "")
+                    self.issue_sentences.append(
+                        {
+                            "sentence_id": sentence_id,
+                            "severity": attr.get("data-severity", ""),
+                            "issue_type": attr.get("data-issue-type", ""),
+                            "issue_ids": issue_ids,
+                            "data_has_issue": attr.get("data-has-issue", ""),
+                            "aria_describedby": attr.get("aria-describedby", ""),
+                            "tag": tag,
+                        }
+                    )
+                    for ref in re.findall(r"F\d+[A-Za-z]?", issue_ids):
+                        self.issue_sentence_refs.append((ref, sentence_id or "<missing sentence id>"))
+            paragraph_id = attr.get("data-paragraph-id", "")
+            if paragraph_id:
+                self.paper_paragraph_ids.add(paragraph_id)
+            if element_id and tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+                self.paper_section_ids.add(element_id)
+            if element_id == "paper-overview-annotations":
+                self.paper_overview_ids.add("paper")
+            for level, target_id, marker_class in (
+                ("paragraph", paragraph_id, "has-paragraph-annotation"),
+                ("section", element_id or "", "has-section-annotation"),
+                ("paper", "paper" if element_id == "paper-overview-annotations" else "", "has-paper-annotation"),
+            ):
+                if target_id and marker_class in class_names:
+                    issue_ids = attr.get("data-issue-ids", "")
+                    self.issue_anchors.append(
+                        {
+                            "level": level,
+                            "target": target_id,
+                            "severity": attr.get("data-severity", ""),
+                            "issue_type": attr.get("data-issue-type", ""),
+                            "issue_ids": issue_ids,
+                            "data_has_issue": attr.get("data-has-issue", ""),
+                        }
+                    )
+                    for ref in re.findall(r"F\d+[A-Za-z]?", issue_ids):
+                        self.issue_sentence_refs.append((ref, target_id))
+            is_annotation_card = "annotation-card" in class_names
+            is_unanchored_annotation = is_annotation_card and attr.get("data-unanchored") == "true"
+            target_sentence = attr.get("data-target-sentence", "")
+            target_level = attr.get("data-target-level", "sentence" if target_sentence else "")
+            target_paragraph = attr.get("data-target-paragraph", "")
+            target_section = attr.get("data-target-section", "")
+            target_paper = attr.get("data-target-paper", "")
+            if is_unanchored_annotation:
+                issue_ids = attr.get("data-issue-ids", "")
+                self.unanchored_annotation_cards.append(
+                    {
+                        "target_level": target_level,
+                        "target_sentence": target_sentence,
+                        "target_paragraph": target_paragraph,
+                        "target_section": target_section,
+                        "target_paper": target_paper,
+                        "severity": attr.get("data-severity", ""),
+                        "issue_type": attr.get("data-issue-type", ""),
+                        "issue_ids": issue_ids,
+                    }
+                )
+            target_by_level = {
+                "sentence": target_sentence,
+                "paragraph": target_paragraph,
+                "section": target_section,
+                "paper": target_paper,
+            }
+            target_value = target_by_level.get(target_level, "")
+            if target_value:
+                issue_ids = attr.get("data-issue-ids", "")
+                self.annotation_targets.add((target_level, target_value))
+                self.annotation_cards.append(
+                    {
+                        "target_level": target_level,
+                        "target_sentence": target_sentence,
+                        "target_paragraph": target_paragraph,
+                        "target_section": target_section,
+                        "target_paper": target_paper,
+                        "severity": attr.get("data-severity", ""),
+                        "issue_type": attr.get("data-issue-type", ""),
+                        "issue_ids": issue_ids,
+                    }
+                )
+                for ref in re.findall(r"F\d+[A-Za-z]?", issue_ids):
+                    self.annotation_issue_refs.append((ref, target_value))
+
         if "data-severity" in attr:
             self.counts["severity_items"] += 1
             if attr.get("data-issue-type"):
@@ -118,7 +252,14 @@ class AriadneHTMLParser(HTMLParser):
                     }
                 )
         if tag == "table":
-            self.table_stack.append({"has_caption": False, "header_without_scope": 0, "id": element_id or ""})
+            self.table_stack.append(
+                {
+                    "has_caption": False,
+                    "header_without_scope": 0,
+                    "id": element_id or "",
+                    "in_paper_reader": "paper-reader" in self.section_stack,
+                }
+            )
         elif tag == "caption" and self.table_stack:
             self.table_stack[-1]["has_caption"] = True
         elif tag == "th" and self.table_stack:
@@ -192,34 +333,144 @@ def audit(path: Path) -> tuple[list[str], list[str]]:
 
     errors: list[str] = []
     warnings: list[str] = []
+    paper_reader_only = parser.report_kind == "paper-reader-only"
 
-    missing_sections = sorted(REQUIRED_SECTIONS - parser.ids)
+    required_sections = {"paper-reader", "coverage-receipt"} if paper_reader_only else REQUIRED_SECTIONS
+    missing_sections = sorted(required_sections - parser.ids)
     for section_id in missing_sections:
         errors.append(f"missing required section #{section_id}")
+
+    if "paper-reader" in parser.ids:
+        if "annotation-panel" not in parser.ids:
+            errors.append("#paper-reader is missing #annotation-panel")
+        if not parser.paper_panes:
+            errors.append("#paper-reader is missing a `.paper-pane` with source provenance metadata")
+        for idx, pane in enumerate(parser.paper_panes, 1):
+            source = pane.get("source", "")
+            fidelity = pane.get("fidelity", "")
+            prefix = f"#paper-reader .paper-pane #{idx}"
+            if source not in PAPER_HTML_SOURCES:
+                errors.append(f"{prefix} has invalid or missing data-paper-html-source `{source}`")
+            if source not in DELIVERABLE_PAPER_HTML_SOURCES and source != "manual-fixture":
+                errors.append(f"{prefix} uses non-deliverable paper HTML source `{source}`")
+            if fidelity not in SOURCE_FIDELITY_VALUES:
+                errors.append(f"{prefix} has invalid or missing data-source-fidelity `{fidelity}`")
+            if source == "manual-fixture" and fidelity != "fixture":
+                errors.append(f"{prefix} manual-fixture source must use data-source-fidelity=\"fixture\"")
+            if source in DELIVERABLE_PAPER_HTML_SOURCES and fidelity == "fixture":
+                errors.append(f"{prefix} deliverable source `{source}` cannot use fixture fidelity")
+            for field, attr_name in (
+                ("artifact", "data-source-artifact"),
+                ("hash", "data-source-hash"),
+                ("sentence_id_scheme", "data-sentence-id-scheme"),
+                ("annotation_mode", "data-annotation-mode"),
+            ):
+                if not pane.get(field):
+                    errors.append(f"{prefix} is missing `{attr_name}`")
+            if pane.get("annotation_mode") and pane.get("annotation_mode") != "overlay-only":
+                errors.append(f"{prefix} must use data-annotation-mode=\"overlay-only\"")
+            if pane.get("hash") and not re.match(r"^(sha1|sha256):[0-9a-fA-F]{8,}$", pane["hash"]):
+                errors.append(f"{prefix} data-source-hash must look like sha1:<hex> or sha256:<hex>")
+            if fidelity == "limited-scope" and not pane.get("visible_scope"):
+                errors.append(f"{prefix} limited-scope paper reader must set `data-visible-scope`")
+        if not parser.issue_sentences and not parser.issue_anchors:
+            errors.append("#paper-reader has no annotated issue anchors (`.paper-sentence.has-annotation`, paragraph/section bubble, or paper overview)")
+        if not parser.annotation_cards:
+            errors.append("#paper-reader has no annotation cards (`data-target-*`)")
+        for item in parser.issue_sentences:
+            sentence_id = item.get("sentence_id", "")
+            if not sentence_id:
+                errors.append("annotated paper sentence is missing `data-sentence-id`")
+                continue
+            if item.get("data_has_issue") != "true":
+                errors.append(f"annotated paper sentence `{sentence_id}` must set data-has-issue=\"true\"")
+            for field, attr_name in (
+                ("severity", "data-severity"),
+                ("issue_type", "data-issue-type"),
+                ("issue_ids", "data-issue-ids"),
+            ):
+                if not item.get(field):
+                    errors.append(f"annotated paper sentence `{sentence_id}` is missing `{attr_name}`")
+            if ("sentence", sentence_id) not in parser.annotation_targets:
+                errors.append(f"annotated paper sentence `{sentence_id}` has no matching annotation card")
+        for item in parser.issue_anchors:
+            level = item.get("level", "")
+            target = item.get("target", "")
+            if not target:
+                errors.append(f"annotated {level} anchor is missing a target id")
+                continue
+            if item.get("data_has_issue") != "true":
+                errors.append(f"annotated {level} anchor `{target}` must set data-has-issue=\"true\"")
+            for field, attr_name in (
+                ("severity", "data-severity"),
+                ("issue_type", "data-issue-type"),
+                ("issue_ids", "data-issue-ids"),
+            ):
+                if not item.get(field):
+                    errors.append(f"annotated {level} anchor `{target}` is missing `{attr_name}`")
+            if (level, target) not in parser.annotation_targets:
+                errors.append(f"annotated {level} anchor `{target}` has no matching annotation card")
+        for item in parser.annotation_cards:
+            level = item.get("target_level", "sentence")
+            target = (
+                item.get("target_sentence", "")
+                or item.get("target_paragraph", "")
+                or item.get("target_section", "")
+                or item.get("target_paper", "")
+            )
+            if level == "sentence" and target and target not in parser.paper_sentence_ids:
+                errors.append(f"annotation card targets unknown paper sentence `{target}`")
+            if level == "paragraph" and target and target not in parser.paper_paragraph_ids:
+                errors.append(f"annotation card targets unknown paper paragraph `{target}`")
+            if level == "section" and target and target not in parser.paper_section_ids:
+                errors.append(f"annotation card targets unknown paper section `{target}`")
+            if level == "paper" and target and target not in parser.paper_overview_ids:
+                errors.append(f"annotation card targets missing paper overview `{target}`")
+            for field, attr_name in (
+                ("severity", "data-severity"),
+                ("issue_type", "data-issue-type"),
+                ("issue_ids", "data-issue-ids"),
+            ):
+                if not item.get(field):
+                    errors.append(f"annotation card for `{target}` is missing `{attr_name}`")
+        for item in parser.unanchored_annotation_cards:
+            for key in ("target_sentence", "target_paragraph", "target_section", "target_paper"):
+                target = item.get(key, "")
+                if target:
+                    errors.append(f"unanchored annotation card must not set {key.replace('_', '-')} `{target}`")
+            for field, attr_name in (
+                ("severity", "data-severity"),
+                ("issue_type", "data-issue-type"),
+                ("issue_ids", "data-issue-ids"),
+            ):
+                if not item.get(field):
+                    errors.append(f"unanchored annotation card is missing `{attr_name}`")
 
     if parser.section_stack or parser.issue_item_stack or parser.text_stack or parser.table_stack:
         errors.append("HTML appears structurally incomplete or misnested; parser stacks were not fully closed")
 
-    missing_teaching = sorted(TEACHING_SECTIONS - parser.ids)
-    for section_id in missing_teaching:
-        errors.append(f"missing teaching-layer section #{section_id}")
+    if not paper_reader_only:
+        missing_teaching = sorted(TEACHING_SECTIONS - parser.ids)
+        for section_id in missing_teaching:
+            errors.append(f"missing teaching-layer section #{section_id}")
 
     for anchor in sorted(parser.href_anchors):
         if anchor not in parser.ids:
             errors.append(f"nav/link target #{anchor} has no matching element id")
 
-    if parser.counts["margin_rows"] == 0:
-        errors.append("#deep-reading-notes has no sentence rows (`data-note-kind=\"sentence\"`)")
-    if parser.counts["surgery_rows"] == 0:
-        errors.append("#deep-reading-notes has no paragraph rows (`data-note-kind=\"paragraph\"`)")
-    if parser.counts["section_review_rows"] == 0:
-        errors.append("#deep-reading-notes has no section reflection rows (`data-note-kind=\"section\"`)")
-    legacy = sorted(LEGACY_SPLIT_NOTE_SECTIONS & parser.ids)
-    if legacy or "section-comments" in parser.ids or "section-reflections" in parser.ids:
-        errors.append(
-            "use ordered #deep-reading-notes instead of separate/repeated sections: "
-            + ", ".join(legacy + [item for item in ("section-comments", "section-reflections") if item in parser.ids])
-        )
+    if not paper_reader_only:
+        if parser.counts["margin_rows"] == 0:
+            errors.append("#deep-reading-notes has no sentence rows (`data-note-kind=\"sentence\"`)")
+        if parser.counts["surgery_rows"] == 0:
+            errors.append("#deep-reading-notes has no paragraph rows (`data-note-kind=\"paragraph\"`)")
+        if parser.counts["section_review_rows"] == 0:
+            errors.append("#deep-reading-notes has no section reflection rows (`data-note-kind=\"section\"`)")
+        legacy = sorted(LEGACY_SPLIT_NOTE_SECTIONS & parser.ids)
+        if legacy or "section-comments" in parser.ids or "section-reflections" in parser.ids:
+            errors.append(
+                "use ordered #deep-reading-notes instead of separate/repeated sections: "
+                + ", ".join(legacy + [item for item in ("section-comments", "section-reflections") if item in parser.ids])
+            )
 
     declared_margin = find_declared_count(
         text,
@@ -270,9 +521,10 @@ def audit(path: Path) -> tuple[list[str], list[str]]:
         warnings.append("coverage receipt does not mention Coverage consistency gate")
     if "pending in" in text and "Pending in" not in text:
         warnings.append("pending units are mentioned outside the standard Pending in receipt column")
-    issue_index_text = parser.section_texts.get("issue-index", "")
-    if "降级条件" in issue_index_text or "下一稿任务" in issue_index_text:
-        errors.append("#issue-index should be compact; move 降级条件/下一稿任务 to findings.json, deep-reading rows, or Revision Plan")
+    if not paper_reader_only:
+        issue_index_text = parser.section_texts.get("issue-index", "")
+        if "降级条件" in issue_index_text or "下一稿任务" in issue_index_text:
+            errors.append("#issue-index should be compact; move 降级条件/下一稿任务 to findings.json, deep-reading rows, or Revision Plan")
 
     for numeric_text in parser.numeric_texts:
         if not VAGUE_NUMERIC_RE.search(numeric_text):
@@ -296,8 +548,17 @@ def audit(path: Path) -> tuple[list[str], list[str]]:
     for ref, source in parser.linked_finding_refs:
         if ref not in parser.defined_finding_ids:
             errors.append(f"linked finding `{ref}` has no matching finding/id anchor")
+    if not paper_reader_only:
+        for ref, source in parser.issue_sentence_refs:
+            if ref not in parser.defined_finding_ids:
+                errors.append(f"paper sentence `{source}` references finding `{ref}` with no matching finding/id anchor")
+        for ref, target in parser.annotation_issue_refs:
+            if ref not in parser.defined_finding_ids:
+                errors.append(f"annotation card for `{target}` references finding `{ref}` with no matching finding/id anchor")
 
     for table in parser.tables:
+        if table.get("in_paper_reader"):
+            continue
         if not table.get("has_caption"):
             errors.append("table is missing <caption>")
         if int(table.get("header_without_scope", 0)) > 0:

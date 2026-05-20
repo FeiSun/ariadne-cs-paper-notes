@@ -6,6 +6,7 @@ __pycache__/
 ariadne_notes_*.html
 ariadne_notes_*/
 paper_review_extract_*.md
+ariadne-cs-paper-notes/debug/
 *.aux
 *.bbl
 *.blg

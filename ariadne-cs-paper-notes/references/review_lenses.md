@@ -23,7 +23,7 @@ When uncertain, distinguish manuscript facts from reviewer inference. Do not cre
 
 ## Source Principle Index
 
-Every substantive margin note should map to at least one source principle. Put the principle in `违反原则` / `writing_principle`, and report `notes citing source principles: N/M` in coverage.
+Every substantive margin note should map to exactly one source principle. Put that principle in `违反原则` / `writing_principle`. Do not use `issue_type` as the principle, and do not join several principles with `；`; a useful note should say which single rule the current sentence/paragraph/section violates. Report `notes citing source principles: N/M` in coverage.
 
 | Source principle | Operational lens |
 |---|---|

@@ -1,6 +1,7 @@
 {
   "output_files": ["expected_html_report.html"],
   "sections": [
+    {"id": "paper-reader", "status": "rendered"},
     {"id": "executive-diagnosis", "status": "rendered"},
     {"id": "issue-index", "status": "rendered"},
     {"id": "claim-evidence-audit", "status": "rendered"},
@@ -11,5 +12,14 @@
     {"id": "coverage-receipt", "status": "rendered"}
   ],
   "deferred_findings": [],
+  "paper_reader": {
+    "html_source": "manual-fixture",
+    "source_fidelity": "fixture",
+    "source_artifact": "tests/fixtures/source_paper_reader.html",
+    "source_hash": "sha256:0123456789abcdef",
+    "sentence_id_scheme": "section-index-v1",
+    "annotation_mode": "overlay-only",
+    "source_integrity_check": "fixture-not-run"
+  },
   "pdf_linkage_level": "Level 0"
 }

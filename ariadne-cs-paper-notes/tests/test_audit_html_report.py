@@ -25,6 +25,7 @@ def load_module():
 
 def minimal_html(extra: str = "") -> str:
     sections = [
+        "paper-reader",
         "executive-diagnosis",
         "issue-index",
         "claim-evidence-audit",
@@ -35,6 +36,28 @@ def minimal_html(extra: str = "") -> str:
         "coverage-receipt",
     ]
     body = "\n".join(f'<section id="{section}"><h2>{section}</h2></section>' for section in sections)
+    body = body.replace(
+        '<section id="paper-reader"><h2>paper-reader</h2></section>',
+        """
+<section id="paper-reader" class="paper-reader">
+  <h2>paper-reader</h2>
+  <div class="reader-shell">
+    <article class="paper-pane" data-paper-html-source="manual-fixture" data-source-fidelity="fixture" data-source-artifact="tests/fixtures/source_paper_reader.html" data-source-hash="sha256:0123456789abcdef" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
+      <p>
+        <span class="paper-sentence" data-sentence-id="s-intro-001">Clean sentence.</span>
+        <span class="paper-sentence has-annotation" data-sentence-id="s-intro-002" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="prose" role="button" tabindex="0" aria-describedby="ann-s-intro-002">Problem sentence.</span>
+      </p>
+    </article>
+    <aside id="annotation-panel" class="annotation-panel" aria-label="批注详情">
+      <article id="ann-s-intro-002" class="annotation-card" data-target-sentence="s-intro-002" data-issue-ids="F1" data-severity="major" data-issue-type="prose">
+        <h3>问题是什么</h3>
+        <p>句子问题。</p>
+      </article>
+    </aside>
+  </div>
+</section>
+""",
+    )
     body = body.replace(
         '<section id="issue-index"><h2>issue-index</h2></section>',
         """
@@ -83,6 +106,34 @@ def minimal_html(extra: str = "") -> str:
 </body></html>"""
 
 
+def paper_reader_only_html() -> str:
+    return """<!doctype html>
+<html><body>
+<article class="review-report" data-report-kind="paper-reader-only">
+  <section id="paper-reader" class="paper-reader">
+    <div class="reader-shell">
+      <article class="paper-pane" data-paper-html-source="pandoc" data-source-fidelity="deterministic" data-source-artifact="source.html" data-source-hash="sha256:0123456789abcdef" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
+        <p>
+          <span class="paper-sentence" data-sentence-id="s-intro-001">Clean sentence.</span>
+          <span class="paper-sentence has-annotation" data-sentence-id="s-intro-002" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="claim" role="button" tabindex="0" aria-describedby="ann-s-intro-002">Problem sentence.</span>
+        </p>
+      </article>
+      <aside id="annotation-panel" class="annotation-panel">
+        <article id="ann-s-intro-002" class="annotation-card" data-target-sentence="s-intro-002" data-issue-ids="F1" data-severity="major" data-issue-type="claim">
+          <h3>问题是什么</h3>
+          <p>句子问题。</p>
+        </article>
+      </aside>
+    </div>
+  </section>
+  <section id="coverage-receipt">
+    <h2>覆盖回执与 artifacts</h2>
+    <table><caption>Receipt</caption><thead><tr><th scope="col">Unit</th></tr></thead><tbody><tr><td>paper-reader-only</td></tr></tbody></table>
+  </section>
+</article>
+</body></html>"""
+
+
 def write_temp_html(text: str) -> Path:
     tmp = tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8")
     with tmp:
@@ -110,6 +161,139 @@ def test_audit_counts_nested_deep_reading_rows() -> None:
         path.unlink(missing_ok=True)
     if errors:
         raise AssertionError(f"Expected nested deep-reading rows to pass, got {errors}")
+
+
+def test_audit_allows_paper_reader_only_deliverable() -> None:
+    module = load_module()
+    path = write_temp_html(paper_reader_only_html())
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if errors:
+        raise AssertionError(f"Expected paper-reader-only HTML to pass, got {errors}")
+
+
+def test_audit_allows_unanchored_annotation_cards_without_sentence_target() -> None:
+    module = load_module()
+    html = minimal_html().replace(
+        "</aside>",
+        """
+      <details class="unanchored-drawer">
+        <summary>未定位到具体句子的批注（1）</summary>
+        <article id="ann-unanchored-1" class="annotation-card is-unanchored" data-unanchored="true" data-issue-ids="F1" data-severity="major" data-issue-type="layout">
+          <h3>全局版式意见</h3>
+          <p>这条意见保留旧 report 内容，但不冒充句子级锚点。</p>
+        </article>
+      </details>
+    </aside>
+""",
+        1,
+    )
+    path = write_temp_html(html)
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if errors:
+        raise AssertionError(f"Expected unanchored annotation card to pass, got {errors}")
+
+
+def test_audit_allows_paragraph_section_and_paper_annotation_anchors() -> None:
+    module = load_module()
+    html = paper_reader_only_html().replace(
+        '<span class="paper-sentence has-annotation" data-sentence-id="s-intro-002" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="claim" role="button" tabindex="0" aria-describedby="ann-s-intro-002">Problem sentence.</span>',
+        '<span class="paper-sentence" data-sentence-id="s-intro-002">Problem sentence.</span>',
+    ).replace(
+        '<p>',
+        '<aside id="paper-overview-annotations" class="paper-overview-annotations has-paper-annotation" data-paper-id="paper" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="paper"></aside><h1 id="intro" class="has-section-annotation" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="flow">Intro</h1><p data-paragraph-id="p-intro-001" class="has-paragraph-annotation" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="structure">',
+        1,
+    ).replace(
+        '<article id="ann-s-intro-002" class="annotation-card" data-target-sentence="s-intro-002" data-issue-ids="F1" data-severity="major" data-issue-type="claim">',
+        '<article id="ann-p-intro-001" class="annotation-card" data-target-level="paragraph" data-target-paragraph="p-intro-001" data-issue-ids="F1" data-severity="major" data-issue-type="structure"><h3>段落问题</h3></article><article id="ann-section-intro" class="annotation-card" data-target-level="section" data-target-section="intro" data-issue-ids="F1" data-severity="major" data-issue-type="flow"><h3>章节问题</h3></article><article id="ann-paper" class="annotation-card" data-target-level="paper" data-target-paper="paper" data-issue-ids="F1" data-severity="major" data-issue-type="paper"><h3>全文问题</h3></article><article id="ann-s-intro-002" class="annotation-card" data-target-sentence="s-intro-002" data-issue-ids="F1" data-severity="major" data-issue-type="claim">',
+    )
+    path = write_temp_html(html)
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if errors:
+        raise AssertionError(f"Expected non-sentence paper-reader anchors to pass, got {errors}")
+
+
+def test_audit_rejects_unanchored_annotation_with_sentence_target() -> None:
+    module = load_module()
+    html = minimal_html().replace(
+        "</aside>",
+        """
+      <article id="ann-unanchored-1" class="annotation-card is-unanchored" data-unanchored="true" data-target-sentence="unanchored-1" data-issue-ids="F1" data-severity="major" data-issue-type="layout">
+        <h3>Bad unanchored note</h3>
+      </article>
+    </aside>
+""",
+        1,
+    )
+    path = write_temp_html(html)
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("unanchored annotation card must not set target-sentence" in error for error in errors):
+        raise AssertionError(f"Expected invalid unanchored target error, got {errors}")
+
+
+def test_audit_rejects_missing_paper_reader() -> None:
+    module = load_module()
+    path = write_temp_html(minimal_html().replace('<section id="paper-reader"', '<section id="paper-reader-missing"', 1))
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("paper-reader" in error for error in errors):
+        raise AssertionError(f"Expected missing paper-reader error, got {errors}")
+
+
+def test_audit_rejects_unmatched_sentence_annotation() -> None:
+    module = load_module()
+    path = write_temp_html(minimal_html().replace('data-target-sentence="s-intro-002"', 'data-target-sentence="s-intro-099"', 1))
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("has no matching annotation card" in error for error in errors):
+        raise AssertionError(f"Expected unmatched annotation error, got {errors}")
+
+
+def test_audit_rejects_missing_paper_source_provenance() -> None:
+    module = load_module()
+    html = minimal_html().replace(
+        ' data-source-fidelity="fixture" data-source-artifact="tests/fixtures/source_paper_reader.html" data-source-hash="sha256:0123456789abcdef" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only"',
+        "",
+        1,
+    )
+    path = write_temp_html(html)
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("data-source-fidelity" in error for error in errors):
+        raise AssertionError(f"Expected missing source provenance error, got {errors}")
+
+
+def test_audit_rejects_limited_scope_without_visible_scope() -> None:
+    module = load_module()
+    html = minimal_html().replace('data-paper-html-source="manual-fixture"', 'data-paper-html-source="extracted-text"', 1).replace(
+        'data-source-fidelity="fixture"',
+        'data-source-fidelity="limited-scope"',
+        1,
+    )
+    path = write_temp_html(html)
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("data-visible-scope" in error for error in errors):
+        raise AssertionError(f"Expected missing visible scope error, got {errors}")
 
 
 def test_audit_rejects_body_count_mismatch() -> None:
@@ -264,6 +448,13 @@ def test_audit_rejects_incomplete_html_structure() -> None:
 def main() -> int:
     test_audit_rejects_missing_deep_reading_section()
     test_audit_counts_nested_deep_reading_rows()
+    test_audit_allows_paper_reader_only_deliverable()
+    test_audit_allows_unanchored_annotation_cards_without_sentence_target()
+    test_audit_rejects_unanchored_annotation_with_sentence_target()
+    test_audit_rejects_missing_paper_reader()
+    test_audit_rejects_unmatched_sentence_annotation()
+    test_audit_rejects_missing_paper_source_provenance()
+    test_audit_rejects_limited_scope_without_visible_scope()
     test_audit_rejects_body_count_mismatch()
     test_audit_rejects_legacy_split_note_sections()
     test_audit_rejects_vague_numeric_summary_without_values()

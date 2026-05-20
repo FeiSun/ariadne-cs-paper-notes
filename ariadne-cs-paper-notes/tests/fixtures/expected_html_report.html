@@ -1,35 +1,66 @@
 <!doctype html>
-<!-- Contract fixture note: this file includes a couple of visible clean/keep rows
-     only to exercise filter/count branches in the audit tests. Production Ariadne
-     reports should count clean units in coverage artifacts instead of rendering
-     visible clean rows. -->
+<!-- Contract fixture note: this file includes a compact paper-first annotation
+     UI plus the canonical workbench sections. Production Ariadne reports should
+     count clean units in coverage artifacts instead of rendering visible clean rows. -->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ariadne 论文线索批注</title>
+  <title>Ariadne 论文正文批注</title>
   <style>
-    :root { --bg:#f7f8fb; --paper:#fff; --ink:#1f2937; --muted:#5f6b7a; --line:#d8dee8; --soft:#eef2f7; --blocker:#b42318; --blocker-bg:#fff1f0; --major:#9a6700; --major-bg:#fff7df; --minor:#3451b2; --minor-bg:#edf2ff; --polish:#147d64; --polish-bg:#e9f8f3; }
-    * { box-sizing: border-box; }
+    :root {
+      --bg:#f6f7f9; --paper:#ffffff; --ink:#1f2937; --muted:#607086; --line:#d7dde8; --soft:#eef2f7;
+      --accent:#2449a7; --blocker:#b42318; --blocker-bg:#fff1f0; --major:#9a6700; --major-bg:#fff7df;
+      --minor:#3451b2; --minor-bg:#edf2ff; --polish:#147d64; --polish-bg:#e9f8f3;
+    }
+    * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--ink); line-height:1.65; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; }
-    .review-report { max-width:1180px; margin:0 auto; padding:28px; }
+    .review-report { max-width:1320px; margin:0 auto; padding:24px; }
     header, nav, section { background:var(--paper); border:1px solid var(--line); border-radius:8px; }
-    header { padding:28px; margin-bottom:16px; }
-    nav { position:sticky; top:12px; padding:12px 16px; margin-bottom:16px; }
-    nav a { margin-right:14px; color:#2449a7; text-decoration:none; }
+    header { padding:24px; margin-bottom:14px; }
+    nav { position:sticky; top:10px; z-index:5; padding:12px 14px; margin-bottom:14px; }
+    nav a { margin-right:14px; color:var(--accent); text-decoration:none; white-space:nowrap; }
     section { padding:22px; margin-bottom:16px; }
+    h1, h2, h3 { line-height:1.25; margin-top:0; letter-spacing:0; }
+    .summary-band { display:grid; grid-template-columns:repeat(4, minmax(120px, 1fr)); gap:10px; margin-top:16px; }
+    .summary-cell { border:1px solid var(--line); border-radius:8px; padding:10px; background:#fbfcfe; }
+    .summary-cell strong { display:block; font-size:12px; color:var(--muted); }
     .badge { display:inline-flex; align-items:center; border-radius:999px; padding:2px 8px; font-size:12px; font-weight:700; border:1px solid transparent; }
     .blocker { color:var(--blocker); background:var(--blocker-bg); border-color:#ffd3cf; }
     .major { color:var(--major); background:var(--major-bg); border-color:#f2d98f; }
     .minor { color:var(--minor); background:var(--minor-bg); border-color:#c8d4ff; }
     .polish { color:var(--polish); background:var(--polish-bg); border-color:#bce7d8; }
-    .finding { border:1px solid var(--line); border-radius:8px; padding:16px; margin:12px 0; background:#fbfcfe; break-inside:avoid; }
-    .finding-link { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:999px; padding:0 7px; text-decoration:none; color:#2449a7; font-weight:700; }
     .filters { display:flex; gap:10px; flex-wrap:wrap; margin:0 0 16px; }
-    .filter-btn[aria-pressed="true"] { border-color:#2449a7; color:#2449a7; }
+    .filter-btn { border:1px solid var(--line); border-radius:6px; background:#fff; padding:6px 10px; color:var(--ink); cursor:pointer; }
+    .filter-btn[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
     [data-hidden-by-filter="true"] { display:none !important; }
     .empty-state { display:none; color:var(--muted); font-style:italic; }
     section[data-filter-empty="true"] > .empty-state { display:block; }
+    .paper-reader { padding:0; overflow:hidden; }
+    .reader-toolbar { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; padding:16px 18px; border-bottom:1px solid var(--line); background:#fafbfc; }
+    .reader-shell { display:grid; grid-template-columns:minmax(0, 1fr) 360px; gap:0; align-items:start; }
+    .paper-pane { padding:34px 44px; min-height:640px; background:#fff; border-right:1px solid var(--line); font-family:Georgia,"Times New Roman","Noto Serif",serif; font-size:17px; line-height:1.75; }
+    .paper-pane h2 { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:22px; margin:24px 0 12px; }
+    .paper-pane .abstract { border-left:3px solid var(--line); padding-left:14px; color:#263244; }
+    .paper-sentence { border-radius:4px; padding:1px 2px; scroll-margin-top:92px; }
+    .paper-sentence.has-annotation { cursor:pointer; text-decoration-line:underline; text-decoration-thickness:2px; text-underline-offset:4px; }
+    .paper-sentence[data-severity="blocker"] { background:var(--blocker-bg); text-decoration-color:var(--blocker); }
+    .paper-sentence[data-severity="major"] { background:var(--major-bg); text-decoration-color:var(--major); }
+    .paper-sentence[data-severity="minor"] { background:var(--minor-bg); text-decoration-color:var(--minor); }
+    .paper-sentence[data-severity="polish"] { background:var(--polish-bg); text-decoration-color:var(--polish); }
+    .paper-sentence.is-active { outline:2px solid var(--accent); outline-offset:2px; }
+    .annotation-panel { position:sticky; top:70px; max-height:calc(100vh - 86px); overflow:auto; padding:18px; background:#fbfcfe; }
+    .annotation-panel h2 { font-size:18px; margin-bottom:10px; }
+    .annotation-card { display:none; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:12px; background:#fff; }
+    .annotation-card.is-active { display:block; }
+    .annotation-card h3 { margin:0 0 8px; font-size:16px; }
+    .annotation-card dl { margin:10px 0 0; }
+    .annotation-card dt { font-weight:700; color:#334155; margin-top:8px; }
+    .annotation-card dd { margin:2px 0 0; }
+    .annotation-nav { display:flex; gap:8px; margin-top:12px; }
+    .annotation-nav button { border:1px solid var(--line); border-radius:6px; background:#fff; padding:6px 9px; cursor:pointer; }
+    .finding { border:1px solid var(--line); border-radius:8px; padding:16px; margin:12px 0; background:#fbfcfe; break-inside:avoid; }
+    .finding-link { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:999px; padding:0 7px; text-decoration:none; color:var(--accent); font-weight:700; }
     .table-wrap { overflow-x:auto; margin-top:10px; }
     .table-wrap[data-filter-empty="true"] .empty-state { display:block; }
     table { width:100%; border-collapse:collapse; min-width:760px; }
@@ -37,20 +68,41 @@
     th { background:var(--soft); }
     thead th { position:sticky; top:0; z-index:1; }
     caption { text-align:left; font-weight:700; margin:0 0 8px; }
-    @media print { nav, .filters { display:none !important; } section, header { box-shadow:none; break-inside:avoid; } .finding, tr { break-inside:avoid; } }
+    .reader-empty { color:var(--muted); margin:0; }
+    @media (max-width: 920px) {
+      .review-report { padding:12px; }
+      .summary-band { grid-template-columns:1fr 1fr; }
+      .reader-shell { grid-template-columns:1fr; }
+      .paper-pane { border-right:0; border-bottom:1px solid var(--line); padding:24px 18px; }
+      .annotation-panel { position:static; max-height:none; }
+    }
+    @media print {
+      nav, .filters, .annotation-nav, .reader-toolbar { display:none !important; }
+      section, header { box-shadow:none; break-inside:avoid; }
+      .finding, tr, .annotation-card { break-inside:avoid; }
+      .annotation-card { display:block; }
+    }
   </style>
 </head>
 <body>
 <article class="review-report">
   <header>
-    <h1>Ariadne 论文线索批注</h1>
-    <p>论文：<code>paper.pdf</code></p>
+    <h1>Ariadne 论文正文批注</h1>
+    <p>论文：<code>paper.tex</code> / <code>paper.pdf</code></p>
     <p>HTML report: <code>ariadne_notes_paper_20260516.html</code></p>
     <p>Artifact bundle: <code>ariadne_notes_paper_20260516/</code></p>
     <p>PDF linkage：Level 0</p>
     <p>Reader-Journey passes performed: Pass 0 done; Pass 1 done; Pass 2 done; Pass 3 done; Pass 4 done; Pass 5 done; Pass 6 done.</p>
+    <div class="summary-band" aria-label="Review summary">
+      <div class="summary-cell"><strong>Central claim</strong>Controllable abstention with stable risk.</div>
+      <div class="summary-cell"><strong>Readiness</strong>Revise before submission.</div>
+      <div class="summary-cell"><strong>Blocker</strong>2</div>
+      <div class="summary-cell"><strong>Sentence notes</strong>3 visible issue notes</div>
+    </div>
   </header>
+
   <nav aria-label="Review sections">
+    <a href="#paper-reader">论文正文批注</a>
     <a href="#executive-diagnosis">总评诊断与可救骨架</a>
     <a href="#issue-index">问题索引</a>
     <a href="#claim-evidence-audit">主张与证据审计</a>
@@ -60,6 +112,7 @@
     <a href="#revision-plan">修改路线</a>
     <a href="#coverage-receipt">覆盖回执</a>
   </nav>
+
   <div class="filters" aria-label="Severity filters">
     <button class="filter-btn" type="button" data-filter="all" aria-pressed="true">全部</button>
     <button class="filter-btn" type="button" data-filter="blocker" aria-pressed="false">Blocker</button>
@@ -69,17 +122,99 @@
   </div>
   <div class="filters" aria-label="Issue type filters">
     <button class="filter-btn" type="button" data-type-filter="all" aria-pressed="true">全部类型</button>
+    <button class="filter-btn" type="button" data-type-filter="claim" aria-pressed="false">claim</button>
     <button class="filter-btn" type="button" data-type-filter="numeric" aria-pressed="false">numeric</button>
     <button class="filter-btn" type="button" data-type-filter="prose" aria-pressed="false">prose</button>
     <button class="filter-btn" type="button" data-type-filter="layout" aria-pressed="false">layout</button>
   </div>
+
+  <section id="paper-reader" class="paper-reader" aria-label="Annotated paper">
+    <div class="reader-toolbar">
+      <div>
+        <h2>论文正文批注</h2>
+        <p class="reader-empty">点击带颜色下划线的句子，在右侧查看问题、原因和自改任务。</p>
+      </div>
+      <div>
+        <span class="badge blocker">■ Blocker</span>
+        <span class="badge major">▲ Major</span>
+        <span class="badge minor">● Minor</span>
+        <span class="badge polish">◆ Polish</span>
+      </div>
+    </div>
+    <div class="reader-shell">
+      <article class="paper-pane" data-paper-html-source="manual-fixture" data-source-fidelity="fixture" data-source-artifact="tests/fixtures/source_paper_reader.html" data-source-hash="sha256:0123456789abcdef" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
+        <h2>Abstract</h2>
+        <p class="abstract">
+          <span class="paper-sentence has-annotation" data-sentence-id="s-abstract-001" data-has-issue="true" data-issue-ids="F1" data-severity="blocker" data-issue-type="claim" tabindex="0" role="button" aria-describedby="ann-s-abstract-001">Abstract missing.</span>
+        </p>
+        <h2>1. Introduction</h2>
+        <p>
+          <span class="paper-sentence" data-sentence-id="s-intro-001">Selective prediction systems are increasingly used when model uncertainty affects downstream trust.</span>
+          <span class="paper-sentence has-annotation" data-sentence-id="s-intro-002" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="prose" tabindex="0" role="button" aria-describedby="ann-s-intro-002">Our method solves this problem in practical deployment.</span>
+          <span class="paper-sentence has-annotation" data-sentence-id="s-intro-003" data-has-issue="true" data-issue-ids="F2" data-severity="blocker" data-issue-type="numeric" tabindex="0" role="button" aria-describedby="ann-s-intro-003">It improves the average Safety Score to 95.77, outperforming all baselines.</span>
+        </p>
+        <p>
+          <span class="paper-sentence" data-sentence-id="s-intro-004">The rest of the paper describes the training objective, evaluation protocol, and limitations.</span>
+        </p>
+      </article>
+
+      <aside id="annotation-panel" class="annotation-panel" aria-label="批注详情">
+        <h2>批注详情</h2>
+        <article id="ann-s-abstract-001" class="annotation-card is-active" data-target-sentence="s-abstract-001" data-issue-ids="F1" data-severity="blocker" data-issue-type="claim">
+          <h3><span class="badge blocker">■ Blocker</span> 摘要缺失</h3>
+          <dl>
+            <dt>问题是什么</dt><dd>第一页没有 problem / gap / idea / evidence / boundary。</dd>
+            <dt>为什么有问题</dt><dd>读者无法在进入正文前知道论文要改变哪个判断。</dd>
+            <dt>违反原则</dt><dd>源原则：第一页读者测试；改变读者理解状态。</dd>
+            <dt>严重度理由</dt><dd>缺摘要会阻断整篇论文的入口。</dd>
+            <dt>关联问题</dt><dd><a class="finding-link" href="#F1">F1</a></dd>
+            <dt>下一稿任务 / 自改问题</dt><dd>写出窄 claim，并明确证据边界。</dd>
+          </dl>
+        </article>
+        <article id="ann-s-intro-002" class="annotation-card" data-target-sentence="s-intro-002" data-issue-ids="F1" data-severity="major" data-issue-type="prose">
+          <h3><span class="badge major">▲ Major</span> Claim 过强</h3>
+          <dl>
+            <dt>问题是什么</dt><dd>句子说 solved practical deployment，但前文没有定义 deployment 条件。</dd>
+            <dt>为什么有问题</dt><dd>读者会把它理解成跨设置的强承诺，后文证据跟不上。</dd>
+            <dt>违反原则</dt><dd>claim strength must match visible evidence。</dd>
+            <dt>严重度理由</dt><dd>它会扩大摘要缺失带来的读者预期偏差。</dd>
+            <dt>关联问题</dt><dd><a class="finding-link" href="#F1">F1</a></dd>
+            <dt>下一稿任务 / 自改问题</dt><dd>把 solved 改成当前实验能支持的具体能力边界。</dd>
+          </dl>
+        </article>
+        <article id="ann-s-intro-003" class="annotation-card" data-target-sentence="s-intro-003" data-issue-ids="F2" data-severity="blocker" data-issue-type="numeric">
+          <h3><span class="badge blocker">■ Blocker</span> 数字证据不可复现</h3>
+          <dl>
+            <dt>问题是什么</dt><dd>Table 1 Method A Score X：表中数值 95.77；可见复算值 95.52；差值 +0.25。</dd>
+            <dt>为什么有问题</dt><dd>读者按可见单元格复算后得不到同一个平均值，会怀疑主证据表。</dd>
+            <dt>违反原则</dt><dd>不要让读者做算术题；aggregation denominator 必须显式。</dd>
+            <dt>严重度理由</dt><dd>这是主证据表里的数值信任问题。</dd>
+            <dt>关联问题</dt><dd><a class="finding-link" href="#F2">F2</a></dd>
+            <dt>下一稿任务 / 自改问题</dt><dd>说明 weighted/micro aggregation denominator，或修正表格数值。</dd>
+          </dl>
+        </article>
+        <div class="annotation-nav" aria-label="Annotation navigation">
+          <button type="button" data-prev-annotation>上一条</button>
+          <button type="button" data-next-annotation>下一条</button>
+        </div>
+      </aside>
+    </div>
+  </section>
+
   <main>
     <section id="executive-diagnosis">
       <h2>总评诊断与可救骨架</h2>
       <p><strong>一句话 verdict：</strong>核心 claim 可救，但必须先补摘要与数字口径。</p>
       <p><strong>论文类型契约：</strong>Method paper; evidence must show fair baselines, ablations, numerical consistency, and reproducible mechanism.</p>
-      <article class="finding"><h3>可救骨架</h3><p><strong>Minimal viable paper：</strong>保留一个窄 claim，并让摘要、主表、方法解释对齐。</p><p><strong>Delete vs. downgrade：</strong>删除无证据 broad claim；降级无法覆盖所有 setting 的 claim。</p><p><strong>Fix type：</strong>section restructure / new analysis / artifact cleanup。</p><p><strong>Next revision thread：</strong>先让第一页读者恢复 problem-gap-idea-evidence-boundary。</p></article>
+      <article class="finding">
+        <h3>可救骨架</h3>
+        <p><strong>Minimal viable paper：</strong>保留一个窄 claim，并让摘要、主表、方法解释对齐。</p>
+        <p><strong>Delete vs. downgrade：</strong>删除无证据 broad claim；降级无法覆盖所有 setting 的 claim。</p>
+        <p><strong>Fix type：</strong>section restructure / new analysis / artifact cleanup。</p>
+        <p><strong>Next revision thread：</strong>先让第一页读者恢复 problem-gap-idea-evidence-boundary。</p>
+      </article>
     </section>
+
     <section id="issue-index">
       <h2>问题索引</h2>
       <p class="empty-state">该严重度暂无项</p>
@@ -89,7 +224,9 @@
         <p><strong>片段：</strong><q>Abstract missing</q></p>
         <p><strong>诊断：</strong>第一页读者无法恢复 problem / gap / idea / evidence / boundary。</p>
         <p><strong>依据：</strong>rendered PDF visual pass</p>
-        <p><strong>置信度：</strong>high</p><p><strong>验证方式：</strong>PDF first-page inspection</p><p><strong>判级理由：</strong>第一页无法恢复 story。</p>
+        <p><strong>置信度：</strong>high</p>
+        <p><strong>验证方式：</strong>PDF first-page inspection</p>
+        <p><strong>判级理由：</strong>第一页无法恢复 story。</p>
         <p><strong>读者卡点：</strong>第一页读者无法恢复 problem / gap / idea / evidence / boundary。</p>
       </article>
       <article class="finding" id="F2" data-severity="blocker" data-issue-type="numeric">
@@ -97,43 +234,231 @@
         <p><strong>位置：</strong>Table 1 / Method A Score X</p>
         <p><strong>诊断：</strong>表中数值 95.77；按可见三列可见复算值 95.52；差值 +0.25。口径说明：visible arithmetic mean only; weighted/micro average or hidden denominator may differ.</p>
         <p><strong>依据：</strong>numeric_audit.json signal N1</p>
-        <p><strong>置信度：</strong>high</p><p><strong>验证方式：</strong>Python visible-cell arithmetic</p><p><strong>判级理由：</strong>表格数值无法复现会直接削弱证据可信度。</p>
+        <p><strong>置信度：</strong>high</p>
+        <p><strong>验证方式：</strong>Python visible-cell arithmetic</p>
+        <p><strong>判级理由：</strong>表格数值无法复现会直接削弱证据可信度。</p>
       </article>
-      <div class="table-wrap"><table><caption>Finding ledger</caption><thead><tr><th scope="col">ID</th><th scope="col">严重度</th><th scope="col">问题类型</th><th scope="col">一句话问题</th><th scope="col">主要位置</th><th scope="col">后文引用位置</th><th scope="col">状态 / 下一步</th></tr></thead><tbody><tr data-severity="blocker" data-issue-type="claim"><td><a class="finding-link" href="#F1">F1</a></td><td><span class="badge blocker">■ Blocker</span></td><td>claim</td><td>摘要缺失。</td><td>PDF p.1</td><td>主张与证据审计；修改路线</td><td>补 abstract。</td></tr><tr data-severity="blocker" data-issue-type="numeric"><td><a class="finding-link" href="#F2">F2</a></td><td><span class="badge blocker">■ Blocker</span></td><td>numeric</td><td>Table 1 Score X 复算不一致。</td><td>Table 1</td><td>提交就绪；修改路线</td><td>解释 aggregation 或修表。</td></tr></tbody></table><p class="empty-state">该表无此严重度项</p></div>
+      <div class="table-wrap">
+        <table>
+          <caption>Finding ledger</caption>
+          <thead><tr><th scope="col">ID</th><th scope="col">严重度</th><th scope="col">问题类型</th><th scope="col">一句话问题</th><th scope="col">主要位置</th><th scope="col">后文引用位置</th><th scope="col">状态 / 下一步</th></tr></thead>
+          <tbody>
+            <tr data-severity="blocker" data-issue-type="claim"><td><a class="finding-link" href="#F1">F1</a></td><td><span class="badge blocker">■ Blocker</span></td><td>claim</td><td>摘要缺失。</td><td>PDF p.1</td><td>论文正文批注；修改路线</td><td>补 abstract。</td></tr>
+            <tr data-severity="blocker" data-issue-type="numeric"><td><a class="finding-link" href="#F2">F2</a></td><td><span class="badge blocker">■ Blocker</span></td><td>numeric</td><td>Table 1 Score X 复算不一致。</td><td>Table 1</td><td>论文正文批注；提交就绪</td><td>解释 aggregation 或修表。</td></tr>
+          </tbody>
+        </table>
+        <p class="empty-state">该表无此严重度项</p>
+      </div>
     </section>
-    <section id="claim-evidence-audit"><h2>主张与证据审计</h2><p class="empty-state">该严重度暂无项</p><div class="table-wrap"><table><caption>Abstract promise tracking and claim-evidence map</caption><thead><tr><th scope="col">Claim</th><th scope="col">Claim type</th><th scope="col">Body evidence location</th><th scope="col">Evidence strength</th><th scope="col">Verdict</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead><tbody><tr data-severity="major" data-issue-type="claim"><td>68% improvement</td><td>number</td><td>Table 1</td><td>ambiguous</td><td>overclaim</td><td><a class="finding-link" href="#F2">F2</a></td><td>narrow claim to visible comparator.</td></tr></tbody></table><p class="empty-state">该表无此严重度项</p></div><p><strong>逻辑红队检查：</strong>main table arithmetic and abstract promise must agree before submission.</p><p><strong>Skim Findings：</strong>skim-only reader recovers method name but not the evidence boundary.</p></section>
-    <section id="deep-reading-notes"><h2>逐章精读批注</h2><p class="empty-state">该严重度暂无项</p><section class="paper-section" id="sec-introduction"><h3>1. Introduction</h3><div class="table-wrap"><table><caption>Section reflection</caption><thead><tr><th scope="col">读后一句话</th><th scope="col">章节任务是否对齐</th><th scope="col">建议结构</th><th scope="col">未闭合问题</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead><tbody><tr data-note-kind="section" data-severity="major" data-issue-type="prose"><td>引入问题有效，但 method why-step 太短。</td><td>部分对齐：问题钩子有了，方法动机还没接稳。</td><td>problem stakes -> pseudo-benign 操作定义 -> current alignment gap -> representation margin intuition -> evidence boundary</td><td>pseudo-benign 的边界还没讲清；self-supervision 的信号来源还没交代。</td><td><a class="finding-link" href="#F1">F1</a></td><td>补 intuition bridge 和 evidence boundary。</td></tr></tbody></table><p class="empty-state">该表无此严重度项</p></div><div class="table-wrap"><table><caption>Paragraph and sentence notes</caption><thead><tr><th scope="col">层级</th><th scope="col">位置</th><th scope="col">检查维度 / 当前任务</th><th scope="col">原句/片段</th><th scope="col">读者卡点 / 为什么</th><th scope="col">违反原则</th><th scope="col">关联问题</th><th scope="col">下一稿任务 / 自改问题</th><th scope="col">严重度 / 处理决定</th></tr></thead><tbody><tr data-note-kind="paragraph" data-severity="major" data-decision="merge" data-issue-type="prose"><td>段落</td><td>Intro ¶1</td><td>motivation setup</td><td></td><td>paragraph too small to carry the reader path</td><td>一段只做一件事</td><td><a class="finding-link" href="#F1">F1</a></td><td>merge with ¶2 and state the deployment need first</td><td>合并</td></tr><tr data-note-kind="sentence" data-severity="major" data-issue-type="prose"><td>句子</td><td>Intro ¶1 S1</td><td>sentence flow</td><td>snippet</td><td>读者还不知道这句如何接回上一句旧信息。</td><td>源原则：句首接旧信息。</td><td><a class="finding-link" href="#F1">F1</a></td><td>自改问题：上一句的旧信息是什么？</td><td><span class="badge major">▲ Major</span></td></tr><tr data-note-kind="sentence" data-severity="minor" data-issue-type="prose"><td>句子</td><td>Intro ¶1 S2</td><td>diction</td><td>snippet</td><td>word choice makes the action feel heavier than needed.</td><td>源原则：direct, simple, precise prose.</td><td></td><td>自改问题：能否用更简单准确的动词？</td><td><span class="badge minor">● Minor</span></td></tr><tr data-note-kind="paragraph" data-severity="polish" data-decision="keep" data-issue-type="prose"><td>段落</td><td>Method ¶3</td><td>define notation</td><td></td><td>clean</td><td>topic sentence checked</td><td></td><td>No structural change needed.</td><td>保留</td></tr><tr data-note-kind="sentence" data-severity="polish" data-issue-type="prose"><td>句子</td><td>Method ¶3 S1</td><td>clean</td><td>(no snippet)</td><td>No substantive issue found</td><td>checked</td><td></td><td>No change needed</td><td><span class="badge polish">◆ Polish</span></td></tr></tbody></table><p class="empty-state">该表无此严重度项</p></div></section></section>
-    <section id="submission-readiness"><h2>数字 / 公式 / 图表 / 版式 / 提交就绪</h2><p class="empty-state">该严重度暂无项</p><div class="table-wrap"><table><caption>Submission readiness checks</caption><thead><tr><th scope="col">类别</th><th scope="col">位置</th><th scope="col">严重度</th><th scope="col">卡点</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead><tbody><tr data-severity="blocker" data-issue-type="numeric"><td>数值与表格</td><td>Table 1</td><td><span class="badge blocker">■ Blocker</span></td><td>表中数值 95.77；可见复算值 95.52；差值 +0.25。</td><td><a class="finding-link" href="#F2">F2</a></td><td>说明 aggregation denominator 或修正表格。</td></tr><tr id="pdf-page-1" class="pdf-anchor" data-severity="polish" data-issue-type="layout"><td>PDF 版式</td><td>PDF p.1</td><td><span class="badge polish">◆ Polish</span></td><td>Layout note.</td><td></td><td>adjust page rhythm.</td></tr><tr data-severity="major" data-issue-type="checklist"><td>投稿 checklist</td><td>Checklist</td><td><span class="badge major">▲ Major</span></td><td>Yes answers need anchors.</td><td><a class="finding-link" href="#F1">F1</a></td><td>每个 Yes 绑定正文证据。</td></tr><tr data-severity="polish" data-issue-type="prose"><td>Polish Sweep</td><td>Hyparameters; Specifially</td><td><span class="badge polish">◆ Polish</span></td><td>Grouped mechanical typos.</td><td></td><td>run one-pass spelling sweep after substantive edits.</td></tr></tbody></table><p class="empty-state">该表无此严重度项</p></div></section>
-    <section id="local-comments"><h2>共性问题汇总</h2><p class="empty-state">该严重度暂无项</p><div class="table-wrap"><table><caption>Recurring issue patterns</caption><thead><tr><th scope="col">严重度</th><th scope="col">共性问题</th><th scope="col">读者卡点</th><th scope="col">代表位置</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead><tbody><tr data-severity="minor" data-issue-type="prose"><td><span class="badge minor">● Minor</span></td><td>术语/拼写漂移</td><td>读者会怀疑稿件是否统一清理过。</td><td>Method ¶3; Appendix A.6</td><td></td><td>建立术语表。</td></tr></tbody></table><p class="empty-state">该表无此严重度项</p></div></section>
-    <section id="revision-plan"><h2>修改路线</h2><div class="table-wrap"><table><caption>Executable revision plan</caption><thead><tr><th scope="col">优先级</th><th scope="col">任务</th><th scope="col">关联问题</th><th scope="col">负责人/区域</th><th scope="col">工作量</th><th scope="col">验收方式</th></tr></thead><tbody><tr><td>P0</td><td>补摘要。</td><td><a class="finding-link" href="#F1">F1</a></td><td>Writing</td><td>S</td><td>problem-gap-idea-evidence-boundary all visible.</td></tr><tr><td>P0</td><td>解释或修正 Table 1 Score X。</td><td><a class="finding-link" href="#F2">F2</a></td><td>Experiments</td><td>M</td><td>spreadsheet values match PDF or aggregation denominator is stated.</td></tr></tbody></table></div></section>
-    <section id="coverage-receipt"><h2>覆盖回执与 artifacts</h2><div class="table-wrap"><table><caption>Coverage receipt</caption><thead><tr><th scope="col">Unit</th><th scope="col">Total</th><th scope="col">Reviewed</th><th scope="col">With issues</th><th scope="col">Clean</th><th scope="col">Skipped</th><th scope="col">Pending in</th></tr></thead><tbody><tr><td>Reader-Journey passes performed: Pass 0 done; Pass 1 done; Pass 2 done; Pass 3 done; Pass 4 done; Pass 5 done; Pass 6 done</td><td>7</td><td>7</td><td>0</td><td>7</td><td>0</td><td></td></tr><tr><td>Sentence notes</td><td>3</td><td>3</td><td>2</td><td>1</td><td>0</td><td></td></tr><tr><td>Paragraph rows</td><td>2</td><td>2</td><td>1</td><td>1</td><td>0</td><td></td></tr><tr><td>Section reflection rows</td><td>1</td><td>1</td><td>1</td><td>0</td><td>0</td><td></td></tr><tr><td>notes citing source principles: N/M</td><td>5/6</td><td>6</td><td>5</td><td>1</td><td>0</td><td></td></tr><tr><td>High-risk fields complete: yes/no; Severity audit: N groups checked, M adjusted; Abstract promises tracked: N/N; Rebuttal reverse check: N Blockers checked, M downgraded/qualified; Known blind spots stated: yes/no; Structured artifacts / HTML contract: passed; Numerical signals cited with concrete values: N/N; Coverage consistency: 3 claims checked, 0 repaired, 0 unresolved; Polish items: N grouped into K categories</td><td>8</td><td>8</td><td>0</td><td>8</td><td>0</td><td></td></tr><tr><td>PDF pages</td><td>2</td><td>2</td><td>1</td><td>1</td><td>0</td><td></td></tr><tr><td>Figures</td><td>1</td><td>1</td><td>1</td><td>0</td><td>0</td><td></td></tr><tr><td>References</td><td>3</td><td>3</td><td>1</td><td>2</td><td>0</td><td></td></tr></tbody></table></div><div class="table-wrap"><table><caption>Body-backed count audit</caption><thead><tr><th scope="col">Claimed unit</th><th scope="col">Claimed count</th><th scope="col">Body section / selector</th><th scope="col">Actual count</th><th scope="col">Status</th></tr></thead><tbody><tr><td>Sentence notes</td><td>3</td><td>#deep-reading-notes [data-note-kind=&quot;sentence&quot;]</td><td>3</td><td>pass</td></tr><tr><td>Paragraph rows</td><td>2</td><td>#deep-reading-notes [data-note-kind=&quot;paragraph&quot;]</td><td>2</td><td>pass</td></tr><tr><td>Section reflection rows</td><td>1</td><td>#deep-reading-notes [data-note-kind=&quot;section&quot;]</td><td>1</td><td>pass</td></tr></tbody></table></div></section>
+
+    <section id="claim-evidence-audit">
+      <h2>主张与证据审计</h2>
+      <p class="empty-state">该严重度暂无项</p>
+      <div class="table-wrap">
+        <table>
+          <caption>Abstract promise tracking and claim-evidence map</caption>
+          <thead><tr><th scope="col">Claim</th><th scope="col">Claim type</th><th scope="col">Body evidence location</th><th scope="col">Evidence strength</th><th scope="col">Verdict</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead>
+          <tbody>
+            <tr data-severity="major" data-issue-type="claim"><td>68% improvement</td><td>number</td><td>Table 1</td><td>ambiguous</td><td>overclaim</td><td><a class="finding-link" href="#F2">F2</a></td><td>narrow claim to visible comparator.</td></tr>
+          </tbody>
+        </table>
+        <p class="empty-state">该表无此严重度项</p>
+      </div>
+      <p><strong>逻辑红队检查：</strong>main table arithmetic and abstract promise must agree before submission.</p>
+      <p><strong>Skim Findings：</strong>skim-only reader recovers method name but not the evidence boundary.</p>
+    </section>
+
+    <section id="deep-reading-notes">
+      <h2>逐章精读批注</h2>
+      <p class="empty-state">该严重度暂无项</p>
+      <section class="paper-section" id="sec-introduction">
+        <h3>1. Introduction</h3>
+        <div class="table-wrap">
+          <table>
+            <caption>Section reflection</caption>
+            <thead><tr><th scope="col">读后一句话</th><th scope="col">章节任务是否对齐</th><th scope="col">建议结构</th><th scope="col">未闭合问题</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead>
+            <tbody>
+              <tr data-note-kind="section" data-severity="major" data-issue-type="prose"><td>引入问题有效，但 method why-step 太短。</td><td>部分对齐：问题钩子有了，方法动机还没接稳。</td><td>problem stakes -> pseudo-benign 操作定义 -> current alignment gap -> representation margin intuition -> evidence boundary</td><td>pseudo-benign 的边界还没讲清；self-supervision 的信号来源还没交代。</td><td><a class="finding-link" href="#F1">F1</a></td><td>补 intuition bridge 和 evidence boundary。</td></tr>
+            </tbody>
+          </table>
+          <p class="empty-state">该表无此严重度项</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption>Paragraph and sentence notes</caption>
+            <thead><tr><th scope="col">层级</th><th scope="col">位置</th><th scope="col">检查维度 / 当前任务</th><th scope="col">原句/片段</th><th scope="col">读者卡点 / 为什么</th><th scope="col">违反原则</th><th scope="col">关联问题</th><th scope="col">下一稿任务 / 自改问题</th><th scope="col">严重度 / 处理决定</th></tr></thead>
+            <tbody>
+              <tr data-note-kind="paragraph" data-severity="major" data-decision="merge" data-issue-type="prose"><td>段落</td><td>Intro ¶1</td><td>motivation setup</td><td></td><td>paragraph too small to carry the reader path</td><td>一段只做一件事</td><td><a class="finding-link" href="#F1">F1</a></td><td>merge with ¶2 and state the deployment need first</td><td>合并</td></tr>
+              <tr data-note-kind="sentence" data-severity="blocker" data-issue-type="claim"><td>句子</td><td>Abstract S1</td><td>paper entry</td><td>Abstract missing.</td><td>读者没有第一页地图。</td><td>源原则：first-page reader test.</td><td><a class="finding-link" href="#F1">F1</a></td><td>自改问题：problem/gap/idea/evidence/boundary 是否都出现？</td><td><span class="badge blocker">■ Blocker</span></td></tr>
+              <tr data-note-kind="sentence" data-severity="major" data-issue-type="prose"><td>句子</td><td>Intro ¶1 S2</td><td>claim strength</td><td>Our method solves this problem in practical deployment.</td><td>读者会把 solves 理解成跨设置的强承诺。</td><td>源原则：claim strength must match evidence.</td><td><a class="finding-link" href="#F1">F1</a></td><td>自改问题：这句话能否只承诺当前实验支持的能力？</td><td><span class="badge major">▲ Major</span></td></tr>
+              <tr data-note-kind="sentence" data-severity="blocker" data-issue-type="numeric"><td>句子</td><td>Intro ¶1 S3</td><td>evidence precision</td><td>It improves the average Safety Score to 95.77.</td><td>读者复算 Table 1 得到 95.52，不知道 95.77 的口径。</td><td>源原则：不要让读者做算术题。</td><td><a class="finding-link" href="#F2">F2</a></td><td>自改问题：denominator/weights/rounding 是否显式？</td><td><span class="badge blocker">■ Blocker</span></td></tr>
+              <tr data-note-kind="paragraph" data-severity="polish" data-decision="keep" data-issue-type="prose"><td>段落</td><td>Method ¶3</td><td>define notation</td><td></td><td>clean</td><td>topic sentence checked</td><td></td><td>No structural change needed.</td><td>保留</td></tr>
+            </tbody>
+          </table>
+          <p class="empty-state">该表无此严重度项</p>
+        </div>
+      </section>
+    </section>
+
+    <section id="submission-readiness">
+      <h2>数字 / 公式 / 图表 / 版式 / 提交就绪</h2>
+      <p class="empty-state">该严重度暂无项</p>
+      <div class="table-wrap">
+        <table>
+          <caption>Submission readiness checks</caption>
+          <thead><tr><th scope="col">类别</th><th scope="col">位置</th><th scope="col">严重度</th><th scope="col">卡点</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead>
+          <tbody>
+            <tr data-severity="blocker" data-issue-type="numeric"><td>数值与表格</td><td>Table 1</td><td><span class="badge blocker">■ Blocker</span></td><td>表中数值 95.77；可见复算值 95.52；差值 +0.25。</td><td><a class="finding-link" href="#F2">F2</a></td><td>说明 aggregation denominator 或修正表格。</td></tr>
+            <tr id="pdf-page-1" class="pdf-anchor" data-severity="polish" data-issue-type="layout"><td>PDF 版式</td><td>PDF p.1</td><td><span class="badge polish">◆ Polish</span></td><td>Layout note.</td><td></td><td>adjust page rhythm.</td></tr>
+            <tr data-severity="major" data-issue-type="checklist"><td>投稿 checklist</td><td>Checklist</td><td><span class="badge major">▲ Major</span></td><td>Yes answers need anchors.</td><td><a class="finding-link" href="#F1">F1</a></td><td>每个 Yes 绑定正文证据。</td></tr>
+            <tr data-severity="polish" data-issue-type="prose"><td>Polish Sweep</td><td>Hyparameters; Specifially</td><td><span class="badge polish">◆ Polish</span></td><td>Grouped mechanical typos.</td><td></td><td>run one-pass spelling sweep after substantive edits.</td></tr>
+          </tbody>
+        </table>
+        <p class="empty-state">该表无此严重度项</p>
+      </div>
+    </section>
+
+    <section id="local-comments">
+      <h2>共性问题汇总</h2>
+      <p class="empty-state">该严重度暂无项</p>
+      <div class="table-wrap">
+        <table>
+          <caption>Recurring issue patterns</caption>
+          <thead><tr><th scope="col">严重度</th><th scope="col">共性问题</th><th scope="col">读者卡点</th><th scope="col">代表位置</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead>
+          <tbody>
+            <tr data-severity="minor" data-issue-type="prose"><td><span class="badge minor">● Minor</span></td><td>术语/拼写漂移</td><td>读者会怀疑稿件是否统一清理过。</td><td>Method ¶3; Appendix A.6</td><td></td><td>建立术语表。</td></tr>
+          </tbody>
+        </table>
+        <p class="empty-state">该表无此严重度项</p>
+      </div>
+    </section>
+
+    <section id="revision-plan">
+      <h2>修改路线</h2>
+      <div class="table-wrap">
+        <table>
+          <caption>Executable revision plan</caption>
+          <thead><tr><th scope="col">优先级</th><th scope="col">任务</th><th scope="col">关联问题</th><th scope="col">负责人/区域</th><th scope="col">工作量</th><th scope="col">验收方式</th></tr></thead>
+          <tbody>
+            <tr><td>P0</td><td>补摘要。</td><td><a class="finding-link" href="#F1">F1</a></td><td>Writing</td><td>S</td><td>problem-gap-idea-evidence-boundary all visible.</td></tr>
+            <tr><td>P0</td><td>解释或修正 Table 1 Score X。</td><td><a class="finding-link" href="#F2">F2</a></td><td>Experiments</td><td>M</td><td>spreadsheet values match PDF or aggregation denominator is stated.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="coverage-receipt">
+      <h2>覆盖回执与 artifacts</h2>
+      <div class="table-wrap">
+        <table>
+          <caption>Coverage receipt</caption>
+          <thead><tr><th scope="col">Unit</th><th scope="col">Total</th><th scope="col">Reviewed</th><th scope="col">With issues</th><th scope="col">Clean</th><th scope="col">Skipped</th><th scope="col">Pending in</th></tr></thead>
+          <tbody>
+            <tr><td>Reader-Journey passes performed: Pass 0 done; Pass 1 done; Pass 2 done; Pass 3 done; Pass 4 done; Pass 5 done; Pass 6 done</td><td>7</td><td>7</td><td>0</td><td>7</td><td>0</td><td></td></tr>
+            <tr><td>Sentence notes</td><td>3</td><td>3</td><td>3</td><td>0</td><td>0</td><td></td></tr>
+            <tr><td>Paragraph rows</td><td>2</td><td>2</td><td>1</td><td>1</td><td>0</td><td></td></tr>
+            <tr><td>Section reflection rows</td><td>1</td><td>1</td><td>1</td><td>0</td><td>0</td><td></td></tr>
+            <tr><td>notes citing source principles: N/M</td><td>5/6</td><td>6</td><td>5</td><td>1</td><td>0</td><td></td></tr>
+            <tr><td>High-risk fields complete: yes/no; Severity audit: N groups checked, M adjusted; Abstract promises tracked: N/N; Rebuttal reverse check: N Blockers checked, M downgraded/qualified; Known blind spots stated: yes/no; Structured artifacts / HTML contract: passed; Numerical signals cited with concrete values: N/N; Coverage consistency: 3 claims checked, 0 repaired, 0 unresolved; Polish items: N grouped into K categories</td><td>8</td><td>8</td><td>0</td><td>8</td><td>0</td><td></td></tr>
+            <tr><td>PDF pages</td><td>2</td><td>2</td><td>1</td><td>1</td><td>0</td><td></td></tr>
+            <tr><td>Figures</td><td>1</td><td>1</td><td>1</td><td>0</td><td>0</td><td></td></tr>
+            <tr><td>References</td><td>3</td><td>3</td><td>1</td><td>2</td><td>0</td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <caption>Body-backed count audit</caption>
+          <thead><tr><th scope="col">Claimed unit</th><th scope="col">Claimed count</th><th scope="col">Body section / selector</th><th scope="col">Actual count</th><th scope="col">Status</th></tr></thead>
+          <tbody>
+            <tr><td>Sentence notes</td><td>3</td><td>#deep-reading-notes [data-note-kind=&quot;sentence&quot;]</td><td>3</td><td>pass</td></tr>
+            <tr><td>Paragraph rows</td><td>2</td><td>#deep-reading-notes [data-note-kind=&quot;paragraph&quot;]</td><td>2</td><td>pass</td></tr>
+            <tr><td>Section reflection rows</td><td>1</td><td>#deep-reading-notes [data-note-kind=&quot;section&quot;]</td><td>1</td><td>pass</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </main>
 </article>
+
 <script>
+  function currentSeverity() {
+    const button = document.querySelector("[data-filter][aria-pressed='true']");
+    return button ? button.dataset.filter : "all";
+  }
+  function currentIssueType() {
+    const button = document.querySelector("[data-type-filter][aria-pressed='true']");
+    return button ? button.dataset.typeFilter : "all";
+  }
+  function matchesFilters(node) {
+    const severity = currentSeverity();
+    const issueType = currentIssueType();
+    const severityShow = severity === "all" || node.dataset.severity === severity;
+    const typeShow = issueType === "all" || node.dataset.issueType === issueType || !node.dataset.issueType;
+    return severityShow && typeShow;
+  }
+  function setActiveAnnotation(sentenceId) {
+    const cards = Array.from(document.querySelectorAll("[data-target-sentence]"));
+    const sentences = Array.from(document.querySelectorAll("[data-sentence-id]"));
+    cards.forEach((card) => card.classList.toggle("is-active", card.dataset.targetSentence === sentenceId));
+    sentences.forEach((sentence) => sentence.classList.toggle("is-active", sentence.dataset.sentenceId === sentenceId));
+  }
+  function visibleAnnotatedSentences() {
+    return Array.from(document.querySelectorAll(".paper-sentence.has-annotation")).filter((node) => node.dataset.hiddenByFilter !== "true");
+  }
+  function stepAnnotation(delta) {
+    const items = visibleAnnotatedSentences();
+    if (items.length === 0) return;
+    const activeIndex = items.findIndex((item) => item.classList.contains("is-active"));
+    const next = items[(activeIndex + delta + items.length) % items.length];
+    setActiveAnnotation(next.dataset.sentenceId);
+    next.scrollIntoView({block:"center", behavior:"smooth"});
+  }
   function applyFilters() {
-    const severity = document.querySelector("[data-filter][aria-pressed='true']").dataset.filter;
-    const typeButton = document.querySelector("[data-type-filter][aria-pressed='true']");
-    const issueType = typeButton ? typeButton.dataset.typeFilter : "all";
     document.querySelectorAll("[data-severity]").forEach((node) => {
-      const severityShow = severity === "all" || node.dataset.severity === severity;
-      const typeShow = issueType === "all" || node.dataset.issueType === issueType || !node.dataset.issueType;
-      node.dataset.hiddenByFilter = severityShow && typeShow ? "false" : "true";
+      node.dataset.hiddenByFilter = matchesFilters(node) ? "false" : "true";
     });
-    document.querySelectorAll("main > section").forEach((section) => {
+    document.querySelectorAll("main > section, #paper-reader").forEach((section) => {
       const items = Array.from(section.querySelectorAll("[data-severity]"));
       const hasFilterableItems = items.length > 0;
       const hasVisibleItems = items.some((item) => item.dataset.hiddenByFilter !== "true");
-      section.dataset.filterEmpty = String(severity !== "all" && hasFilterableItems && !hasVisibleItems);
+      section.dataset.filterEmpty = String(currentSeverity() !== "all" && hasFilterableItems && !hasVisibleItems);
     });
     document.querySelectorAll(".table-wrap").forEach((wrap) => {
       const rows = Array.from(wrap.querySelectorAll("tbody tr[data-severity]"));
       const hasRows = rows.length > 0;
       const hasVisibleRows = rows.some((row) => row.dataset.hiddenByFilter !== "true");
-      wrap.dataset.filterEmpty = String(severity !== "all" && hasRows && !hasVisibleRows);
+      wrap.dataset.filterEmpty = String(currentSeverity() !== "all" && hasRows && !hasVisibleRows);
     });
+    const visible = visibleAnnotatedSentences();
+    if (visible.length > 0 && !visible.some((item) => item.classList.contains("is-active"))) {
+      setActiveAnnotation(visible[0].dataset.sentenceId);
+    }
   }
-  document.querySelectorAll("[data-filter]").forEach((button) => { button.addEventListener("click", () => { document.querySelectorAll("[data-filter]").forEach((b) => b.setAttribute("aria-pressed", String(b === button))); applyFilters(); }); });
-  document.querySelectorAll("[data-type-filter]").forEach((button) => { button.addEventListener("click", () => { document.querySelectorAll("[data-type-filter]").forEach((b) => b.setAttribute("aria-pressed", String(b === button))); applyFilters(); }); });
+  document.querySelectorAll("[data-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll("[data-filter]").forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
+      applyFilters();
+    });
+  });
+  document.querySelectorAll("[data-type-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll("[data-type-filter]").forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
+      applyFilters();
+    });
+  });
+  document.querySelectorAll(".paper-sentence.has-annotation").forEach((sentence) => {
+    sentence.addEventListener("click", () => setActiveAnnotation(sentence.dataset.sentenceId));
+    sentence.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setActiveAnnotation(sentence.dataset.sentenceId);
+      }
+    });
+  });
+  document.querySelector("[data-prev-annotation]").addEventListener("click", () => stepAnnotation(-1));
+  document.querySelector("[data-next-annotation]").addEventListener("click", () => stepAnnotation(1));
+  applyFilters();
 </script>
 </body>
 </html>

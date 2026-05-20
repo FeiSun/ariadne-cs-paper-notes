@@ -7,7 +7,7 @@ description: "Ariadne-style critique for CS/AI research-paper drafts (PDF, LaTeX
 
 Use this skill for CS/AI paper critique and annotation. Ariadne gives the author a thread through the paper's argument; it diagnoses where a first-day reader gets stuck and what the next draft must make true. It is not a generic proofreading, translation, or ghost-writing skill.
 
-Default voice: senior advisor, in Chinese unless asked otherwise. Frame substantive notes as `读者卡点 -> 违反原则 -> 下一稿任务`. Use examples sparingly as `示例方向`; do not silently strengthen claims, invent results, invent citations, or produce paper-ready prose unless the user explicitly leaves critique mode.
+Default voice: senior advisor, in Chinese unless asked otherwise. Frame substantive notes as `读者卡点 -> 单一违反原则 -> 自改问题`. `issue_type` is only a category/filter, while `writing_principle` / `principle` must be one atomic, directly applicable rule rather than a bundle of slogans. Use examples sparingly as `示例方向`; do not silently strengthen claims, invent results, invent citations, or produce paper-ready prose unless the user explicitly leaves critique mode.
 
 ## Load Map
 
@@ -33,14 +33,14 @@ Do not routinely load the original teaching notes. This skill uses reviewer-faci
 4. Run the Reader-Journey workflow from `references/workflow.md`: Pass 0 engagement contract, Pass 1 cold-start skim, Pass 2 linear deep read with sentence checks and paragraph reflection, Pass 3 section reflection, Pass 4 whole-paper argument, Pass 5 submission walk, Pass 6 output calibration.
 5. Present externally in the Revision Workbench order, not pass order: 总评诊断与可救骨架 -> 问题索引 -> 主张与证据审计 -> 逐章精读批注 -> 数字/公式/图表/版式/提交就绪 -> 共性问题汇总 -> 修改路线 -> 覆盖回执与 artifacts.
 6. Keep section, paragraph, and sentence diagnostics together inside article-ordered **Deep Reading Notes / 逐章精读批注**. Do not split them into separate top-level sections.
-7. For HTML reports, follow `references/html_contract.md` and `references/report_contract.md`; create the HTML and companion artifact bundle beside the reviewed paper when writable.
+7. For HTML reports, follow `references/html_contract.md` and `references/report_contract.md`; create a paper-first annotation interface plus the companion artifact bundle beside the reviewed paper when writable. Keep the review logic unchanged; the HTML should make sentence-level issues easier for students to inspect. When the requested output is specifically a paper-HTML annotation page, render issues directly on the source-derived paper view and keep any workbench material secondary or omitted. Do not hand-write or paraphrase the paper body inside `#paper-reader`: derive it from a TeX/HTML/PDF extraction pass, record source provenance, and if deterministic conversion is unavailable, limit the paper-reader to the explicitly reviewed visible scope.
 8. Before delivery, run `scripts/audit_html_report.py <report.html>` for HTML and `scripts/audit_review_artifacts.py --bundle <bundle>/ --html <report.html>` when JSON artifacts exist. Fix `ERROR` lines.
 
 ## Output Rules
 
 Review the requested visible scope at full depth; narrow scope is allowed, lower depth is not. Do not sample silently. Units without issues are counted in coverage receipts, not rendered as visible `clean` rows.
 
-For every `Blocker` and `Major`, make the finding inspectable: location, evidence basis, confidence, verification method, severity rationale, downgrade condition, reader friction, writing principle, and next-draft task.
+For every `Blocker` and `Major`, make the finding inspectable: location, evidence basis, confidence, verification method, severity rationale, downgrade condition, reader friction, one atomic writing principle, and a self-check question. Avoid command-style next-draft tasks unless the user explicitly asks for a revision plan or direct edits.
 
 For numeric/table signals, be strict and concrete. Visible table-value discrepancies remain `Blocker` in the student-facing report until the manuscript explains the aggregation/denominator. Always cite reported value, visible recomputed value, delta, and aggregation caveat when available.
 

@@ -134,8 +134,8 @@ Every finding object in `findings.json` should contain:
 - `snippet` when useful
 - `diagnosis`
 - `reader_friction`
-- `writing_principle`
-- `next_draft_task`
+- `writing_principle`: one atomic principle, not an issue category or a bundle of principles
+- `self_check` or `next_draft_question`: a question the author can use to diagnose the revision
 - `evidence_basis`
 - `verification_method`
 
@@ -152,7 +152,7 @@ For numeric/table findings, include:
 - `delta`
 - `aggregation_caveat`
 
-Use Chinese labels in visible UI. In compact Issue Index cards, prefer only: `位置`, `片段`, `诊断`, `依据`, `置信度`, `验证方式`, `判级理由`, `读者卡点`. Keep `降级条件` and detailed `下一稿任务` in JSON, local rows, or Revision Plan unless a finding genuinely needs a short repair line.
+Use Chinese labels in visible UI. In compact Issue Index cards, prefer only: `位置`, `片段`, `诊断`, `依据`, `置信度`, `验证方式`, `判级理由`, `读者卡点`. In paper-reader margin cards, prefer `自改问题` over `下一稿任务`; keep detailed command-style repair steps in JSON, local rows, or Revision Plan unless the user genuinely requested direct revision instructions.
 
 ## Claim Schema
 

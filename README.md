@@ -2,7 +2,7 @@
 
 Ariadne CS Paper Notes 是一个面向 CS/AI 论文草稿的 Codex / Claude skill。目标是模拟读者从第一页开始读论文时的卡顿、追问、反思、重构和最终判断，对论文做全面的修改批注。
 
-它默认输出中文批注报告，必要时保留 claim、gap、baseline、ablation、caption、skimmability 等英文术语。
+它默认输出中文批注，必要时保留 claim、gap、baseline、ablation、caption、skimmability 等英文术语。HTML 有两种主要呈现方式：独立的汇总型 HTML report，以及把批注直接挂在论文原文上的 paper-reader overlay。
 
 ## 目标与定位
 
@@ -33,8 +33,44 @@ Ariadne CS Paper Notes 是一个面向 CS/AI 论文草稿的 Codex / Claude skil
 - grammar、diction、precision、ambiguity、concision、sentence flow 检查
 - figure/table/caption 和正文数字一致性检查
 - PDF layout / first-page / page rhythm 检查
-- 自包含 HTML 报告和 companion JSON artifacts
+- 自包含 HTML 输出和 companion JSON artifacts
 - coverage receipt：说明实际读了什么、哪些部分缺上下文或无法验证
+
+## 两种 HTML 输出模式
+
+Ariadne 的审阅逻辑只有一套：像导师和新读者一样从第一页开始读，检查 central claim、story logic、paragraph job、sentence flow、figure/table、numeric consistency 和 PDF layout。两种 HTML 模式只改变批注呈现方式。
+
+### 模式 1：论文原文 overlay 批注
+
+适合给学生看。系统先把 TeX 渲染成接近 LaTeX/PDF 排版的 paper-reader HTML，再把批注锚到原文里的句子、段落、章节标题和全文结构提示上。学生看到的是自己的论文正文，问题直接出现在对应位置旁边。
+
+日常指令可以写：
+
+```text
+审阅 ./ariadne-cs-paper-notes/debug/Hidden_Knowledge_with_RL/main.tex 全文，使用论文原文 overlay 批注模式，输出中文 HTML。按 Ariadne 导师级审阅逻辑，不抽样，不只列 top issues。
+```
+
+也可以写得更自然：
+
+```text
+审阅 ./ariadne-cs-paper-notes/debug/Hidden_Knowledge_with_RL/main.tex 全文。请在接近 LaTeX/PDF 排版的论文 HTML 原文上直接做中文批注，包括句子、段落、章节和全文结构意见，不要生成旧式汇总报告。
+```
+
+触发关键词包括：`论文原文 overlay 批注`、`paper-reader`、`在论文原文上直接批注`、`按论文排版批注`、`不要旧式汇总报告`。
+
+这个模式有一个重要边界：论文正文必须来自确定性的 source-derived HTML 渲染，不能由模型手写、补全、改写或 paraphrase。模型只负责生成批注内容和锚点映射；HTML 渲染层只把批注 overlay 到已有论文正文上。
+
+### 模式 2：独立 HTML Report
+
+适合做总览、issue ledger、revision plan 和 artifact 检查。它会生成一个独立的审阅报告，按问题、章节、表格、checklist、claim-evidence 和 coverage 组织，不强调保持论文原排版。
+
+日常指令可以写：
+
+```text
+审阅 ./ariadne-cs-paper-notes/debug/Hidden_Knowledge_with_RL/main.tex 全文，输出中文 HTML 批注报告。按 Ariadne 导师级审阅逻辑，不抽样，不只列 top issues。
+```
+
+触发关键词包括：`HTML 批注报告`、`report`、`汇总报告`、`问题索引`、`revision plan`。
 
 ## 批注流程
 
@@ -61,9 +97,9 @@ Ariadne 内部按读者旅程工作，而不是直接套 checklist：
 7. **输出校准与审计**  
    合并重复 finding，校准 severity，检查 HTML/JSON artifact 是否一致，最后给出可执行的 revision plan 和 coverage receipt。
 
-## HTML 报告结构
+## HTML 输出结构
 
-完整 HTML 报告默认保存到被 review 的 PDF 或 `.tex` 入口文件同目录，命名类似：
+HTML 输出默认保存到被 review 的 PDF 或 `.tex` 入口文件同目录。独立 HTML report 通常命名为：
 
 ```text
 ariadne_notes_<paper-stem>_<YYYYMMDD>.html
@@ -72,7 +108,17 @@ ariadne_notes_<paper-stem>_<YYYYMMDD>/
 
 目录中的 JSON artifacts 是报告的数据底稿，通常包括 `findings.json`、`claims.json`、`numeric_audit.json`、`coverage.json`、`render_manifest.json` 和 `pass_observations.json`。
 
-完整报告通常包含：
+论文原文 overlay 模式通常额外包含一个 source-derived paper-reader 页面：
+
+```text
+ariadne_paper_reader_<paper-stem>.html
+ariadne_paper_reader_<paper-stem>.source.html
+annotations.json
+```
+
+其中 `.source.html` 是未加批注的论文 HTML 底稿，最终 HTML 只在这个底稿上增加句子、段落、章节和全文结构批注。
+
+独立 HTML report 通常包含：
 
 - **Executive Diagnosis and Salvageable Core / 总评诊断与可救骨架**
   一眼说明论文最核心的问题、最可救的主线、下一稿应该优先救什么。
@@ -173,7 +219,25 @@ rsync -a \
 
 ## 使用示例
 
-### 1. 全文 source + PDF 深度 HTML 批注
+### 1. 论文原文 overlay 批注
+
+```text
+使用 Ariadne CS Paper Notes 审阅这个 LaTeX 项目和编译后的 PDF，使用论文原文 overlay 批注模式，输出中文 HTML，保存到论文 PDF 或 tex 入口文件同目录。
+
+请模拟资深导师从第一页开始读论文时的卡顿、反思、重构和最终判断，对这篇论文做导师级、全方位、不要遗漏的修改批注。请同时看 source 和 PDF：
+
+1. 从读者理解路径出发，检查 central claim、story logic、gap、insight、claim-evidence 是否成立。
+2. 逐段逐句批注全文，不要只给代表性问题；每个段落都要检查。
+3. 特别检查 cognitive load / 知识的诅咒、missing why、intuition gap、insight vs mechanism、paragraph surgery。
+4. 对每个段落判断是否应该保留、合并、拆分、移动、删除或重写。
+5. 检查每句话的 grammar、diction、precision、ambiguity、concision、sentence flow、topic sentence、paragraph transition。
+6. 检查 figures/tables/captions、表格数字一致性、正文数字与表格是否一致。
+7. 检查 PDF layout，包括第一页印象、图表位置、caption、孤行孤词、页面节奏、视觉系统一致性。
+8. 在接近 LaTeX/PDF 排版的论文 HTML 原文上直接做批注，不要生成旧式汇总报告。
+9. 不要抽样，不要只列 top issues；请给 coverage receipt，说明实际检查了哪些部分。
+```
+
+### 2. 全文 source + PDF 独立 HTML report
 
 ```text
 使用 Ariadne CS Paper Notes 审阅这个 LaTeX 项目和编译后的 PDF，输出中文 HTML 批注报告，保存到论文 PDF 或 tex 入口文件同目录。
@@ -191,25 +255,25 @@ rsync -a \
 9. 不要抽样，不要只列 top issues；请给 coverage receipt，说明实际检查了哪些部分。
 ```
 
-### 2. 只看 PDF 的完整读者体验检查
+### 3. 只看 PDF 的完整读者体验检查
 
 ```text
 使用 Ariadne CS Paper Notes 审阅这个 paper.pdf。请把 PDF 当成读者真正看到的版本，重点检查第一页印象、abstract/introduction 的读者路径、figure/table/caption、页面节奏、claim-evidence 对齐和 layout 问题。输出中文 HTML 报告；如果缺少 LaTeX source，请在 coverage receipt 里说明哪些判断无法做。
 ```
 
-### 3. 只看 Introduction
+### 4. 只看 Introduction
 
 ```text
 使用 Ariadne CS Paper Notes 只审阅 Introduction。不要重写成最终版本；请逐段逐句诊断读者在哪里卡住，gap 是否 recoverable，段落 job 是否明确，topic sentence 和 transition 是否支撑 story。最后给一个下一稿 introduction restructure plan。
 ```
 
-### 4. 专门检查实验、表格和数字
+### 5. 专门检查实验、表格和数字
 
 ```text
 使用 Ariadne CS Paper Notes 检查 Experiments、Table 1-3 和 Figure 2-4。请重点看 claim-evidence 是否对齐，baseline/metric/setting 是否缺失，caption 是否告诉读者应该看什么，正文数字和表格数字是否一致，是否存在平均值或百分比复算风险。输出中文 finding ledger 和 revision tasks。
 ```
 
-### 5. 修改后复查
+### 6. 修改后复查
 
 ```text
 使用 Ariadne CS Paper Notes 复查这版修改稿。请对照上一轮 finding，判断哪些已经解决、哪些只是局部缓解、哪些引入了新问题。重点看 central claim、gap framing、paragraph surgery 和 PDF layout 是否比上一版更清楚。
@@ -230,6 +294,19 @@ python ariadne-cs-paper-notes/scripts/extract_paper_text.py path/to/latex-projec
 
 ```bash
 python ariadne-cs-paper-notes/scripts/build_paper_pdf.py path/to/latex-project
+```
+
+从 TeX 生成 paper-reader HTML，或把已有 `annotations.json` overlay 到论文原文 HTML：
+
+```bash
+python ariadne-cs-paper-notes/scripts/render_paper_html.py \
+  path/to/main.tex \
+  -o path/to/ariadne_paper_reader_main.html
+
+python ariadne-cs-paper-notes/scripts/render_paper_html.py \
+  path/to/main.tex \
+  -o path/to/ariadne_paper_reader_main.html \
+  --annotations path/to/annotations.json
 ```
 
 审计生成的 HTML 报告：
@@ -287,7 +364,8 @@ ariadne-cs-paper-notes/
     │   ├── audit_review_artifacts.py
     │   ├── build_paper_pdf.py
     │   ├── calibrate_review_runs.py
-    │   └── extract_paper_text.py
+    │   ├── extract_paper_text.py
+    │   └── render_paper_html.py
     └── tests/
         ├── fixtures/
         └── test_*.py
@@ -303,6 +381,7 @@ ariadne-cs-paper-notes/
 - `references/numeric_contract.md`：严格数值/表格信号渲染、reported/computed/delta 规则和 numeric audit contract。
 - `scripts/extract_paper_text.py`：从 PDF / LaTeX 提取 review signals、表格和数值信号。
 - `scripts/build_paper_pdf.py`：尝试编译 LaTeX 项目，供 source + PDF 联合审阅。
+- `scripts/render_paper_html.py`：从 TeX 生成 source-derived paper-reader HTML，并把 `annotations.json` overlay 到论文句子、段落、章节和全文结构锚点上。
 - `scripts/audit_html_report.py`：检查 HTML 报告结构、链接、coverage 和严重程度呈现。
 - `scripts/audit_review_artifacts.py`：检查 HTML 与 JSON artifacts 是否一致。
 - `scripts/calibrate_review_runs.py`：比较两次 review 的 finding drift，用于校准。

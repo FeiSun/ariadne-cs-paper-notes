@@ -318,6 +318,23 @@ def test_render_manifest_rendered_section_must_exist_in_html() -> None:
         raise AssertionError(f"Expected missing rendered section error, got {errors}")
 
 
+def test_render_manifest_paper_reader_requires_provenance() -> None:
+    module = load_module()
+    manifest = write_json(
+        {
+            "output_files": ["expected_html_report.html"],
+            "sections": [{"id": "paper-reader", "status": "rendered"}],
+            "deferred_findings": [],
+        }
+    )
+    try:
+        errors, _ = module.audit_artifacts(ARTIFACTS / "findings.json", manifest_path=manifest)
+    finally:
+        manifest.unlink(missing_ok=True)
+    if not any("paper_reader" in error and "provenance" in error for error in errors):
+        raise AssertionError(f"Expected missing paper_reader provenance error, got {errors}")
+
+
 def test_render_manifest_deferred_finding_must_exist_in_json() -> None:
     module = load_module()
     manifest = write_json(
@@ -351,6 +368,7 @@ def main() -> int:
     test_numeric_audit_signal_requires_nearby_blocker_rendering()
     test_pass_observations_schema_is_checked()
     test_render_manifest_rendered_section_must_exist_in_html()
+    test_render_manifest_paper_reader_requires_provenance()
     test_render_manifest_deferred_finding_must_exist_in_json()
     print("audit_review_artifacts regression tests passed")
     return 0

@@ -26,10 +26,10 @@ REQUIRED_FINDING_FIELDS = {
     "location",
     "reader_friction",
     "writing_principle",
-    "next_draft_task",
     "evidence_basis",
     "verification_method",
 }
+FINDING_SELF_CHECK_FIELDS = {"self_check", "next_draft_question", "next_draft_task"}
 
 HIGH_RISK_FIELDS = {
     "confidence",
@@ -50,6 +50,17 @@ REQUIRED_CLAIM_FIELDS = {
 }
 
 REQUIRED_MANIFEST_FIELDS = {"output_files", "sections", "deferred_findings"}
+PAPER_READER_MANIFEST_FIELDS = {
+    "html_source",
+    "source_fidelity",
+    "source_artifact",
+    "source_hash",
+    "sentence_id_scheme",
+    "annotation_mode",
+    "source_integrity_check",
+}
+PAPER_READER_SOURCES = {"latexml", "ar5iv", "pandoc", "extracted-text", "manual-fixture"}
+PAPER_READER_FIDELITY = {"deterministic", "limited-scope", "fixture"}
 PASS_OBSERVATION_KEYS = {
     "pass_0_engagement_contract",
     "pass_1_cold_start_skim",
@@ -107,6 +118,8 @@ def audit_findings(payload: Any) -> tuple[list[str], list[str], set[str]]:
         missing = sorted(field for field in REQUIRED_FINDING_FIELDS if not nonempty(finding.get(field)))
         for field in missing:
             errors.append(f"{prefix} {finding_id}: missing required field `{field}`")
+        if not any(nonempty(finding.get(field)) for field in FINDING_SELF_CHECK_FIELDS):
+            errors.append(f"{prefix} {finding_id}: missing required self-check field (`self_check` or `next_draft_question`)")
 
         severity = finding.get("severity")
         if severity not in SEVERITIES:
@@ -243,6 +256,29 @@ def audit_manifest(payload: Any, finding_ids: set[str]) -> tuple[list[str], list
         rendered_section_ids = {str(section.get("id")) for section in rendered if section.get("id")}
         if not rendered:
             warnings.append("render manifest has no rendered sections")
+    if "paper-reader" in rendered_section_ids:
+        paper_reader = payload.get("paper_reader")
+        if not isinstance(paper_reader, dict):
+            errors.append("render manifest marks #paper-reader as rendered but missing `paper_reader` provenance object")
+        else:
+            for field in sorted(PAPER_READER_MANIFEST_FIELDS):
+                if not nonempty(paper_reader.get(field)):
+                    errors.append(f"render manifest paper_reader missing `{field}`")
+            html_source = paper_reader.get("html_source")
+            fidelity = paper_reader.get("source_fidelity")
+            if html_source not in PAPER_READER_SOURCES:
+                errors.append(f"render manifest paper_reader has invalid html_source `{html_source}`")
+            if fidelity not in PAPER_READER_FIDELITY:
+                errors.append(f"render manifest paper_reader has invalid source_fidelity `{fidelity}`")
+            if html_source == "manual-fixture" and fidelity != "fixture":
+                errors.append("render manifest paper_reader manual-fixture source must use source_fidelity `fixture`")
+            if fidelity == "limited-scope" and not nonempty(paper_reader.get("visible_scope")):
+                errors.append("render manifest paper_reader limited-scope source missing `visible_scope`")
+            if paper_reader.get("annotation_mode") != "overlay-only":
+                errors.append("render manifest paper_reader annotation_mode must be `overlay-only`")
+            source_hash = compact_text(paper_reader.get("source_hash"))
+            if source_hash and not re.match(r"^(sha1|sha256):[0-9a-fA-F]{8,}$", source_hash):
+                errors.append("render manifest paper_reader source_hash must look like sha1:<hex> or sha256:<hex>")
     return errors, warnings, deferred, rendered_section_ids
 
 

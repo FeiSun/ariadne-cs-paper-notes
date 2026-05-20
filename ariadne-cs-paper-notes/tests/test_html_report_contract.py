@@ -37,6 +37,32 @@ def test_html_report_fixture_satisfies_current_contract() -> None:
     html = FIXTURE.read_text(encoding="utf-8")
 
     required_tokens = [
+        "论文正文批注",
+        'id="paper-reader"',
+        'class="paper-reader"',
+        'class="reader-shell"',
+        'class="paper-pane"',
+        'data-paper-html-source="manual-fixture"',
+        'data-source-fidelity="fixture"',
+        'data-source-artifact=',
+        'data-source-hash="sha256:',
+        'data-sentence-id-scheme=',
+        'data-annotation-mode="overlay-only"',
+        'class="paper-sentence',
+        'class="paper-sentence has-annotation"',
+        'data-sentence-id=',
+        'data-has-issue="true"',
+        'data-issue-ids=',
+        'id="annotation-panel"',
+        'class="annotation-card',
+        'data-target-sentence=',
+        "问题是什么",
+        "为什么有问题",
+        "严重度理由",
+        "上一条",
+        "下一条",
+        "setActiveAnnotation",
+        "visibleAnnotatedSentences",
         'data-filter="all"',
         'data-filter="blocker"',
         'data-filter="major"',
@@ -121,6 +147,7 @@ def test_html_report_fixture_satisfies_current_contract() -> None:
         assert_contains(html, token)
 
     required_sections = [
+        "paper-reader",
         "executive-diagnosis",
         "issue-index",
         "claim-evidence-audit",
