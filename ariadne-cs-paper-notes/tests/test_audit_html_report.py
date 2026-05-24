@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import sys
 import tempfile
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "audit_html_report.py"
+SOURCE = ROOT / "tests" / "fixtures" / "source_paper_reader.html"
 
 
 def load_module():
@@ -42,7 +44,7 @@ def minimal_html(extra: str = "") -> str:
 <section id="paper-reader" class="paper-reader">
   <h2>paper-reader</h2>
   <div class="reader-shell">
-    <article class="paper-pane" data-paper-html-source="manual-fixture" data-source-fidelity="fixture" data-source-artifact="tests/fixtures/source_paper_reader.html" data-source-hash="sha256:0123456789abcdef" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
+    <article class="paper-pane" data-paper-html-source="manual-fixture" data-source-fidelity="fixture" data-source-artifact="tests/fixtures/source_paper_reader.html" data-source-hash="sha256:d9fa0d504f1f956363924e63180f2559d417b079f37f16cdc1d32b594fc2bdc8" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
       <p>
         <span class="paper-sentence" data-sentence-id="s-intro-001">Clean sentence.</span>
         <span class="paper-sentence has-annotation" data-sentence-id="s-intro-002" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="prose" role="button" tabindex="0" aria-describedby="ann-s-intro-002">Problem sentence.</span>
@@ -112,7 +114,7 @@ def paper_reader_only_html() -> str:
 <article class="review-report" data-report-kind="paper-reader-only">
   <section id="paper-reader" class="paper-reader">
     <div class="reader-shell">
-      <article class="paper-pane" data-paper-html-source="pandoc" data-source-fidelity="deterministic" data-source-artifact="source.html" data-source-hash="sha256:0123456789abcdef" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
+      <article class="paper-pane" data-paper-html-source="pandoc" data-source-fidelity="deterministic" data-source-artifact="source.html" data-source-hash="sha256:d9fa0d504f1f956363924e63180f2559d417b079f37f16cdc1d32b594fc2bdc8" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
         <p>
           <span class="paper-sentence" data-sentence-id="s-intro-001">Clean sentence.</span>
           <span class="paper-sentence has-annotation" data-sentence-id="s-intro-002" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="claim" role="button" tabindex="0" aria-describedby="ann-s-intro-002">Problem sentence.</span>
@@ -128,6 +130,7 @@ def paper_reader_only_html() -> str:
   </section>
   <section id="coverage-receipt">
     <h2>覆盖回执与 artifacts</h2>
+    <p>Coverage consistency gate: passed for source-backed paper-reader fixture.</p>
     <table><caption>Receipt</caption><thead><tr><th scope="col">Unit</th></tr></thead><tbody><tr><td>paper-reader-only</td></tr></tbody></table>
   </section>
 </article>
@@ -139,6 +142,44 @@ def write_temp_html(text: str) -> Path:
     with tmp:
         tmp.write(text)
     return Path(tmp.name)
+
+
+def source_hash(path: Path = SOURCE) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def source_backed_paper_reader_html(source_path: Path = SOURCE, declared_hash: str | None = None) -> str:
+    declared_hash = declared_hash or source_hash(source_path)
+    source_body = source_path.read_text(encoding="utf-8")
+    if "<body>" in source_body:
+        source_body = source_body.split("<body>", 1)[1].split("</body>", 1)[0]
+    annotated_body = source_body.replace(
+        '<span class="paper-sentence">Our method solves this problem in practical deployment.</span>',
+        '<span class="paper-sentence has-annotation" data-sentence-id="s-intro-002" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="claim" role="button" tabindex="0" aria-describedby="ann-s-intro-002">Our method solves this problem in practical deployment.</span>',
+    )
+    return f"""<!doctype html>
+<html><body>
+<article class="review-report" data-report-kind="paper-reader-only">
+  <section id="paper-reader" class="paper-reader">
+    <div class="reader-shell">
+      <article class="paper-pane" data-paper-html-source="pandoc" data-source-fidelity="deterministic" data-source-artifact="{source_path}" data-source-hash="{declared_hash}" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
+{annotated_body}
+      </article>
+      <aside id="annotation-panel" class="annotation-panel">
+        <article id="ann-s-intro-002" class="annotation-card" data-target-sentence="s-intro-002" data-issue-ids="F1" data-severity="major" data-issue-type="claim">
+          <h3>问题是什么</h3>
+          <p>句子问题。</p>
+        </article>
+      </aside>
+    </div>
+  </section>
+  <section id="coverage-receipt">
+    <h2>覆盖回执与 artifacts</h2>
+    <p>Coverage consistency gate: passed for source-backed paper-reader fixture.</p>
+    <table><caption>Receipt</caption><thead><tr><th scope="col">Unit</th></tr></thead><tbody><tr><td>paper-reader-only</td></tr></tbody></table>
+  </section>
+</article>
+</body></html>"""
 
 
 def test_audit_rejects_missing_deep_reading_section() -> None:
@@ -172,6 +213,139 @@ def test_audit_allows_paper_reader_only_deliverable() -> None:
         path.unlink(missing_ok=True)
     if errors:
         raise AssertionError(f"Expected paper-reader-only HTML to pass, got {errors}")
+
+
+def test_audit_with_source_verifies_hash_and_body() -> None:
+    module = load_module()
+    path = write_temp_html(source_backed_paper_reader_html())
+    try:
+        errors, warnings = module.audit_with_source(path, SOURCE)
+    finally:
+        path.unlink(missing_ok=True)
+    if errors or warnings:
+        raise AssertionError(f"Expected source-backed paper reader to verify cleanly, errors={errors}, warnings={warnings}")
+
+
+def test_audit_with_source_rejects_bad_source_hash() -> None:
+    module = load_module()
+    path = write_temp_html(source_backed_paper_reader_html(declared_hash="sha256:0000000000000000"))
+    try:
+        errors, _ = module.audit_with_source(path, SOURCE)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("source hash mismatch" in error for error in errors):
+        raise AssertionError(f"Expected source hash mismatch error, got {errors}")
+
+
+def test_audit_with_source_rejects_rewritten_paper_body() -> None:
+    module = load_module()
+    path = write_temp_html(source_backed_paper_reader_html().replace("Our method solves this problem", "Our method reframes this problem"))
+    try:
+        errors, _ = module.audit_with_source(path, SOURCE)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("body differs from source artifact" in error for error in errors):
+        raise AssertionError(f"Expected source body mismatch error, got {errors}")
+
+
+def test_audit_with_source_warns_when_deliverable_source_not_checked() -> None:
+    module = load_module()
+    path = write_temp_html(source_backed_paper_reader_html())
+    try:
+        errors, warnings = module.audit_with_source(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if errors:
+        raise AssertionError(f"Expected missing source to be warning-only, got errors={errors}")
+    if not any("source integrity comparison skipped" in warning for warning in warnings):
+        raise AssertionError(f"Expected skipped source integrity warning, got {warnings}")
+
+
+def test_audit_rejects_paper_reader_card_location_snippet_and_evidence_labels() -> None:
+    module = load_module()
+    html = minimal_html().replace(
+        "<h3>问题是什么</h3>\n        <p>句子问题。</p>",
+        """
+        <h3>句子问题</h3>
+        <dl>
+          <dt>位置</dt><dd>p-intro-001, sentence 2</dd>
+          <dt>原句/片段</dt><dd>Problem sentence.</dd>
+          <dt>证据/验证</dt><dd>sentence span generated from source-derived paper-reader HTML</dd>
+          <dt>问题是什么</dt><dd>句子问题。</dd>
+        </dl>""",
+        1,
+    )
+    path = write_temp_html(html)
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    for label in ("位置", "原句/片段", "证据/验证"):
+        if not any(f"visible `{label}`" in error for error in errors):
+            raise AssertionError(f"Expected forbidden label error for {label}, got {errors}")
+
+
+def test_audit_rejects_paper_reader_card_mechanical_provenance() -> None:
+    module = load_module()
+    html = minimal_html().replace(
+        "<h3>问题是什么</h3>\n        <p>句子问题。</p>",
+        """
+        <h3>句子问题</h3>
+        <dl>
+          <dt>问题是什么</dt><dd>句子问题。</dd>
+          <dt>为什么有问题</dt><dd>source-derived paper-reader HTML 生成了 data-sentence-id。</dd>
+        </dl>""",
+        1,
+    )
+    path = write_temp_html(html)
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("mechanical renderer provenance" in error for error in errors):
+        raise AssertionError(f"Expected mechanical provenance error, got {errors}")
+
+
+def test_audit_rejects_uninformative_paper_reader_card_evidence() -> None:
+    module = load_module()
+    html = minimal_html().replace(
+        "<h3>问题是什么</h3>\n        <p>句子问题。</p>",
+        """
+        <h3>句子问题</h3>
+        <dl>
+          <dt>问题是什么</dt><dd>句子问题。</dd>
+          <dt>核查依据</dt><dd>这是句子级 prose 判断。</dd>
+        </dl>""",
+        1,
+    )
+    path = write_temp_html(html)
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("without concrete manuscript-level evidence" in error for error in errors):
+        raise AssertionError(f"Expected uninformative evidence error, got {errors}")
+
+
+def test_audit_allows_meaningful_paper_reader_card_evidence() -> None:
+    module = load_module()
+    html = minimal_html().replace(
+        "<h3>问题是什么</h3>\n        <p>句子问题。</p>",
+        """
+        <h3>数字问题</h3>
+        <dl>
+          <dt>问题是什么</dt><dd>数字不可复算。</dd>
+          <dt>核查依据</dt><dd>Table 1 visible cells；visible arithmetic mean recomputed from table。</dd>
+        </dl>""",
+        1,
+    )
+    path = write_temp_html(html)
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if errors:
+        raise AssertionError(f"Expected meaningful evidence card to pass, got {errors}")
 
 
 def test_audit_allows_unanchored_annotation_cards_without_sentence_target() -> None:
@@ -267,7 +441,7 @@ def test_audit_rejects_unmatched_sentence_annotation() -> None:
 def test_audit_rejects_missing_paper_source_provenance() -> None:
     module = load_module()
     html = minimal_html().replace(
-        ' data-source-fidelity="fixture" data-source-artifact="tests/fixtures/source_paper_reader.html" data-source-hash="sha256:0123456789abcdef" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only"',
+        ' data-source-fidelity="fixture" data-source-artifact="tests/fixtures/source_paper_reader.html" data-source-hash="sha256:d9fa0d504f1f956363924e63180f2559d417b079f37f16cdc1d32b594fc2bdc8" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only"',
         "",
         1,
     )
@@ -449,6 +623,14 @@ def main() -> int:
     test_audit_rejects_missing_deep_reading_section()
     test_audit_counts_nested_deep_reading_rows()
     test_audit_allows_paper_reader_only_deliverable()
+    test_audit_with_source_verifies_hash_and_body()
+    test_audit_with_source_rejects_bad_source_hash()
+    test_audit_with_source_rejects_rewritten_paper_body()
+    test_audit_with_source_warns_when_deliverable_source_not_checked()
+    test_audit_rejects_paper_reader_card_location_snippet_and_evidence_labels()
+    test_audit_rejects_paper_reader_card_mechanical_provenance()
+    test_audit_rejects_uninformative_paper_reader_card_evidence()
+    test_audit_allows_meaningful_paper_reader_card_evidence()
     test_audit_allows_unanchored_annotation_cards_without_sentence_target()
     test_audit_rejects_unanchored_annotation_with_sentence_target()
     test_audit_rejects_missing_paper_reader()

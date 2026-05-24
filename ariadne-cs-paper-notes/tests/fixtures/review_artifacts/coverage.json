@@ -43,6 +43,13 @@
     {"pass": "Pass 5", "status": "done"},
     {"pass": "Pass 6", "status": "done"}
   ],
+  "layout": {
+    "pages_total": 30,
+    "pages_checked": 1,
+    "pages_sampled": [4],
+    "pages_escalated": [],
+    "full_layout_coverage": false
+  },
   "known_blind_spots": [
     "No seed-level results are available; numerical audit is visible-cell only."
   ]

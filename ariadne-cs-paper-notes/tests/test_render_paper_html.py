@@ -162,6 +162,59 @@ def test_cleanup_removes_latex_layout_artifacts() -> None:
         raise AssertionError("adjustbox wrapper should be removed")
 
 
+def test_pdf_assets_are_external_by_default() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex_dir = tmp / "tex"
+        html_dir = tmp / "html"
+        asset_dir = html_dir / "paper_reader_assets"
+        tex_dir.mkdir()
+        html_dir.mkdir()
+        pdf = tex_dir / "fig.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <figure><embed src="fig.pdf"></figure>
+</body></html>
+""",
+            "lxml",
+        )
+
+        def fake_pdf_to_png(pdf_path: Path, output_png_path: Path) -> Path | None:
+            if pdf_path != pdf.resolve():
+                raise AssertionError(f"Unexpected PDF path: {pdf_path}")
+            output_png_path.parent.mkdir(parents=True, exist_ok=True)
+            output_png_path.write_bytes(b"png")
+            return output_png_path
+
+        original = module.pdf_embed_to_png_asset
+        module.pdf_embed_to_png_asset = fake_pdf_to_png
+        try:
+            converted = module.rasterize_pdf_assets(
+                soup,
+                tex_dir,
+                asset_dir=asset_dir,
+                html_dir=html_dir,
+            )
+        finally:
+            module.pdf_embed_to_png_asset = original
+
+        image = soup.select_one("img.paper-asset-image")
+        if converted != 1 or image is None:
+            raise AssertionError("Expected local PDF embed to become an image asset")
+        src = image.get("src", "")
+        if src.startswith("data:image"):
+            raise AssertionError("Default PDF asset rendering should not inline image bytes")
+        if not src.startswith("paper_reader_assets/") or not src.endswith(".png"):
+            raise AssertionError(f"Expected relative asset path, got {src!r}")
+        if not (html_dir / src).exists():
+            raise AssertionError("Rendered PNG asset was not written")
+        if image.get("data-source-pdf") != "fig.pdf":
+            raise AssertionError("Image should retain the original PDF source for visual audit traceability")
+
+
 def test_sentence_wrapping_keeps_citations_inside_sentence() -> None:
     module = load_module()
     soup = BeautifulSoup(
@@ -203,6 +256,61 @@ def test_sentence_wrapping_preserves_list_paragraph_structure() -> None:
     texts = [node.get_text(" ", strip=True) for node in soup.select("li p .paper-sentence")]
     if texts != ["First contribution sentence.", "Second contribution sentence."]:
         raise AssertionError(f"Expected list paragraph text to remain wrapped in-place, got {texts}")
+
+
+def test_paragraph_ids_reset_at_section_boundaries() -> None:
+    module = load_module()
+
+    def paragraph_ids_by_text(body_html: str) -> dict[str, str]:
+        soup = BeautifulSoup(body_html, "lxml")
+        module.wrap_sentences(soup)
+        ids: dict[str, str] = {}
+        for paragraph in soup.select("p[data-paragraph-id]"):
+            ids[paragraph.get_text(" ", strip=True)] = paragraph["data-paragraph-id"]
+        return ids
+
+    original = paragraph_ids_by_text(
+        """
+<html><body>
+  <h1 id="introduction">Introduction</h1>
+  <p>Intro paragraph one.</p>
+  <p>Intro paragraph two.</p>
+  <h1 id="method">Method</h1>
+  <p>Method paragraph one.</p>
+  <p>Method paragraph two.</p>
+  <h1 id="results">Results</h1>
+  <p>Results paragraph.</p>
+</body></html>
+"""
+    )
+    inserted = paragraph_ids_by_text(
+        """
+<html><body>
+  <h1 id="introduction">Introduction</h1>
+  <p>Intro paragraph one.</p>
+  <p>Inserted new intro paragraph.</p>
+  <p>Intro paragraph two.</p>
+  <h1 id="method">Method</h1>
+  <p>Method paragraph one.</p>
+  <p>Method paragraph two.</p>
+  <h1 id="results">Results</h1>
+  <p>Results paragraph.</p>
+</body></html>
+"""
+    )
+    if inserted["Intro paragraph two."] != "p-introduction-003":
+        raise AssertionError(f"Inserted intro paragraph should shift only later Introduction ids, got {inserted}")
+    for text in ("Method paragraph one.", "Method paragraph two.", "Results paragraph."):
+        if inserted[text] != original[text]:
+            raise AssertionError(f"{text!r} id drifted across section boundary: {original[text]} -> {inserted[text]}")
+    expected_ids = {
+        "Method paragraph one.": "p-method-001",
+        "Method paragraph two.": "p-method-002",
+        "Results paragraph.": "p-results-001",
+    }
+    for text, expected_id in expected_ids.items():
+        if inserted[text] != expected_id:
+            raise AssertionError(f"Expected {text!r} to use section-local id {expected_id}, got {inserted[text]}")
 
 
 def test_restore_latex_labels_for_wrapfigure_and_tables() -> None:
@@ -438,6 +546,88 @@ def test_annotation_cards_prefer_self_check_question_over_task() -> None:
         raise AssertionError("Annotation card should not show command-style task text when self_check is present")
 
 
+def test_annotation_cards_hide_mechanical_anchor_metadata() -> None:
+    module = load_module()
+    cards_soup = BeautifulSoup(
+        module.render_annotation_cards(
+            [
+                {
+                    "sentence_id": "s1",
+                    "target_level": "sentence",
+                    "severity": "minor",
+                    "issue_type": "prose",
+                    "issue_id": "A1",
+                    "title": "Overloaded sentence",
+                    "problem": "The sentence carries too many conditions.",
+                    "why": "Readers must reconstruct the setup before seeing the claim.",
+                    "principle": "句首接旧信息，句尾放新信息",
+                    "self_check": "这句话能否拆成 setup 和 takeaway？",
+                    "location": "p-intro-001, sentence 2",
+                    "snippet": "We study this question in a controlled setting.",
+                    "evidence_basis": "sentence span generated from source-derived paper-reader HTML",
+                    "verification_method": "data-sentence-id from section-paragraph-sentence-v2 scheme",
+                    "confidence": "high",
+                    "severity_rationale": "Minor",
+                }
+            ]
+        ),
+        "lxml",
+    )
+    card_text = cards_soup.get_text(" ", strip=True)
+    for hidden_text in (
+        "位置",
+        "原句/片段",
+        "证据/验证",
+        "核查依据",
+        "p-intro-001",
+        "We study this question",
+        "source-derived paper-reader",
+        "data-sentence-id",
+        "置信度",
+        "严重度理由",
+    ):
+        if hidden_text in card_text:
+            raise AssertionError(f"Mechanical metadata should stay out of margin cards: {hidden_text}")
+    for visible_text in ("问题是什么", "为什么有问题", "违反原则", "自改问题"):
+        if visible_text not in card_text:
+            raise AssertionError(f"Expected teaching field in annotation card: {visible_text}")
+
+
+def test_annotation_cards_show_meaningful_numeric_evidence() -> None:
+    module = load_module()
+    cards_soup = BeautifulSoup(
+        module.render_annotation_cards(
+            [
+                {
+                    "sentence_id": "s1",
+                    "target_level": "sentence",
+                    "severity": "major",
+                    "issue_type": "numeric",
+                    "issue_id": "A1",
+                    "title": "Average mismatch",
+                    "problem": "The prose average does not match the visible table cells.",
+                    "why": "Readers cannot verify the headline number from the table.",
+                    "principle": "不要让读者做翻译题/查字典题/算术题",
+                    "self_check": "这个数字能否从表格直接复算？",
+                    "evidence_basis": "Table 1 visible cells",
+                    "verification_method": "visible arithmetic mean recomputed from table",
+                    "reported_value": "27%",
+                    "visible_computed_value": "35.77%",
+                    "delta": "8.77 pp",
+                    "aggregation_caveat": "Excluding SimpleQA changes the denominator.",
+                }
+            ]
+        ),
+        "lxml",
+    )
+    card_text = cards_soup.get_text(" ", strip=True)
+    if "核查依据" not in card_text or "Table 1 visible cells" not in card_text:
+        raise AssertionError("Meaningful numeric evidence should remain visible")
+    for expected in ("表中数值", "可见复算值", "差值", "口径说明"):
+        if expected not in card_text:
+            raise AssertionError(f"Numeric details should remain visible: {expected}")
+
+
 def test_missing_explicit_sentence_id_falls_back_to_snippet_match() -> None:
     module = load_module()
     soup = BeautifulSoup(
@@ -522,20 +712,74 @@ def test_paragraph_section_and_paper_annotations_render_as_bubbles() -> None:
         raise AssertionError("Paper annotation card missing target")
 
 
+def test_issue_artifacts_render_as_unanchored_annotation_cards() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        issues_dir = tmp / "issue_artifacts"
+        issues_dir.mkdir()
+        (issues_dir / "layout_issues.json").write_text(
+            json.dumps(
+                {
+                    "artifact_type": "ariadne_issue_artifact",
+                    "domain": "layout",
+                    "context_policy": "model_readable_issue_only",
+                    "producer": "layout_agent",
+                    "status": "completed",
+                    "source_artifacts": [],
+                    "coverage": {"checked": 1, "issues": 1, "skipped": 0},
+                    "issues": [
+                        {
+                            "local_id": "L1",
+                            "severity": "Major",
+                            "issue_type": "layout",
+                            "title": "Main table is cramped",
+                            "diagnosis": "The main result table is hard to scan.",
+                            "reader_friction": "The evidence is hard to compare.",
+                            "writing_principle": "低认知负担 / reader-first",
+                            "self_check": "Can the table be read without zooming?",
+                            "evidence_refs": ["layout-p001-001"],
+                            "confidence": "medium",
+                            "severity_rationale": "It affects main evidence.",
+                            "downgrade_condition": "Readable compiled table.",
+                            "render_hint": {"anchor": "page:1", "display_group": "submission-readiness"},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        annotations = module.load_issue_artifact_annotations(issues_dir)
+    if len(annotations) != 1:
+        raise AssertionError(f"Expected one issue-artifact annotation, got {annotations}")
+    annotation = annotations[0]
+    if annotation["issue_id"] != "layout:L1":
+        raise AssertionError(f"Expected scoped issue id, got {annotation['issue_id']}")
+    if annotation.get("unanchored") != "true":
+        raise AssertionError("page-level issue artifact should render as unanchored card")
+    cards = module.render_annotation_cards(annotations)
+    if "Main table is cramped" not in cards or "submission-readiness" not in cards:
+        raise AssertionError("Issue artifact annotation card did not preserve title/display group")
+
+
 def main() -> int:
     test_render_paper_html_wraps_source_sentences_with_provenance()
     test_render_paper_html_overlays_annotations_without_rewriting_body()
     test_cleanup_removes_latex_layout_artifacts()
     test_sentence_wrapping_keeps_citations_inside_sentence()
     test_sentence_wrapping_preserves_list_paragraph_structure()
+    test_paragraph_ids_reset_at_section_boundaries()
     test_restore_latex_labels_for_wrapfigure_and_tables()
     test_ensure_references_heading_for_csl_entries()
     test_bibliography_paths_find_tex_bibliography_files()
     test_imports_existing_review_html_without_dropping_unanchored_notes()
     test_multiple_annotations_on_one_sentence_get_unique_cards()
     test_annotation_cards_prefer_self_check_question_over_task()
+    test_annotation_cards_hide_mechanical_anchor_metadata()
+    test_annotation_cards_show_meaningful_numeric_evidence()
     test_missing_explicit_sentence_id_falls_back_to_snippet_match()
     test_paragraph_section_and_paper_annotations_render_as_bubbles()
+    test_issue_artifacts_render_as_unanchored_annotation_cards()
     print("render_paper_html regression tests passed")
     return 0
 

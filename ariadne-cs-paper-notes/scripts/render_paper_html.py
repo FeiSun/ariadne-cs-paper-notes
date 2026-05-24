@@ -8,6 +8,7 @@ import base64
 import hashlib
 import html
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ SKIP_PARENT_TAGS = {"script", "style", "math", "svg", "table", "pre", "code"}
 BLOCK_CHILD_TAGS = {"blockquote", "div", "figure", "ol", "p", "pre", "table", "ul"}
 PANDOC_SOURCE = "pandoc"
 SENTENCE_ID_SCHEME = "section-paragraph-sentence-v2"
+PDF_ASSET_DPI = "144"
 LAYOUT_PARAM_RE = re.compile(r"^(?:[rlc]\s*)?(?:max\s+width\s*=\s*)?(?:\d+(?:\.\d+)?)?$", re.IGNORECASE)
 LATEX_INPUT_RE = re.compile(r"\\(?:input|include)\{([^}]+)\}")
 LATEX_ENV_RE = re.compile(r"\\begin\{(figure\*?|table\*?|wrapfigure|wraptable|algorithm\*?)\}(?:\[[^\]]*\]|\{[^{}]*\})*.*?\\end\{\1\}", re.DOTALL)
@@ -64,6 +66,17 @@ SEVERITY_RANK = {
     "polish": 1,
 }
 ANCHOR_LEVELS = {"sentence", "paragraph", "section", "paper"}
+WORKBENCH_SECTION_LABELS = {
+    "executive-diagnosis": "总评诊断与可救骨架",
+    "issue-index": "问题索引",
+    "claim-evidence-audit": "主张与证据审计",
+    "deep-reading-notes": "逐章精读批注",
+    "submission-readiness": "提交就绪",
+    "local-comments": "共性问题汇总",
+    "revision-plan": "修改路线",
+    "coverage-receipt": "覆盖回执",
+}
+SUBMISSION_DOMAINS = {"layout", "numeric", "reference", "symbol", "source_hygiene", "figure_caption", "polish"}
 ANCHOR_LEVEL_LABELS = {
     "sentence": "句子",
     "paragraph": "段落",
@@ -133,6 +146,20 @@ def infer_anchor_level(item: dict[str, object]) -> str:
     explicit = normalize_anchor_level(first_nonempty(item, "target_level", "anchor_level", "note_kind", "scope"))
     if explicit:
         return explicit
+    target_anchors = item.get("target_anchors")
+    first_anchor = ""
+    if isinstance(target_anchors, list) and target_anchors:
+        first_anchor = str(target_anchors[0]).strip()
+    elif target_anchors:
+        first_anchor = str(target_anchors).strip()
+    if not first_anchor:
+        first_anchor = str(first_nonempty(item, "primary_anchor", "anchor") or "").strip()
+    if first_anchor.startswith("s-"):
+        return "sentence"
+    if first_anchor.startswith("p-"):
+        return "paragraph"
+    if first_anchor and not first_anchor.startswith("page:") and first_anchor != "paper":
+        return "section"
     if first_nonempty(item, "paragraph_id", "paragraph_ids", "target_paragraph", "target_paragraphs", "paper_paragraph_id"):
         return "paragraph"
     if first_nonempty(item, "section_id", "section_ids", "target_section", "target_sections", "paper_section_id", "heading_id"):
@@ -218,6 +245,8 @@ def normalize_annotation_item(item: dict[str, object], idx: int, *, source: str)
             "target_sentence",
             "target_sentences",
         )
+        if raw_ids is None:
+            raw_ids = first_nonempty(item, "target_anchors", "primary_anchor", "anchor")
         target_key = "sentence_id"
     elif anchor_level == "paragraph":
         raw_ids = first_nonempty(
@@ -229,6 +258,8 @@ def normalize_annotation_item(item: dict[str, object], idx: int, *, source: str)
             "target_paragraph",
             "target_paragraphs",
         )
+        if raw_ids is None:
+            raw_ids = first_nonempty(item, "target_anchors", "primary_anchor", "anchor")
         target_key = "paragraph_id"
     elif anchor_level == "section":
         raw_ids = first_nonempty(
@@ -241,6 +272,8 @@ def normalize_annotation_item(item: dict[str, object], idx: int, *, source: str)
             "target_sections",
             "heading_id",
         )
+        if raw_ids is None:
+            raw_ids = first_nonempty(item, "target_anchors", "primary_anchor", "anchor")
         target_key = "section_id"
     else:
         raw_ids = first_nonempty(item, "paper_id", "target_paper") or "paper"
@@ -280,6 +313,7 @@ def normalize_annotation_item(item: dict[str, object], idx: int, *, source: str)
         "visible_computed_value": item.get("visible_computed_value") or "",
         "delta": item.get("delta") or "",
         "aggregation_caveat": item.get("aggregation_caveat") or "",
+        "source_section_label": item.get("source_section_label") or "",
     }
     annotations: list[dict[str, str]] = []
     for anchor_id in anchor_ids:
@@ -320,6 +354,219 @@ def load_annotations(path: Path | None) -> list[dict[str, str]]:
             raise SystemExit(f"annotation #{idx} must be an object")
         annotations.extend(normalize_annotation_item(item, idx, source=source))
     return annotations
+
+
+def normalize_finding_content(item: dict[str, object], idx: int) -> dict[str, str]:
+    severity = str(item.get("severity", "major")).strip().lower()
+    if severity not in SEVERITY_LABELS:
+        severity = "major"
+    issue_id = str(item.get("id") or item.get("issue_id") or f"F{idx}")
+    return {
+        "issue_id": issue_id,
+        "severity": severity,
+        "issue_type": str(item.get("issue_type") or item.get("type") or "prose"),
+        "short": str(item.get("short") or item.get("short_comment") or item.get("one_line") or item.get("title") or item.get("diagnosis") or ""),
+        "title": str(item.get("title") or item.get("one_line") or item.get("diagnosis") or "批注"),
+        "problem": str(item.get("problem") or item.get("what") or item.get("diagnosis") or ""),
+        "diagnosis": str(item.get("diagnosis") or item.get("problem") or item.get("what") or ""),
+        "why": str(item.get("why") or item.get("reader_friction") or ""),
+        "reader_friction": str(item.get("reader_friction") or item.get("why") or ""),
+        "principle": str(item.get("principle") or item.get("writing_principle") or ""),
+        "writing_principle": str(item.get("writing_principle") or item.get("principle") or ""),
+        "task": str(item.get("task") or item.get("next_draft_task") or item.get("next_draft_task_or_question") or ""),
+        "next_draft_task": str(item.get("next_draft_task") or item.get("task") or item.get("next_draft_task_or_question") or ""),
+        "self_check": str(item.get("self_check") or item.get("next_draft_question") or item.get("revision_question") or ""),
+        "next_draft_question": str(item.get("next_draft_question") or item.get("self_check") or item.get("revision_question") or ""),
+        "severity_rationale": str(item.get("severity_rationale") or ""),
+        "downgrade_condition": str(item.get("downgrade_condition") or ""),
+        "confidence": str(item.get("confidence") or ""),
+        "location": str(item.get("location") or ""),
+        "snippet": str(item.get("snippet") or ""),
+        "evidence_basis": str(item.get("evidence_basis") or ""),
+        "verification_method": str(item.get("verification_method") or ""),
+        "reported_value": str(item.get("reported_value") or ""),
+        "visible_computed_value": str(item.get("visible_computed_value") or ""),
+        "delta": str(item.get("delta") or ""),
+        "aggregation_caveat": str(item.get("aggregation_caveat") or ""),
+        "source_section_label": str(item.get("source_section_label") or ""),
+    }
+
+
+def load_findings(path: Path | None) -> dict[str, dict[str, str]]:
+    if path is None:
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    findings = payload.get("findings", []) if isinstance(payload, dict) else payload
+    if not isinstance(findings, list):
+        raise SystemExit("findings JSON must be a list or an object with a `findings` list")
+    output: dict[str, dict[str, str]] = {}
+    for idx, item in enumerate(findings, 1):
+        if not isinstance(item, dict):
+            raise SystemExit(f"finding #{idx} must be an object")
+        finding_id = str(item.get("id") or item.get("issue_id") or "").strip()
+        if not finding_id:
+            raise SystemExit(f"finding #{idx} missing `id`")
+        normalized = normalize_annotation_item({**item, "issue_id": finding_id}, idx, source="findings")
+        if normalized:
+            output[finding_id] = normalized[0]
+        else:
+            output[finding_id] = normalize_finding_content({**item, "issue_id": finding_id}, idx)
+    return output
+
+
+def load_findings_rows(path: Path | None) -> list[dict[str, object]]:
+    if path is None or not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("findings", []) if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise SystemExit("findings JSON must be a list or an object with a `findings` list")
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def load_claim_rows(path: Path | None) -> list[dict[str, object]]:
+    if path is None or not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("claims", []) if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise SystemExit("claims JSON must be a list or an object with a `claims` list")
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def load_optional_json(path: Path | None) -> object:
+    if path is None or not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def issue_artifact_paths(issues_dir: Path | None) -> list[Path]:
+    if issues_dir is None or not issues_dir.exists():
+        return []
+    paths = sorted(issues_dir.glob("*_issues.json"))
+    return [path for path in paths if path.is_file()]
+
+
+def issue_artifact_to_annotations(path: Path) -> list[dict[str, str]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"issue artifact `{path}` is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f"issue artifact `{path}` must be an object")
+    domain = str(payload.get("domain") or path.stem.replace("_issues", ""))
+    issues = payload.get("issues", [])
+    if not isinstance(issues, list):
+        raise SystemExit(f"issue artifact `{path}` must contain an `issues` list")
+    annotations: list[dict[str, str]] = []
+    for idx, issue in enumerate(issues, 1):
+        if not isinstance(issue, dict):
+            raise SystemExit(f"issue artifact `{path}` issue #{idx} must be an object")
+        local_id = str(issue.get("local_id") or issue.get("id") or issue.get("issue_id") or f"{domain[:1].upper()}{idx}")
+        issue_id = f"{domain}:{local_id}"
+        render_hint = issue.get("render_hint") if isinstance(issue.get("render_hint"), dict) else {}
+        anchor = str(render_hint.get("anchor") or issue.get("primary_anchor") or issue.get("location") or "").strip()
+        target_level = str(render_hint.get("target_level") or issue.get("target_level") or "").strip().lower()
+        if not target_level:
+            if anchor.startswith("s-"):
+                target_level = "sentence"
+            elif anchor.startswith("p-"):
+                target_level = "paragraph"
+            elif anchor and not anchor.startswith("page:"):
+                target_level = "section"
+            else:
+                target_level = "paper"
+        annotation: dict[str, object] = {
+            "issue_id": issue_id,
+            "severity": issue.get("severity") or "minor",
+            "issue_type": issue.get("issue_type") or domain,
+            "target_level": target_level,
+            "short": issue.get("short") or issue.get("title") or issue.get("diagnosis") or "",
+            "title": issue.get("title") or f"{domain} issue",
+            "problem": issue.get("problem") or issue.get("diagnosis") or "",
+            "diagnosis": issue.get("diagnosis") or issue.get("problem") or "",
+            "why": issue.get("why") or issue.get("reader_friction") or "",
+            "reader_friction": issue.get("reader_friction") or issue.get("why") or "",
+            "principle": issue.get("principle") or issue.get("writing_principle") or "",
+            "writing_principle": issue.get("writing_principle") or issue.get("principle") or "",
+            "task": issue.get("recommendation") or issue.get("next_draft_task") or "",
+            "next_draft_task": issue.get("next_draft_task") or issue.get("recommendation") or "",
+            "self_check": issue.get("self_check") or "",
+            "severity_rationale": issue.get("severity_rationale") or "",
+            "downgrade_condition": issue.get("downgrade_condition") or "",
+            "confidence": issue.get("confidence") or "",
+            "evidence_basis": "; ".join(str(item) for item in issue.get("evidence_refs", []) if item),
+            "verification_method": f"issue_artifact:{path.name}",
+            "source_section_label": render_hint.get("display_group") or domain,
+        }
+        if target_level == "sentence":
+            annotation["sentence_id"] = anchor
+        elif target_level == "paragraph":
+            annotation["paragraph_id"] = anchor
+        elif target_level == "section":
+            annotation["section_id"] = anchor
+        else:
+            annotation["paper_id"] = "paper"
+            if anchor:
+                annotation["location"] = anchor
+        normalized = normalize_annotation_item(annotation, idx, source="annotations")
+        if not normalized:
+            continue
+        for item in normalized:
+            if target_level == "paper" and anchor.startswith("page:"):
+                item["unanchored"] = "true"
+                item["paper_id"] = ""
+            annotations.append(item)
+    return annotations
+
+
+def load_issue_artifact_annotations(issues_dir: Path | None) -> list[dict[str, str]]:
+    annotations: list[dict[str, str]] = []
+    for path in issue_artifact_paths(issues_dir):
+        annotations.extend(issue_artifact_to_annotations(path))
+    return annotations
+
+
+def merge_annotation_findings(
+    annotations: list[dict[str, str]],
+    findings_by_id: dict[str, dict[str, str]],
+) -> list[dict[str, str]]:
+    if not findings_by_id:
+        return annotations
+    merged: list[dict[str, str]] = []
+    for annotation in annotations:
+        issue_id = annotation.get("issue_id", "")
+        finding = findings_by_id.get(issue_id)
+        if not finding:
+            merged.append(annotation)
+            continue
+        # Anchor-only annotations override target/card fields; full teaching content
+        # comes from findings so it is emitted once by the reviewer.
+        merged_item = {**finding, **annotation}
+        for key in (
+            "severity",
+            "issue_type",
+            "title",
+            "problem",
+            "diagnosis",
+            "why",
+            "reader_friction",
+            "principle",
+            "writing_principle",
+            "self_check",
+            "next_draft_question",
+            "task",
+            "next_draft_task",
+            "severity_rationale",
+            "downgrade_condition",
+            "confidence",
+            "evidence_basis",
+            "verification_method",
+        ):
+            if not annotation.get(key) and finding.get(key):
+                merged_item[key] = finding[key]
+        merged.append(merged_item)
+    return merged
 
 
 def severity_from_text(value: str) -> str:
@@ -460,6 +707,13 @@ def load_review_html_annotations(path: Path | None) -> list[dict[str, str]]:
 def slugify(value: str, fallback: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9]+", "-", value).strip("-").lower()
     return slug or fallback
+
+
+def compact_section_slug(value: str, fallback: str, max_length: int = 30) -> str:
+    slug = slugify(value, fallback)
+    if len(slug) <= max_length:
+        return slug
+    return slug[:max_length].rstrip("-") or fallback
 
 
 def normalized_text(tag: Tag) -> str:
@@ -719,43 +973,96 @@ def restore_latex_labels(soup: BeautifulSoup, tex_path: Path) -> int:
     return restored
 
 
-def pdf_embed_to_data_uri(pdf_path: Path) -> str | None:
+def render_pdf_first_page(pdf_path: Path, output_prefix: Path) -> Path | None:
     if shutil.which("pdftoppm") is None or not pdf_path.exists():
         return None
+    command = ["pdftoppm", "-png", "-singlefile", "-r", PDF_ASSET_DPI, str(pdf_path), str(output_prefix)]
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        return None
+    png_path = output_prefix.with_suffix(".png")
+    if not png_path.exists():
+        return None
+    return png_path
+
+
+def pdf_embed_to_data_uri(pdf_path: Path) -> str | None:
     with tempfile.TemporaryDirectory() as tmpdir:
         prefix = Path(tmpdir) / "page"
-        command = ["pdftoppm", "-png", "-singlefile", "-r", "144", str(pdf_path), str(prefix)]
-        try:
-            subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except subprocess.CalledProcessError:
-            return None
-        png_path = prefix.with_suffix(".png")
-        if not png_path.exists():
+        png_path = render_pdf_first_page(pdf_path, prefix)
+        if png_path is None:
             return None
         encoded = base64.b64encode(png_path.read_bytes()).decode("ascii")
         return f"data:image/png;base64,{encoded}"
 
 
-def inline_pdf_assets(soup: BeautifulSoup, tex_dir: Path) -> int:
-    """Rasterize local PDF embeds so the preview is stable outside a PDF plugin."""
+def safe_pdf_asset_name(src: str, pdf_path: Path) -> str:
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", Path(src).stem).strip(".-") or "asset"
+    digest_source = f"{src}\n{pdf_path}".encode("utf-8", errors="ignore")
+    digest = hashlib.sha256(digest_source).hexdigest()[:10]
+    return f"{stem}-{digest}.png"
+
+
+def html_asset_src(asset_path: Path, html_dir: Path, *, absolute: bool = False) -> str:
+    if absolute:
+        return str(asset_path).replace(os.sep, "/")
+    try:
+        value = os.path.relpath(asset_path, html_dir)
+    except ValueError:
+        value = str(asset_path)
+    return value.replace(os.sep, "/")
+
+
+def pdf_embed_to_png_asset(pdf_path: Path, output_png_path: Path) -> Path | None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        rendered_png = render_pdf_first_page(pdf_path, Path(tmpdir) / "page")
+        if rendered_png is None:
+            return None
+        output_png_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(rendered_png, output_png_path)
+        return output_png_path
+
+
+def rasterize_pdf_assets(
+    soup: BeautifulSoup,
+    tex_dir: Path,
+    *,
+    asset_dir: Path,
+    html_dir: Path,
+    inline_images: bool = False,
+    absolute_asset_paths: bool = False,
+) -> int:
+    """Rasterize local PDF embeds while keeping image bytes out of HTML by default."""
 
     converted = 0
     for embed in list(soup.find_all("embed")):
         src = str(embed.get("src", ""))
         if not src.lower().endswith(".pdf") or src.startswith(("data:", "http://", "https://")):
             continue
-        data_uri = pdf_embed_to_data_uri((tex_dir / src).resolve())
-        if data_uri is None:
+        pdf_path = (tex_dir / src).resolve()
+        if inline_images:
+            rendered_src = pdf_embed_to_data_uri(pdf_path)
+        else:
+            png_path = pdf_embed_to_png_asset(pdf_path, asset_dir / safe_pdf_asset_name(src, pdf_path))
+            rendered_src = html_asset_src(png_path, html_dir, absolute=absolute_asset_paths) if png_path is not None else None
+        if rendered_src is None:
             add_class(embed, "paper-pdf-embed")
             continue
         img = soup.new_tag("img")
-        img["src"] = data_uri
+        img["src"] = rendered_src
         img["alt"] = f"Rendered PDF asset: {Path(src).name}"
         img["class"] = "paper-asset-image"
         img["data-source-pdf"] = src
         embed.replace_with(img)
         converted += 1
     return converted
+
+
+def inline_pdf_assets(soup: BeautifulSoup, tex_dir: Path) -> int:
+    """Backward-compatible self-contained PDF image conversion."""
+
+    return rasterize_pdf_assets(soup, tex_dir, asset_dir=Path(), html_dir=Path(), inline_images=True)
 
 
 def ensure_references_heading(soup: BeautifulSoup) -> None:
@@ -1129,7 +1436,8 @@ def wrap_sentences(soup: BeautifulSoup) -> int:
         if not isinstance(node, Tag):
             continue
         if node.name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-            section_slug = slugify(node.get("id") or node.get_text(" ", strip=True), f"section-{paragraph_index}")
+            section_slug = compact_section_slug(node.get("id") or node.get_text(" ", strip=True), f"section-{paragraph_index}")
+            paragraph_index = 0
         if node.name not in SENTENCE_CONTAINER_TAGS or is_inside_skipped_tag(node):
             continue
         paragraph_index += 1
@@ -1143,6 +1451,128 @@ def body_inner_html(soup: BeautifulSoup) -> str:
     if soup.body is None:
         return str(soup)
     return "\n".join(str(child) for child in soup.body.children)
+
+
+def source_artifact_shell(title: str, source_html: str) -> str:
+    title_html = html.escape(title)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Ariadne source paper HTML - {title_html}</title>
+</head>
+<body>
+{source_html}
+</body>
+</html>
+"""
+
+
+def is_source_artifact_shell(soup: BeautifulSoup) -> bool:
+    title = soup.find("title")
+    if not title:
+        return False
+    return "Ariadne source paper HTML" in title.get_text(" ", strip=True)
+
+
+def prepare_source_soup(
+    tex_path: Path,
+    raw_html_path: Path,
+    *,
+    output_path: Path,
+    asset_dir: Path,
+    inline_images: bool,
+    reuse_raw_html: bool,
+) -> tuple[BeautifulSoup, str, int]:
+    if reuse_raw_html:
+        if not raw_html_path.exists():
+            raise SystemExit(f"--reuse-raw-html requires an existing --raw-html file: {raw_html_path}")
+        soup = BeautifulSoup(raw_html_path.read_text(encoding="utf-8"), "lxml")
+        title = extract_title(soup, tex_path)
+        sentence_count = len(soup.select(".paper-sentence[data-sentence-id]"))
+        if sentence_count == 0:
+            sentence_count = wrap_sentences(soup)
+            title = extract_title(soup, tex_path)
+            raw_html_path.write_text(source_artifact_shell(title, body_inner_html(soup)), encoding="utf-8")
+        return soup, title, sentence_count
+
+    run_pandoc(tex_path, raw_html_path)
+    soup = BeautifulSoup(raw_html_path.read_text(encoding="utf-8"), "lxml")
+    cleanup_pandoc_artifacts(soup)
+    rasterize_pdf_assets(
+        soup,
+        tex_path.parent,
+        asset_dir=asset_dir,
+        html_dir=output_path.parent,
+        inline_images=inline_images,
+        absolute_asset_paths=output_path.parent != raw_html_path.parent,
+    )
+    restore_latex_labels(soup, tex_path)
+    ensure_references_heading(soup)
+    title = extract_title(soup, tex_path)
+    sentence_count = wrap_sentences(soup)
+    raw_html_path.write_text(source_artifact_shell(title, body_inner_html(soup)), encoding="utf-8")
+    return soup, title, sentence_count
+
+
+GENERIC_SEVERITY_RATIONALES = {"blocker", "major", "minor", "polish"}
+MECHANICAL_EVIDENCE_CUES = (
+    "source-derived paper-reader",
+    "data-sentence-id",
+    "data-paragraph-id",
+    "section-paragraph-sentence",
+    "generated by render_paper_html.py",
+    "sentence span generated",
+    "paragraph id generated",
+    "heading id generated",
+    "review-html section",
+    "imported from existing html review report",
+)
+MEANINGFUL_EVIDENCE_TYPES = {"numeric", "math", "layout", "citation", "source", "submission"}
+MEANINGFUL_EVIDENCE_CUES = (
+    "pdf page",
+    "table",
+    "figure",
+    "caption",
+    "human",
+    "audit",
+    "computed",
+    "recomputed",
+    "reported",
+    "visible",
+    "bib",
+    "reference",
+    "checklist",
+    "source line",
+)
+
+
+def informative_severity_rationale(value: str, severity: str) -> str:
+    text = value.strip()
+    if not text:
+        return ""
+    normalized = text.lower().strip(" .:;")
+    if normalized in GENERIC_SEVERITY_RATIONALES or normalized == severity:
+        return ""
+    return text
+
+
+def meaningful_evidence_text(item: dict[str, str]) -> str:
+    evidence_basis = item.get("evidence_basis", "").strip()
+    verification_method = item.get("verification_method", "").strip()
+    text = "；".join(part for part in (evidence_basis, verification_method) if part)
+    if not text:
+        return ""
+    lowered = text.lower()
+    issue_type = item.get("issue_type", "prose")
+    has_meaningful_type = issue_type in MEANINGFUL_EVIDENCE_TYPES
+    has_meaningful_cue = any(cue in lowered for cue in MEANINGFUL_EVIDENCE_CUES)
+    is_mechanical = any(cue in lowered for cue in MECHANICAL_EVIDENCE_CUES)
+    if is_mechanical:
+        return ""
+    if has_meaningful_type and has_meaningful_cue:
+        return text
+    return ""
 
 
 def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
@@ -1174,11 +1604,8 @@ def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
             or item.get("revision_question")
             or item.get("task", item.get("next_draft_task", ""))
         )
-        severity_rationale = html.escape(item.get("severity_rationale", ""))
-        location = html.escape(item.get("location", ""))
-        snippet = html.escape(item.get("snippet", ""))
-        evidence_basis = html.escape(item.get("evidence_basis", ""))
-        verification_method = html.escape(item.get("verification_method", ""))
+        severity_rationale = html.escape(informative_severity_rationale(item.get("severity_rationale", ""), severity))
+        evidence_text = html.escape(meaningful_evidence_text(item))
         confidence = html.escape(item.get("confidence", ""))
         downgrade_condition = html.escape(item.get("downgrade_condition", ""))
         reported_value = html.escape(item.get("reported_value", ""))
@@ -1228,16 +1655,13 @@ def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
           <h3>{title}</h3>
           {pointer}
           <dl>
-            <dt>层级</dt><dd>{level_label}</dd>
-            <dt>位置</dt><dd>{location or target_id or source_section_label or "全局批注"}</dd>
             {f"<dt>来源栏目</dt><dd>{source_section_label}</dd>" if source_section_label else ""}
-            {f"<dt>原句/片段</dt><dd>{snippet}</dd>" if snippet else ""}
             <dt>问题是什么</dt><dd>{problem or "未填写"}</dd>
             <dt>为什么有问题</dt><dd>{why or "未填写"}</dd>
             <dt>违反原则</dt><dd>{principle or "未填写"}</dd>
-            <dt>严重度理由</dt><dd>{severity_rationale or short_badge}</dd>
-            {f"<dt>置信度</dt><dd>{confidence}</dd>" if confidence else ""}
-            <dt>证据/验证</dt><dd>{evidence_basis or "未填写"}{("；" + verification_method) if verification_method else ""}</dd>
+            {f"<dt>严重度理由</dt><dd>{severity_rationale}</dd>" if severity_rationale else ""}
+            {f"<dt>置信度</dt><dd>{confidence}</dd>" if confidence and severity_rationale else ""}
+            {f"<dt>核查依据</dt><dd>{evidence_text}</dd>" if evidence_text else ""}
             {numeric_details}
             {f"<dt>降级条件</dt><dd>{downgrade_condition}</dd>" if downgrade_condition else ""}
             <dt>自改问题</dt><dd>{self_check or "未填写"}</dd>
@@ -1266,6 +1690,340 @@ def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
     return "\n".join(cards)
 
 
+def render_finding_anchor_index(annotations: list[dict[str, str]]) -> str:
+    issue_ids = ordered_unique([item.get("issue_id", "") for item in annotations])
+    if not issue_ids:
+        return ""
+    anchors = "".join(f'<span id="{html.escape(issue_id)}"></span>' for issue_id in issue_ids)
+    return f'<div id="finding-anchor-index" hidden aria-hidden="true">{anchors}</div>'
+
+
+def severity_key(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in SEVERITY_LABELS else "major"
+
+
+def severity_badge(value: object) -> str:
+    key = severity_key(value)
+    return f'<span class="badge {key}">{html.escape(SEVERITY_LABELS[key])}</span>'
+
+
+def finding_id_link(finding_id: object) -> str:
+    text = str(finding_id or "").strip()
+    if not text:
+        return ""
+    return f'<a class="finding-link" href="#{html.escape(text)}">{html.escape(text)}</a>'
+
+
+def joined_links(values: object) -> str:
+    if isinstance(values, list):
+        ids = [str(item).strip() for item in values if str(item).strip()]
+    else:
+        ids = [str(values).strip()] if str(values or "").strip() else []
+    return ", ".join(finding_id_link(item) for item in ids)
+
+
+def display_text(value: object, *, fallback: str = "", max_chars: int = 480) -> str:
+    if isinstance(value, list):
+        text = "; ".join(display_text(item, max_chars=max_chars) for item in value if display_text(item, max_chars=max_chars))
+    else:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        text = fallback
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "..."
+    return html.escape(text)
+
+
+def finding_anchor_text(finding: dict[str, object]) -> str:
+    anchors = finding.get("target_anchors")
+    if isinstance(anchors, list) and anchors:
+        return str(anchors[0])
+    return str(finding.get("primary_anchor") or finding.get("location") or "")
+
+
+def render_issue_index(findings: list[dict[str, object]]) -> str:
+    if not findings:
+        body = '<p class="empty-state">当前 compiled findings 为空。</p>'
+    else:
+        articles = []
+        rows = []
+        for finding in findings:
+            finding_id = display_text(finding.get("id"))
+            severity = severity_key(finding.get("severity"))
+            issue_type = display_text(finding.get("issue_type"), fallback="prose")
+            title = display_text(finding.get("title") or finding.get("diagnosis"), fallback="Untitled finding")
+            location = display_text(finding.get("location") or finding_anchor_text(finding), fallback="paper")
+            diagnosis = display_text(finding.get("diagnosis"), fallback="No diagnosis supplied.")
+            articles.append(
+                f"""
+      <article class="finding" id="{finding_id}" data-severity="{severity}" data-issue-type="{issue_type}">
+        <div>{severity_badge(finding.get("severity"))} {finding_id} {title}</div>
+        <p><strong>位置：</strong>{location}</p>
+        <p><strong>诊断：</strong>{diagnosis}</p>
+        <p><strong>读者卡点：</strong>{display_text(finding.get("reader_friction"), fallback="See diagnosis.")}</p>
+      </article>"""
+            )
+            rows.append(
+                f"<tr data-severity=\"{severity}\" data-issue-type=\"{issue_type}\"><td>{finding_id_link(finding.get('id'))}</td>"
+                f"<td>{severity_badge(finding.get('severity'))}</td><td>{issue_type}</td><td>{title}</td>"
+                f"<td>{location}</td><td>{display_text(finding.get('next_draft_task') or finding.get('self_check'), fallback='复查并修订。')}</td></tr>"
+            )
+        body = "".join(articles) + f"""
+      <div class="table-wrap">
+        <table class="report-table">
+          <caption>Finding ledger</caption>
+          <thead><tr><th scope="col">ID</th><th scope="col">严重度</th><th scope="col">类型</th><th scope="col">问题</th><th scope="col">位置</th><th scope="col">下一步</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>"""
+    return f"""
+    <section id="issue-index">
+      <h2>{WORKBENCH_SECTION_LABELS['issue-index']}</h2>
+      {body}
+    </section>"""
+
+
+def render_executive_diagnosis(findings: list[dict[str, object]]) -> str:
+    top = findings[0] if findings else {}
+    return f"""
+    <section id="executive-diagnosis">
+      <h2>{WORKBENCH_SECTION_LABELS['executive-diagnosis']}</h2>
+      <p><strong>一句话 verdict：</strong>{display_text(top.get('title') or top.get('diagnosis'), fallback='当前报告由 JSON artifacts deterministic 生成，未检测到 compiled finding。')}</p>
+      <article class="finding">
+        <h3>可救骨架</h3>
+        <p><strong>Minimal viable paper：</strong>{display_text(top.get('self_check'), fallback='保留核心贡献，但让主张、证据和读者路径显式对齐。')}</p>
+        <p><strong>Next revision thread：</strong>{display_text(top.get('next_draft_task') or top.get('downgrade_condition'), fallback='优先处理最高严重度 finding。')}</p>
+      </article>
+    </section>"""
+
+
+def render_claim_evidence(claims: list[dict[str, object]], findings: list[dict[str, object]]) -> str:
+    if claims:
+        rows = []
+        for claim in claims:
+            linked = claim.get("linked_findings") or claim.get("linked_finding_ids") or []
+            rows.append(
+                "<tr data-severity=\"major\" data-issue-type=\"claim\">"
+                f"<td>{display_text(claim.get('claim_text') or claim.get('text'), fallback='Claim')}</td>"
+                f"<td>{display_text(claim.get('claim_type'), fallback='claim')}</td>"
+                f"<td>{display_text(claim.get('location'), fallback='paper')}</td>"
+                f"<td>{display_text(claim.get('visible_evidence') or claim.get('evidence'), fallback='Evidence not specified.')}</td>"
+                f"<td>{display_text(claim.get('status'), fallback='needs review')}</td>"
+                f"<td>{joined_links(linked)}</td>"
+                f"<td>{display_text(claim.get('next_draft_task'), fallback='Align claim and visible evidence.')}</td>"
+                "</tr>"
+            )
+    else:
+        rows = [
+            "<tr data-severity=\"major\" data-issue-type=\"claim\">"
+            f"<td>{display_text(findings[0].get('title') if findings else '', fallback='No explicit claim artifact')}</td>"
+            "<td>claim</td><td>paper</td><td>Derived from compiled findings.</td><td>needs review</td><td></td><td>Write claims.json in Phase B.</td></tr>"
+        ]
+    return f"""
+    <section id="claim-evidence-audit">
+      <h2>{WORKBENCH_SECTION_LABELS['claim-evidence-audit']}</h2>
+      <div class="table-wrap">
+        <table class="report-table">
+          <caption>Abstract promise tracking and claim-evidence map</caption>
+          <thead><tr><th scope="col">Claim</th><th scope="col">Type</th><th scope="col">Location</th><th scope="col">Visible evidence</th><th scope="col">Verdict</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </section>"""
+
+
+def render_deep_reading(findings: list[dict[str, object]], annotations: list[dict[str, str]], pass_observations: object) -> str:
+    sentence_notes = [item for item in annotations if item.get("target_level") == "sentence"]
+    paragraph_notes = [item for item in annotations if item.get("target_level") == "paragraph"]
+    section_notes = [item for item in annotations if item.get("target_level") == "section"]
+    if not sentence_notes and findings:
+        sentence_notes = [
+            {
+                "issue_id": str(findings[0].get("id") or "F1"),
+                "sentence_id": str(finding_anchor_text(findings[0]) or "paper"),
+                "severity": severity_key(findings[0].get("severity")),
+                "issue_type": str(findings[0].get("issue_type") or "prose"),
+                "diagnosis": str(findings[0].get("diagnosis") or findings[0].get("title") or ""),
+                "self_check": str(findings[0].get("self_check") or ""),
+            }
+        ]
+    if not paragraph_notes:
+        paragraph_notes = [{"issue_id": "", "paragraph_id": "paper", "severity": "minor", "issue_type": "prose", "diagnosis": "Paragraph-level review is represented by compiled artifacts.", "self_check": "Check paragraph job and transitions."}]
+    if not section_notes:
+        section_notes = [{"issue_id": "", "section_id": "paper", "severity": "minor", "issue_type": "prose", "diagnosis": "Section reflection is represented by Phase A artifacts.", "self_check": "Check section role in the argument."}]
+    sentence_rows = [
+        f"<tr data-note-kind=\"sentence\" data-severity=\"{severity_key(item.get('severity'))}\" data-issue-type=\"{display_text(item.get('issue_type'), fallback='prose')}\"><td>句子</td><td>{display_text(item.get('sentence_id'), fallback='paper')}</td><td>{display_text(item.get('diagnosis') or item.get('title') or item.get('short'), fallback='See finding.')}</td><td>{finding_id_link(item.get('issue_id'))}</td><td>{display_text(item.get('self_check') or item.get('next_draft_task'), fallback='Revise this local unit.')}</td></tr>"
+        for item in sentence_notes
+    ]
+    paragraph_rows = [
+        f"<tr data-note-kind=\"paragraph\" data-decision=\"revise\" data-severity=\"{severity_key(item.get('severity'))}\" data-issue-type=\"{display_text(item.get('issue_type'), fallback='prose')}\"><td>段落</td><td>{display_text(item.get('paragraph_id'), fallback='paper')}</td><td>{display_text(item.get('diagnosis') or item.get('title') or item.get('short'), fallback='Paragraph needs review.')}</td><td>{finding_id_link(item.get('issue_id'))}</td><td>{display_text(item.get('self_check') or item.get('next_draft_task'), fallback='Check paragraph job.')}</td></tr>"
+        for item in paragraph_notes
+    ]
+    section_rows = [
+        f"<tr data-note-kind=\"section\" data-severity=\"{severity_key(item.get('severity'))}\" data-issue-type=\"{display_text(item.get('issue_type'), fallback='prose')}\"><td>{display_text(item.get('section_id'), fallback='paper')}</td><td>{display_text(item.get('diagnosis') or item.get('title') or item.get('short'), fallback='Section needs review.')}</td><td>{finding_id_link(item.get('issue_id'))}</td><td>{display_text(item.get('self_check') or item.get('next_draft_task'), fallback='Check section role.')}</td></tr>"
+        for item in section_notes
+    ]
+    return f"""
+    <section id="deep-reading-notes">
+      <h2>{WORKBENCH_SECTION_LABELS['deep-reading-notes']}</h2>
+      <div class="table-wrap">
+        <table class="report-table">
+          <caption>Section reflection</caption>
+          <thead><tr><th scope="col">章节</th><th scope="col">读后一句话</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead>
+          <tbody>{''.join(section_rows)}</tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table class="report-table">
+          <caption>Paragraph and sentence notes</caption>
+          <thead><tr><th scope="col">层级</th><th scope="col">位置</th><th scope="col">读者卡点</th><th scope="col">关联问题</th><th scope="col">下一稿任务 / 自改问题</th></tr></thead>
+          <tbody>{''.join(paragraph_rows)}{''.join(sentence_rows)}</tbody>
+        </table>
+      </div>
+    </section>"""
+
+
+def render_submission_readiness(findings: list[dict[str, object]]) -> str:
+    rows = []
+    for finding in findings:
+        issue_type = str(finding.get("issue_type") or "").lower()
+        source_ids = " ".join(str(item) for item in finding.get("source_issue_ids", []) if item)
+        domain = source_ids.split(":", 1)[0] if ":" in source_ids else issue_type
+        if domain not in SUBMISSION_DOMAINS and issue_type not in SUBMISSION_DOMAINS:
+            continue
+        rows.append(
+            f"<tr data-severity=\"{severity_key(finding.get('severity'))}\" data-issue-type=\"{display_text(finding.get('issue_type'), fallback='submission')}\"><td>{display_text(domain or issue_type, fallback='submission')}</td><td>{display_text(finding.get('location') or finding_anchor_text(finding), fallback='paper')}</td><td>{severity_badge(finding.get('severity'))}</td><td>{display_text(finding.get('diagnosis') or finding.get('title'), fallback='See finding.')}</td><td>{finding_id_link(finding.get('id'))}</td><td>{display_text(finding.get('next_draft_task') or finding.get('self_check'), fallback='Fix before submission.')}</td></tr>"
+        )
+    if not rows and findings:
+        rows.append(
+            f"<tr data-severity=\"{severity_key(findings[0].get('severity'))}\" data-issue-type=\"submission\"><td>compiled artifacts</td><td>{display_text(findings[0].get('location'), fallback='paper')}</td><td>{severity_badge(findings[0].get('severity'))}</td><td>{display_text(findings[0].get('diagnosis'), fallback='No specialist issues rendered.')}</td><td>{finding_id_link(findings[0].get('id'))}</td><td>Run or inspect specialist artifacts before submission.</td></tr>"
+        )
+    return f"""
+    <section id="submission-readiness">
+      <h2>{WORKBENCH_SECTION_LABELS['submission-readiness']}</h2>
+      <div class="table-wrap">
+        <table class="report-table">
+          <caption>Submission readiness checks</caption>
+          <thead><tr><th scope="col">类别</th><th scope="col">位置</th><th scope="col">严重度</th><th scope="col">卡点</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </section>"""
+
+
+def render_local_comments(findings: list[dict[str, object]]) -> str:
+    rows = [
+        f"<tr data-severity=\"{severity_key(finding.get('severity'))}\" data-issue-type=\"{display_text(finding.get('issue_type'), fallback='prose')}\"><td>{severity_badge(finding.get('severity'))}</td><td>{display_text(finding.get('title'), fallback='Finding')}</td><td>{display_text(finding.get('reader_friction') or finding.get('diagnosis'), fallback='See finding.')}</td><td>{display_text(finding.get('location') or finding_anchor_text(finding), fallback='paper')}</td><td>{finding_id_link(finding.get('id'))}</td></tr>"
+        for finding in findings[:8]
+    ]
+    if not rows:
+        rows.append("<tr data-severity=\"minor\" data-issue-type=\"prose\"><td><span class=\"badge minor\">[i] Minor</span></td><td>No recurring patterns</td><td>No compiled findings.</td><td>paper</td><td></td></tr>")
+    return f"""
+    <section id="local-comments">
+      <h2>{WORKBENCH_SECTION_LABELS['local-comments']}</h2>
+      <div class="table-wrap">
+        <table class="report-table">
+          <caption>Recurring issue patterns</caption>
+          <thead><tr><th scope="col">严重度</th><th scope="col">共性问题</th><th scope="col">读者卡点</th><th scope="col">代表位置</th><th scope="col">关联问题</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </section>"""
+
+
+def render_revision_plan(findings: list[dict[str, object]]) -> str:
+    rows = []
+    for idx, finding in enumerate(findings[:10], 1):
+        rows.append(
+            f"<tr><td>P{0 if idx <= 3 else 1}</td><td>{display_text(finding.get('next_draft_task') or finding.get('self_check'), fallback='Resolve finding before resubmission.')}</td><td>{finding_id_link(finding.get('id'))}</td><td>{display_text(finding.get('issue_type'), fallback='writing')}</td><td>{'M' if severity_key(finding.get('severity')) in {'blocker', 'major'} else 'S'}</td><td>{display_text(finding.get('downgrade_condition'), fallback='Finding no longer appears in compiled artifacts.')}</td></tr>"
+        )
+    if not rows:
+        rows.append("<tr><td>P1</td><td>No compiled findings.</td><td></td><td>Writing</td><td>S</td><td>Run Prose Phase A/B.</td></tr>")
+    return f"""
+    <section id="revision-plan">
+      <h2>{WORKBENCH_SECTION_LABELS['revision-plan']}</h2>
+      <div class="table-wrap">
+        <table class="report-table">
+          <caption>Executable revision plan</caption>
+          <thead><tr><th scope="col">优先级</th><th scope="col">任务</th><th scope="col">关联问题</th><th scope="col">区域</th><th scope="col">工作量</th><th scope="col">验收方式</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </section>"""
+
+
+def render_coverage_receipt(coverage: object, *, raw_hash_attr: str, source_artifact: str, sentence_count: int, annotation_count: int) -> str:
+    units = coverage.get("units", []) if isinstance(coverage, dict) else []
+    rows = []
+    for unit in units if isinstance(units, list) else []:
+        if not isinstance(unit, dict):
+            continue
+        rows.append(
+            f"<tr><td>{display_text(unit.get('unit'))}</td><td>{display_text(unit.get('total'))}</td><td>{display_text(unit.get('reviewed'))}</td><td>{display_text(unit.get('with_issues'))}</td><td>{display_text(unit.get('clean'))}</td><td>{display_text(unit.get('skipped'))}</td><td>{display_text(unit.get('pending_in'))}</td></tr>"
+        )
+    if not rows:
+        rows.append(
+            f"<tr><td>Paper-reader annotations</td><td>{annotation_count}</td><td>{annotation_count}</td><td>{annotation_count}</td><td>0</td><td>0</td><td></td></tr>"
+        )
+    return f"""
+    <section id="coverage-receipt">
+      <h2>{WORKBENCH_SECTION_LABELS['coverage-receipt']}</h2>
+      <div class="table-wrap">
+        <table class="report-table">
+          <caption>Coverage receipt</caption>
+          <thead><tr><th scope="col">Unit</th><th scope="col">Total</th><th scope="col">Reviewed</th><th scope="col">With issues</th><th scope="col">Clean</th><th scope="col">Skipped</th><th scope="col">Pending in</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table class="report-table">
+          <caption>Paper-reader rendering receipt</caption>
+          <thead><tr><th scope="col">Unit</th><th scope="col">Value</th></tr></thead>
+          <tbody>
+            <tr><td>Source artifact</td><td>{source_artifact}</td></tr>
+            <tr><td>Source hash</td><td>{raw_hash_attr}</td></tr>
+            <tr><td>Sentence ID scheme</td><td>{SENTENCE_ID_SCHEME}</td></tr>
+            <tr><td>Sentence spans</td><td>{sentence_count}</td></tr>
+            <tr><td>Annotations</td><td>{annotation_count}</td></tr>
+            <tr><td>Coverage consistency</td><td>derived from compiled JSON artifacts</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>"""
+
+
+def render_workbench_sections(
+    *,
+    findings: list[dict[str, object]],
+    annotations: list[dict[str, str]],
+    claims: list[dict[str, object]],
+    coverage: object,
+    pass_observations: object,
+    raw_hash_attr: str,
+    source_artifact: str,
+    sentence_count: int,
+) -> str:
+    return "\n".join(
+        [
+            render_executive_diagnosis(findings),
+            render_issue_index(findings),
+            render_claim_evidence(claims, findings),
+            render_deep_reading(findings, annotations, pass_observations),
+            render_submission_readiness(findings),
+            render_local_comments(findings),
+            render_revision_plan(findings),
+            render_coverage_receipt(
+                coverage,
+                raw_hash_attr=raw_hash_attr,
+                source_artifact=source_artifact,
+                sentence_count=sentence_count,
+                annotation_count=len(annotations),
+            ),
+        ]
+    )
+
+
 def extract_title(soup: BeautifulSoup, tex_path: Path) -> str:
     title = soup.find("title")
     if title and title.get_text(strip=True):
@@ -1285,6 +2043,11 @@ def report_shell(
     raw_hash: str,
     sentence_count: int,
     annotations: list[dict[str, str]],
+    findings: list[dict[str, object]] | None = None,
+    claims: list[dict[str, object]] | None = None,
+    coverage: object = None,
+    pass_observations: object = None,
+    full_report: bool = False,
 ) -> str:
     source_artifact = html.escape(str(raw_html_path))
     tex_display = html.escape(str(tex_path))
@@ -1293,6 +2056,41 @@ def report_shell(
     annotation_count = len(annotations)
     annotation_panel_state = ' data-empty="true"' if annotations else ""
     annotation_cards = render_annotation_cards(annotations)
+    finding_anchor_index = render_finding_anchor_index(annotations)
+    report_kind = "compiled-review" if full_report else "paper-reader-only"
+    header_title = "Ariadne Compiled Review" if full_report else "Ariadne Paper Reader Preview"
+    workbench_nav = (
+        """
+    <a href="#executive-diagnosis">总评诊断</a>
+    <a href="#issue-index">问题索引</a>
+    <a href="#claim-evidence-audit">主张证据</a>
+    <a href="#deep-reading-notes">精读批注</a>
+    <a href="#submission-readiness">提交就绪</a>
+    <a href="#local-comments">共性问题</a>
+    <a href="#revision-plan">修改路线</a>"""
+        if full_report
+        else ""
+    )
+    workbench_html = (
+        render_workbench_sections(
+            findings=findings or [],
+            annotations=annotations,
+            claims=claims or [],
+            coverage=coverage,
+            pass_observations=pass_observations,
+            raw_hash_attr=raw_hash_attr,
+            source_artifact=source_artifact,
+            sentence_count=sentence_count,
+        )
+        if full_report
+        else render_coverage_receipt(
+            coverage,
+            raw_hash_attr=raw_hash_attr,
+            source_artifact=source_artifact,
+            sentence_count=sentence_count,
+            annotation_count=annotation_count,
+        )
+    )
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1421,9 +2219,9 @@ def report_shell(
   </style>
 </head>
 <body>
-<article class="review-report" data-report-kind="paper-reader-only">
+<article class="review-report" data-report-kind="{report_kind}">
   <header>
-    <h1>Ariadne Paper Reader Preview</h1>
+    <h1>{header_title}</h1>
     <p>入口：<code>{tex_display}</code></p>
     <p>转换：pandoc HTML5 + MathML；句子 ID：<code>{SENTENCE_ID_SCHEME}</code></p>
     <p>Source artifact：<code>{source_artifact}</code></p>
@@ -1438,8 +2236,10 @@ def report_shell(
   </header>
   <nav aria-label="Review sections">
     <a href="#paper-reader">论文正文批注</a>
+{workbench_nav}
     <a href="#coverage-receipt">覆盖回执</a>
   </nav>
+  {finding_anchor_index}
   <section id="paper-reader" class="paper-reader" aria-label="Annotated paper">
     <div class="reader-toolbar">
       <div>
@@ -1464,24 +2264,7 @@ def report_shell(
     </div>
   </section>
   <main>
-    <section id="coverage-receipt">
-      <h2>覆盖回执与 artifacts</h2>
-      <div class="table-wrap">
-        <table class="report-table">
-          <caption>Paper-reader rendering receipt</caption>
-          <thead><tr><th scope="col">Unit</th><th scope="col">Value</th></tr></thead>
-          <tbody>
-            <tr><td>Source backend</td><td>{PANDOC_SOURCE}</td></tr>
-            <tr><td>Source artifact</td><td>{source_artifact}</td></tr>
-            <tr><td>Source hash</td><td>{raw_hash_attr}</td></tr>
-            <tr><td>Sentence ID scheme</td><td>{SENTENCE_ID_SCHEME}</td></tr>
-            <tr><td>Sentence spans</td><td>{sentence_count}</td></tr>
-            <tr><td>Annotations</td><td>{annotation_count}</td></tr>
-            <tr><td>Coverage consistency</td><td>paper-reader preview only; review artifacts not generated.</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+{workbench_html}
   </main>
 </article>
 <script>
@@ -1605,25 +2388,42 @@ def render(
     output_path: Path | None = None,
     raw_html_path: Path | None = None,
     annotations_path: Path | None = None,
+    findings_path: Path | None = None,
+    issues_dir: Path | None = None,
     review_html_path: Path | None = None,
+    asset_dir: Path | None = None,
+    inline_images: bool = False,
+    reuse_raw_html: bool = False,
+    claims_path: Path | None = None,
+    coverage_path: Path | None = None,
+    pass_observations_path: Path | None = None,
+    full_report: bool = False,
 ) -> tuple[Path, Path, int]:
     tex_path = tex_path.resolve()
     output_path = (output_path or tex_path.with_name(f"ariadne_paper_reader_{tex_path.stem}.html")).resolve()
     raw_html_path = (raw_html_path or output_path.with_suffix(".source.html")).resolve()
+    asset_dir = (asset_dir or output_path.with_name(f"{output_path.stem}_assets")).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     raw_html_path.parent.mkdir(parents=True, exist_ok=True)
-    run_pandoc(tex_path, raw_html_path)
+    soup, title, sentence_count = prepare_source_soup(
+        tex_path,
+        raw_html_path,
+        output_path=output_path,
+        asset_dir=asset_dir,
+        inline_images=inline_images,
+        reuse_raw_html=reuse_raw_html,
+    )
     raw_hash = sha256_path(raw_html_path)
-    soup = BeautifulSoup(raw_html_path.read_text(encoding="utf-8"), "lxml")
-    cleanup_pandoc_artifacts(soup)
-    inline_pdf_assets(soup, tex_path.parent)
-    restore_latex_labels(soup, tex_path)
-    ensure_references_heading(soup)
-    title = extract_title(soup, tex_path)
-    sentence_count = wrap_sentences(soup)
     imported_annotations = load_review_html_annotations(review_html_path)
     explicit_annotations = load_annotations(annotations_path)
-    annotations = apply_annotations(soup, assign_sentence_targets(soup, imported_annotations + explicit_annotations))
+    issue_annotations = load_issue_artifact_annotations(issues_dir)
+    findings_by_id = load_findings(findings_path)
+    merged_annotations = merge_annotation_findings(imported_annotations + explicit_annotations + issue_annotations, findings_by_id)
+    annotations = apply_annotations(soup, assign_sentence_targets(soup, merged_annotations))
+    finding_rows = load_findings_rows(findings_path)
+    claim_rows = load_claim_rows(claims_path)
+    coverage_payload = load_optional_json(coverage_path)
+    pass_observations_payload = load_optional_json(pass_observations_path)
     source_html = body_inner_html(soup)
     output_path.write_text(
         report_shell(
@@ -1634,6 +2434,11 @@ def render(
             raw_hash=raw_hash,
             sentence_count=sentence_count,
             annotations=annotations,
+            findings=finding_rows,
+            claims=claim_rows,
+            coverage=coverage_payload,
+            pass_observations=pass_observations_payload,
+            full_report=full_report,
         ),
         encoding="utf-8",
     )
@@ -1646,9 +2451,45 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-o", "--output", type=Path)
     parser.add_argument("--raw-html", type=Path)
     parser.add_argument("--annotations", type=Path, help="Optional JSON list/object of sentence annotations to overlay")
+    parser.add_argument("--findings", type=Path, help="Optional findings JSON to join with anchor-only annotations")
+    parser.add_argument("--issues-dir", type=Path, help="Optional directory of curated *_issues.json artifacts to render as cards")
+    parser.add_argument("--claims", type=Path, help="Optional claims.json for compiled review workbench")
+    parser.add_argument("--coverage", type=Path, help="Optional coverage.json for compiled review workbench")
+    parser.add_argument("--pass-observations", type=Path, help="Optional pass_observations.json for compiled review workbench")
     parser.add_argument("--review-html", type=Path, help="Optional existing Ariadne HTML report to import as annotation content")
+    parser.add_argument("--asset-dir", type=Path, help="Directory for rendered local figure assets")
+    parser.add_argument(
+        "--inline-images",
+        action="store_true",
+        help="Inline rendered PDF figures as base64 data URIs for a self-contained HTML file",
+    )
+    parser.add_argument(
+        "--reuse-raw-html",
+        action="store_true",
+        help="Use an existing --raw-html source artifact as the paper source instead of rerunning pandoc",
+    )
+    parser.add_argument(
+        "--full-report",
+        action="store_true",
+        help="Render deterministic compiled-review workbench sections from JSON artifacts",
+    )
     args = parser.parse_args(argv)
-    output, raw, count = render(args.tex, args.output, args.raw_html, args.annotations, args.review_html)
+    output, raw, count = render(
+        args.tex,
+        args.output,
+        args.raw_html,
+        args.annotations,
+        args.findings,
+        args.issues_dir,
+        args.review_html,
+        args.asset_dir,
+        args.inline_images,
+        args.reuse_raw_html,
+        args.claims,
+        args.coverage,
+        args.pass_observations,
+        args.full_report,
+    )
     print(f"HTML report: {output}")
     print(f"Source HTML: {raw}")
     print(f"Sentence spans: {count}")

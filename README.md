@@ -4,6 +4,24 @@ Ariadne CS Paper Notes 是一个面向 CS/AI 论文草稿的 Codex / Claude skil
 
 它默认输出中文批注，必要时保留 claim、gap、baseline、ablation、caption、skimmability 等英文术语。HTML 有两种主要呈现方式：独立的汇总型 HTML report，以及把批注直接挂在论文原文上的 paper-reader overlay。
 
+## 架构
+
+Ariadne 现在采用三角色架构，目的是把上下文窗口用在真正需要 LLM 判断的地方：
+
+- **Orchestrator**：顶层调度者，负责确定范围、运行提取脚本、启动 subagents、收集 JSON artifacts、调用 renderer/audit，并返回路径。它不读论文全文、不读 raw audit、不手写 HTML。
+- **Prose Review Agent**：唯一读取完整 `review_units` 的文字审阅者。Phase A 做冷读、逐句/逐段深读和章节反思；Phase B 只读压缩后的 `phase_b_context.json` 和 specialist issues，做全文论证红队与跨域综合。
+- **Specialist Agents**：独立支线审计，包括 layout、numeric/table、reference、symbol、source hygiene/anonymity、figure/caption 和 polish。它们各自读取 raw audit，只输出 curated `*_issues.json`。
+
+最终 HTML 由本地 renderer 从 source-derived paper HTML、`findings.json`、`annotations.json` 和 issue artifacts 生成；LLM 只产结构化 JSON，不写 HTML。`compile_review_artifacts.py` 负责把 Prose Phase JSONL shards 和 specialist `*_issues.json` 编译成最终 `findings.json` / `annotations.json` / `compiled_issue_index.json`。`build_review_derivatives.py` 负责从这些编译结果派生 `coverage.json`、`render_manifest.json` 和 `pass_observations.json`。
+
+已提供 deterministic specialist runner：`run_p1_specialists.py` 会按输入可用性调度 `check_page_layout.py`、`extract_paper_text.py --numeric-json`、`check_references.py`、`check_source_hygiene.py`、`check_polish.py`、`check_symbol.py`、`check_figure_caption.py` 和 `build_specialist_issues.py`，先覆盖 layout / numeric / reference / source hygiene / polish / symbol / figure-caption 七条高价值支线。figure/caption 检查可只读 LaTeX source；若同时提供 PDF，会额外做 rendered caption geometry 检查；若本地可打开 raster 图像或可用 `pdftoppm` 预览 PDF 图资产，还会做低分辨率、近空白、低对比度和极端长宽比等 asset-quality 检查。
+
+已提供顶层 deterministic coordinator：`run_review_pipeline.py` 会串联 PDF/source HTML/review units/specialists/resume packets/prose prompt packets/compile/derive/render/audit。它是 checkpoint-aware 的：如果 Prose Phase A/B 还没完成，会停在 `pipeline_status.json`、`phase_a_next_step.json` 和 `phase_a_prompt_packet.json`，不会用 specialist-only artifacts 冒充全文文字审阅；显式传 `--allow-partial-compile` 时才会编译当前已有 issues。
+
+Prose 与 LLM specialist 调用是可插拔层：`run_prose_agent.py` 接收 `--agent-cmd`，用 `ARIADNE_PROMPT_PACKET` 把 Phase A/B packet 交给外部 agent，并在每轮后刷新 resume status；`build_prose_shards.py` 会在超长论文时生成 section-sharded Phase A manifest；`run_specialist_agent.py` 可在 deterministic `*_issues.json` 之后运行独立 specialist refinement；`run_agent_command.py` 是更通用的 provider-neutral packet-to-command adapter。顶层 pipeline 可通过 `--prose-agent-cmd`、`--specialist-agent-cmd` 接入这些外部 agent；也可用 `--vision-figure-agent-cmd` 调用 vision-capable figure/caption specialist。HTML/compile/audit 仍保持本地确定性步骤。
+
+`render_paper_html.py` 现在承担最终 deterministic renderer：source render 阶段生成 canonical `.source.html`；final render 阶段使用 `--reuse-raw-html --full-report` 在同一个 source artifact 上叠加 overlay，并从 `findings.json`、`annotations.json`、`claims.json`、`coverage.json`、`pass_observations.json` 派生 workbench sections。LLM 不应手写 HTML report。
+
 ## 目标与定位
 
 - 从真实读者的理解路径出发，而不是只检查语法。
@@ -313,6 +331,10 @@ python ariadne-cs-paper-notes/scripts/render_paper_html.py \
 
 ```bash
 python ariadne-cs-paper-notes/scripts/audit_html_report.py path/to/ariadne_notes_paper_20260517.html
+
+python ariadne-cs-paper-notes/scripts/audit_html_report.py \
+  path/to/ariadne_paper_reader_main.html \
+  --source path/to/ariadne_paper_reader_main.source.html
 ```
 
 审计 HTML + JSON artifact bundle：
@@ -320,7 +342,8 @@ python ariadne-cs-paper-notes/scripts/audit_html_report.py path/to/ariadne_notes
 ```bash
 python ariadne-cs-paper-notes/scripts/audit_review_artifacts.py \
   --bundle path/to/ariadne_notes_paper_20260517/ \
-  --html path/to/ariadne_notes_paper_20260517.html
+  --html path/to/ariadne_notes_paper_20260517.html \
+  --source path/to/ariadne_paper_reader_main.source.html
 ```
 
 ## Quick Check

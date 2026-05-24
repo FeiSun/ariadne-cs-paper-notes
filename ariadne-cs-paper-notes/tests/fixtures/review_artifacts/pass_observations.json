@@ -38,6 +38,17 @@
       "location": "Table 1",
       "observation": "Numeric signal requires table/caption aggregation clarification.",
       "linked_findings": ["F2"]
+    },
+    {
+      "location": "PDF p.4",
+      "issue_type": "layout",
+      "source": "layout_audit",
+      "page": 4,
+      "layout_issue_type": "isolated_word_line",
+      "layout_audit_observation_id": "layout-p004-001",
+      "observation": "Page-local layout audit found one isolated-word line.",
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0"
     }
   ],
   "pass_6_output_calibration": [

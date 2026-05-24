@@ -149,7 +149,7 @@ For every paragraph, record whether it should stay, be revised in place, merged,
 
 ## PDF/Layout Lens
 
-Use rendered PDF as source of truth for layout. Inspect every page in requested PDF scope, chunking long PDFs as needed. Count pages with issues and clean pages; `Skipped` must be 0 for completed layout scope.
+Use rendered PDF as source of truth for layout, but keep the visual check page-local. For layout claims, run `scripts/check_page_layout.py` over the requested PDF page scope and inspect only escalated/ambiguous pages in the main context. Count pages with issues and clean pages through `layout_audit.json`; `Skipped` must be 0 for completed layout scope.
 
 Check page rhythm, headings, figure/table placement, caption proximity, widows/orphans, whitespace balance, cramped equations, overfull-looking lines, crowded legends, and skimmability. Cite PDF page/location for reader-facing problems; use LaTeX source only for likely fixes.
 

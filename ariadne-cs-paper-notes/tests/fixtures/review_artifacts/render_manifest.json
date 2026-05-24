@@ -16,10 +16,10 @@
     "html_source": "manual-fixture",
     "source_fidelity": "fixture",
     "source_artifact": "tests/fixtures/source_paper_reader.html",
-    "source_hash": "sha256:0123456789abcdef",
+    "source_hash": "sha256:d9fa0d504f1f956363924e63180f2559d417b079f37f16cdc1d32b594fc2bdc8",
     "sentence_id_scheme": "section-index-v1",
     "annotation_mode": "overlay-only",
-    "source_integrity_check": "fixture-not-run"
+    "source_integrity_check": "verified"
   },
   "pdf_linkage_level": "Level 0"
 }

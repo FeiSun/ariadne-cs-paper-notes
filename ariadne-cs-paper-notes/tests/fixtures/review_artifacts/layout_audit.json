@@ -1,0 +1,192 @@
+{
+  "tool": "scripts/check_page_layout.py",
+  "tool_version": "1",
+  "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+  "pdf": "debug/Hidden_Knowledge_with_RL/main.pdf",
+  "pdf_hash": "sha256:d59403d783e8c8a0bccb841de70d4b2b5e5cf2059d3e48b8ffb0276fa8294345",
+  "pages_total": 30,
+  "pages_checked": [
+    4
+  ],
+  "page_summaries": [
+    {
+      "page": 4,
+      "line_count": 189,
+      "word_count": 678,
+      "observations": 10,
+      "needs_main_review": false
+    }
+  ],
+  "observations": [
+    {
+      "page": 4,
+      "region_or_bbox": [
+        113.24,
+        158.43,
+        129.25,
+        166.24
+      ],
+      "issue_type": "isolated_word_line",
+      "severity": "polish",
+      "observation": "Single-word line in the body area; verify whether it is an orphaned word or intentional label.",
+      "evidence": "Line text: `RFT`.",
+      "needs_main_review": false,
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "observation_id": "layout-p004-001"
+    },
+    {
+      "page": 4,
+      "region_or_bbox": [
+        113.24,
+        167.03,
+        130.7,
+        174.84
+      ],
+      "issue_type": "isolated_word_line",
+      "severity": "polish",
+      "observation": "Single-word line in the body area; verify whether it is an orphaned word or intentional label.",
+      "evidence": "Line text: `DPO`.",
+      "needs_main_review": false,
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "observation_id": "layout-p004-002"
+    },
+    {
+      "page": 4,
+      "region_or_bbox": [
+        113.24,
+        180.1,
+        125.37,
+        187.95
+      ],
+      "issue_type": "isolated_word_line",
+      "severity": "polish",
+      "observation": "Single-word line in the body area; verify whether it is an orphaned word or intentional label.",
+      "evidence": "Line text: `RL`.",
+      "needs_main_review": false,
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "observation_id": "layout-p004-003"
+    },
+    {
+      "page": 4,
+      "region_or_bbox": [
+        418.83,
+        464.03,
+        432.28,
+        471.03
+      ],
+      "issue_type": "isolated_word_line",
+      "severity": "polish",
+      "observation": "Single-word line in the body area; verify whether it is an orphaned word or intentional label.",
+      "evidence": "Line text: `Train`.",
+      "needs_main_review": false,
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "observation_id": "layout-p004-004"
+    },
+    {
+      "page": 4,
+      "region_or_bbox": [
+        458.14,
+        464.03,
+        468.56,
+        471.03
+      ],
+      "issue_type": "isolated_word_line",
+      "severity": "polish",
+      "observation": "Single-word line in the body area; verify whether it is an orphaned word or intentional label.",
+      "evidence": "Line text: `Test`.",
+      "needs_main_review": false,
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "observation_id": "layout-p004-005"
+    },
+    {
+      "page": 4,
+      "region_or_bbox": [
+        388.21,
+        472.21,
+        399.08,
+        479.21
+      ],
+      "issue_type": "isolated_word_line",
+      "severity": "polish",
+      "observation": "Single-word line in the body area; verify whether it is an orphaned word or intentional label.",
+      "evidence": "Line text: `SFT`.",
+      "needs_main_review": false,
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "observation_id": "layout-p004-006"
+    },
+    {
+      "page": 4,
+      "region_or_bbox": [
+        420.86,
+        472.21,
+        433.48,
+        479.21
+      ],
+      "issue_type": "isolated_word_line",
+      "severity": "polish",
+      "observation": "Single-word line in the body area; verify whether it is an orphaned word or intentional label.",
+      "evidence": "Line text: `DPO`.",
+      "needs_main_review": false,
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "observation_id": "layout-p004-007"
+    },
+    {
+      "page": 4,
+      "region_or_bbox": [
+        455.25,
+        472.21,
+        466.82,
+        479.21
+      ],
+      "issue_type": "isolated_word_line",
+      "severity": "polish",
+      "observation": "Single-word line in the body area; verify whether it is an orphaned word or intentional label.",
+      "evidence": "Line text: `RFT`.",
+      "needs_main_review": false,
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "observation_id": "layout-p004-008"
+    },
+    {
+      "page": 4,
+      "region_or_bbox": [
+        488.6,
+        472.21,
+        496.66,
+        479.21
+      ],
+      "issue_type": "isolated_word_line",
+      "severity": "polish",
+      "observation": "Single-word line in the body area; verify whether it is an orphaned word or intentional label.",
+      "evidence": "Line text: `RL`.",
+      "needs_main_review": false,
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "observation_id": "layout-p004-009"
+    },
+    {
+      "page": 4,
+      "region_or_bbox": [
+        366.03,
+        494.13,
+        375.13,
+        525.56
+      ],
+      "issue_type": "isolated_word_line",
+      "severity": "polish",
+      "observation": "Single-word line in the body area; verify whether it is an orphaned word or intentional label.",
+      "evidence": "Line text: `Accuracy`.",
+      "needs_main_review": false,
+      "produced_by": "scripts/check_page_layout.py",
+      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "observation_id": "layout-p004-010"
+    }
+  ]
+}
