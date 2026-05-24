@@ -1,23 +1,28 @@
 {
-  "output_files": ["expected_html_report.html"],
+  "output_files": [
+    "expected_html_report.html"
+  ],
   "sections": [
-    {"id": "paper-reader", "status": "rendered"},
-    {"id": "executive-diagnosis", "status": "rendered"},
-    {"id": "issue-index", "status": "rendered"},
-    {"id": "claim-evidence-audit", "status": "rendered"},
-    {"id": "deep-reading-notes", "status": "rendered"},
-    {"id": "submission-readiness", "status": "rendered"},
-    {"id": "local-comments", "status": "rendered"},
-    {"id": "revision-plan", "status": "rendered"},
-    {"id": "coverage-receipt", "status": "rendered"}
+    {
+      "id": "paper-reader",
+      "status": "rendered"
+    },
+    {
+      "id": "global-findings",
+      "status": "rendered"
+    },
+    {
+      "id": "coverage-receipt",
+      "status": "rendered"
+    }
   ],
   "deferred_findings": [],
   "paper_reader": {
-    "html_source": "manual-fixture",
-    "source_fidelity": "fixture",
-    "source_artifact": "tests/fixtures/source_paper_reader.html",
-    "source_hash": "sha256:d9fa0d504f1f956363924e63180f2559d417b079f37f16cdc1d32b594fc2bdc8",
-    "sentence_id_scheme": "section-index-v1",
+    "html_source": "pandoc",
+    "source_fidelity": "deterministic",
+    "source_artifact": "/Users/ofey/Research/ariadne-cs-paper-notes/ariadne-cs-paper-notes/tests/fixtures/source_paper_reader.html",
+    "source_hash": "sha256:24e173a44214b49fab4cf9b54c3e4d484f3732098dfe1c3043a0d4db4038d81d",
+    "sentence_id_scheme": "section-paragraph-sentence-v2",
     "annotation_mode": "overlay-only",
     "source_integrity_check": "verified"
   },

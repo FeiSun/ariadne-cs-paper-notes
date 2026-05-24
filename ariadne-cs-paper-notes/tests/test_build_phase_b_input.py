@@ -111,7 +111,7 @@ def test_phase_b_context_compacts_phase_and_specialist_artifacts() -> None:
                         "diagnosis": "The main result table is hard to scan.",
                         "evidence_refs": ["layout-p002-001"],
                         "confidence": "medium",
-                        "render_hint": {"anchor": "page:2", "display_group": "submission-readiness"},
+                        "render_hint": {"anchor": "page:2", "display_group": "compiled-display-checks"},
                     }
                 ],
             },

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract checks for the HTML report fixture."""
+"""Contract checks for the paper-reader HTML report fixture."""
 
 from __future__ import annotations
 
@@ -37,131 +37,48 @@ def test_html_report_fixture_satisfies_current_contract() -> None:
     html = FIXTURE.read_text(encoding="utf-8")
 
     required_tokens = [
-        "论文正文批注",
+        'data-report-kind="paper-reader-with-global-findings"',
         'id="paper-reader"',
         'class="paper-reader"',
         'class="reader-shell"',
         'class="paper-pane"',
-        'data-paper-html-source="manual-fixture"',
-        'data-source-fidelity="fixture"',
+        'data-paper-html-source="pandoc"',
+        'data-source-fidelity="deterministic"',
         'data-source-artifact=',
         'data-source-hash="sha256:',
-        'data-sentence-id-scheme=',
+        'data-sentence-id-scheme="section-paragraph-sentence-v2"',
         'data-annotation-mode="overlay-only"',
-        'class="paper-sentence',
-        'class="paper-sentence has-annotation"',
-        'data-sentence-id=',
-        'data-has-issue="true"',
-        'data-issue-ids=',
         'id="annotation-panel"',
         'class="annotation-card',
-        'data-target-sentence=',
         "问题是什么",
         "为什么有问题",
-        "严重度理由",
+        "违反原则",
+        "自改问题",
         "上一条",
         "下一条",
-        "setActiveAnnotation",
-        "visibleAnnotatedSentences",
-        'data-filter="all"',
-        'data-filter="blocker"',
-        'data-filter="major"',
-        'data-filter="minor"',
-        'data-filter="polish"',
-        "data-severity=",
-        "data-hidden-by-filter",
-        "data-filter-empty",
-        "aria-pressed",
-        "data-type-filter",
-        "data-issue-type",
-        "empty-state",
-        "pdf-anchor",
-        "caption",
-        'scope="col"',
-        "finding-link",
-        "querySelectorAll",
-        "hiddenByFilter",
-        "Reader-Journey passes performed",
-        "Pass 0 done",
-        "Pass 1 done",
-        "Pass 2 done",
-        "Pass 3 done",
-        "Pass 4 done",
-        "Pass 5 done",
-        "Pass 6 done",
-        "总评诊断与可救骨架",
-        "问题索引",
-        "主张与证据审计",
-        "逐章精读批注",
-        "数字 / 公式 / 图表 / 版式 / 提交就绪",
-        "共性问题汇总",
-        "修改路线",
-        "覆盖回执与 artifacts",
-        "读后一句话",
-        "章节任务是否对齐",
-        "建议结构",
-        "未闭合问题",
-        "关联问题",
-        "段落",
-        "句子",
-        "检查维度",
-        "读者卡点",
-        "违反原则",
-        "下一稿任务",
-        "自改问题",
-        "data-note-kind=\"section\"",
-        "data-note-kind=\"paragraph\"",
-        "data-note-kind=\"sentence\"",
-        "data-decision",
-        "表中数值",
-        "可见复算值",
-        "差值",
-        "口径说明",
-        "High-risk fields complete",
-        "Severity audit",
-        "Rebuttal reverse check",
-        "Known blind spots",
-        "Structured artifacts",
-        "Numerical signals cited",
+        "AriadnePaperReaderOpenAnnotation",
+        "visibleSentences",
+        'id="global-findings"',
+        "全局重要问题",
+        'id="coverage-receipt"',
         "Coverage consistency",
-        "Body section / selector",
-        "Actual count",
-        "#deep-reading-notes [data-note-kind=&quot;sentence&quot;]",
-        "#deep-reading-notes [data-note-kind=&quot;paragraph&quot;]",
-        "#deep-reading-notes [data-note-kind=&quot;section&quot;]",
-        "notes citing source principles",
-        "Polish items",
-        "PDF pages",
-        "Figures",
-        "References",
-        "Pending in",
-        "Minimal viable paper",
-        "Delete vs. downgrade",
-        "Fix type",
-        "Next revision thread",
-        "置信度",
-        "验证方式",
-        "判级理由",
     ]
     for token in required_tokens:
         assert_contains(html, token)
 
-    required_sections = [
-        "paper-reader",
-        "executive-diagnosis",
-        "issue-index",
-        "claim-evidence-audit",
-        "deep-reading-notes",
-        "submission-readiness",
-        "local-comments",
-        "revision-plan",
-        "coverage-receipt",
-    ]
+    required_sections = ["paper-reader", "global-findings", "coverage-receipt"]
     for section_id in required_sections:
         assert_contains(html, f'id="{section_id}"')
         assert_contains(html, f'href="#{section_id}"')
 
     forbidden_legacy_sections = [
+        'id="executive-diagnosis"',
+        'id="issue-index"',
+        'id="claim-evidence-audit"',
+        'id="deep-reading-notes"',
+        'id="submission-readiness"',
+        'id="local-comments"',
+        'id="revision-plan"',
         'id="top-priorities"',
         'id="section-review"',
         'id="paragraph-surgery"',
@@ -172,10 +89,6 @@ def test_html_report_fixture_satisfies_current_contract() -> None:
     ]
     for token in forbidden_legacy_sections:
         assert_not_contains(html, token)
-
-    issue_index = html.split('<section id="issue-index">', 1)[1].split('<section id="claim-evidence-audit">', 1)[0]
-    assert_not_contains(issue_index, "降级条件")
-    assert_not_contains(issue_index, "下一稿任务")
 
     audit_module = load_audit_module()
     errors, warnings = audit_module.audit(FIXTURE)

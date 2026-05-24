@@ -11,18 +11,18 @@
     },
     {
       "unit": "Sentence notes",
-      "total": 14,
-      "reviewed": 14,
-      "with_issues": 13,
-      "clean": 1,
+      "total": 3,
+      "reviewed": 3,
+      "with_issues": 3,
+      "clean": 0,
       "skipped": 0
     },
     {
       "unit": "Paragraph rows",
-      "total": 2,
-      "reviewed": 2,
+      "total": 1,
+      "reviewed": 1,
       "with_issues": 1,
-      "clean": 1,
+      "clean": 0,
       "skipped": 0
     },
     {
@@ -35,18 +35,41 @@
     }
   ],
   "reader_journey_passes": [
-    {"pass": "Pass 0", "status": "done"},
-    {"pass": "Pass 1", "status": "done"},
-    {"pass": "Pass 2", "status": "done"},
-    {"pass": "Pass 3", "status": "done"},
-    {"pass": "Pass 4", "status": "done"},
-    {"pass": "Pass 5", "status": "done"},
-    {"pass": "Pass 6", "status": "done"}
+    {
+      "pass": "Pass 0",
+      "status": "done"
+    },
+    {
+      "pass": "Pass 1",
+      "status": "done"
+    },
+    {
+      "pass": "Pass 2",
+      "status": "done"
+    },
+    {
+      "pass": "Pass 3",
+      "status": "done"
+    },
+    {
+      "pass": "Pass 4",
+      "status": "done"
+    },
+    {
+      "pass": "Pass 5",
+      "status": "done"
+    },
+    {
+      "pass": "Pass 6",
+      "status": "done"
+    }
   ],
   "layout": {
     "pages_total": 30,
     "pages_checked": 1,
-    "pages_sampled": [4],
+    "pages_sampled": [
+      4
+    ],
     "pages_escalated": [],
     "full_layout_coverage": false
   },

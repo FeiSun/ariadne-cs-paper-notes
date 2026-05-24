@@ -114,7 +114,7 @@ def paper_reader_only_html() -> str:
 <article class="review-report" data-report-kind="paper-reader-only">
   <section id="paper-reader" class="paper-reader">
     <div class="reader-shell">
-      <article class="paper-pane" data-paper-html-source="pandoc" data-source-fidelity="deterministic" data-source-artifact="source.html" data-source-hash="sha256:d9fa0d504f1f956363924e63180f2559d417b079f37f16cdc1d32b594fc2bdc8" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
+      <article class="paper-pane" data-paper-html-source="pandoc" data-source-fidelity="deterministic" data-source-artifact="source.html" data-source-hash="sha256:d9fa0d504f1f956363924e63180f2559d417b079f37f16cdc1d32b594fc2bdc8" data-sentence-id-scheme="section-paragraph-sentence-v2" data-annotation-mode="overlay-only">
         <p>
           <span class="paper-sentence" data-sentence-id="s-intro-001">Clean sentence.</span>
           <span class="paper-sentence has-annotation" data-sentence-id="s-intro-002" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="claim" role="button" tabindex="0" aria-describedby="ann-s-intro-002">Problem sentence.</span>
@@ -136,6 +136,22 @@ def paper_reader_only_html() -> str:
 </article>
 </body></html>"""
 
+
+
+def paper_reader_with_global_findings_html() -> str:
+    return paper_reader_only_html().replace(
+        'data-report-kind="paper-reader-only"',
+        'data-report-kind="paper-reader-with-global-findings"',
+        1,
+    ).replace(
+        '<section id="paper-reader"',
+        '<div id="finding-anchor-index" hidden aria-hidden="true"><span id="F1"></span></div>\n  <section id="paper-reader"',
+        1,
+    ).replace(
+        '<section id="coverage-receipt">',
+        '<section id="global-findings"><h2>全局重要问题</h2><article class="global-finding" data-severity="major" data-issue-type="whole_paper"><h3>全局问题</h3></article></section>\n  <section id="coverage-receipt">',
+        1,
+    )
 
 def write_temp_html(text: str) -> Path:
     tmp = tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8")
@@ -162,7 +178,7 @@ def source_backed_paper_reader_html(source_path: Path = SOURCE, declared_hash: s
 <article class="review-report" data-report-kind="paper-reader-only">
   <section id="paper-reader" class="paper-reader">
     <div class="reader-shell">
-      <article class="paper-pane" data-paper-html-source="pandoc" data-source-fidelity="deterministic" data-source-artifact="{source_path}" data-source-hash="{declared_hash}" data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
+      <article class="paper-pane" data-paper-html-source="pandoc" data-source-fidelity="deterministic" data-source-artifact="{source_path}" data-source-hash="{declared_hash}" data-sentence-id-scheme="section-paragraph-sentence-v2" data-annotation-mode="overlay-only">
 {annotated_body}
       </article>
       <aside id="annotation-panel" class="annotation-panel">
@@ -213,6 +229,33 @@ def test_audit_allows_paper_reader_only_deliverable() -> None:
         path.unlink(missing_ok=True)
     if errors:
         raise AssertionError(f"Expected paper-reader-only HTML to pass, got {errors}")
+
+
+def test_audit_allows_paper_reader_with_global_findings_deliverable() -> None:
+    module = load_module()
+    path = write_temp_html(paper_reader_with_global_findings_html())
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if errors:
+        raise AssertionError(f"Expected paper-reader global-findings HTML to pass, got {errors}")
+
+
+def test_audit_rejects_legacy_workbench_sections_in_paper_reader_reports() -> None:
+    module = load_module()
+    html = paper_reader_with_global_findings_html().replace(
+        '<section id="coverage-receipt">',
+        '<section id="issue-index"><h2>问题索引</h2></section>\n  <section id="coverage-receipt">',
+        1,
+    )
+    path = write_temp_html(html)
+    try:
+        errors, _ = module.audit(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("legacy workbench sections" in error for error in errors):
+        raise AssertionError(f"Expected legacy workbench section rejection, got {errors}")
 
 
 def test_audit_with_source_verifies_hash_and_body() -> None:
@@ -623,6 +666,8 @@ def main() -> int:
     test_audit_rejects_missing_deep_reading_section()
     test_audit_counts_nested_deep_reading_rows()
     test_audit_allows_paper_reader_only_deliverable()
+    test_audit_allows_paper_reader_with_global_findings_deliverable()
+    test_audit_rejects_legacy_workbench_sections_in_paper_reader_reports()
     test_audit_with_source_verifies_hash_and_body()
     test_audit_with_source_rejects_bad_source_hash()
     test_audit_with_source_rejects_rewritten_paper_body()

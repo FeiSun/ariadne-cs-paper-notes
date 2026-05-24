@@ -144,7 +144,7 @@ scripts/run_review_pipeline.py <main.tex-or-project> --bundle <bundle>
 
 It prepares/builds the PDF when possible, renders source HTML, extracts review units, runs deterministic specialists, writes `phase_a_resume_status.json`, `phase_a_next_step.json`, and `phase_a_prompt_packet.json`, and then stops if Prose Phase A/B artifacts are missing. When Phase A artifacts exist, it also writes `phase_b_context.json` and `phase_b_prompt_packet.json`. After the Prose agents have written their JSON/JSONL artifacts, rerun the same command to compile, derive, render, and audit. Use `--allow-partial-compile` only for debugging or specialist-only previews; partial compile output must not be presented as a full-paper prose review.
 
-For source-derived HTML annotation pages, the coordinator calls `render_paper_html.py` with `--reuse-raw-html` and leaves `--full-report` off, so the deliverable stays paper-first: original manuscript text with overlay annotations and a compact coverage receipt. The exact canonical source HTML that generated `review_units` must be reused so sentence anchors do not change between Prose Phase A and final rendering. Pass `--full-report` only when the user explicitly asks for a full workbench-style report after the annotated paper; agents must not write HTML.
+For source-derived HTML annotation pages, the coordinator calls `render_paper_html.py` with `--reuse-raw-html` and leaves `--full-report` off by default, so the deliverable stays paper-first: original manuscript text with overlay annotations and a compact coverage receipt. The exact canonical source HTML that generated `review_units` must be reused so sentence anchors do not change between Prose Phase A and final rendering. Pass `--full-report` only when the user explicitly wants the extra `#global-findings` section for independent whole-paper Major/Blocker critiques; agents must not write HTML.
 
 If a vision-capable figure/caption specialist is available, pass `--vision-figure-agent-cmd "<command>"`. The runner creates tool-only page images and a compact vision packet; only the curated `figure_caption` issue artifact and compact runner summary should enter orchestration context.
 
@@ -182,6 +182,8 @@ scripts/build_review_derivatives.py \
 
 The derivative builder writes `coverage.json`, `render_manifest.json`, and `pass_observations.json` from compiled artifacts and issue artifacts. It should be the default path for these files; manual versions are only acceptable when the derived script cannot express an unusual split-part run, and they must still pass artifact audit.
 
+Use `--render-mode paper-reader-only` for overlay plus coverage. Use `--render-mode paper-reader-with-global-findings` when final rendering passes `--full-report`.
+
 ## Artifact Workflow
 
 1. Identify input type: LaTeX project, single `.tex`, compiled/rendered PDF, PDF-only paper, excerpt, figures/tables, or submission package.
@@ -200,7 +202,7 @@ The derivative builder writes `coverage.json`, `render_manifest.json`, and `pass
 
 ## Reader-Journey Passes
 
-Run these passes internally. For paper-reader HTML批注, render them primarily as article-anchored overlay annotations plus coverage. For explicit full workbench reports, render externally in the workbench order from `report_contract.md`.
+Run these passes internally. For paper-reader HTML批注, render them primarily as article-anchored overlay annotations plus coverage. Only true whole-paper Major/Blocker synthesis belongs in `#global-findings`.
 
 ### Pass 0 -- Engagement Contract
 
@@ -321,7 +323,7 @@ Run these before delivery and record compact status in the Coverage Receipt.
 - HTML contract check: if HTML exists, every severity-badged issue has `data-severity`; filters work or are static legend; no unimplemented PDF sync is promised.
 - Tool-boundary check: scripts are cited as signals/evidence, not verdicts.
 - Blind-spot check: missing source, code, data, seed results, venue rules, or visual resolution are stated.
-- Workbench structure check: full reports use the canonical 8-section order.
+- Paper-reader structure check: reports contain only `#paper-reader`, optional `#global-findings`, and `#coverage-receipt`; legacy workbench sections are absent.
 - Body-backed count check: every header/summary/coverage count is backed by visible body rows or explicit pending marker.
 - Verdict calibration check: deterministic errors use concrete directive language.
 
@@ -329,10 +331,10 @@ Run these before delivery and record compact status in the Coverage Receipt.
 
 List each quantitative coverage claim in the header, summary band, body, and Coverage Receipt. Match it to a body selector or artifact-backed count, such as:
 
-- `#deep-reading-notes [data-note-kind="sentence"]`
-- `#deep-reading-notes [data-note-kind="paragraph"]`
-- `#deep-reading-notes [data-note-kind="section"]`
-- `#submission-readiness [data-issue-type="numeric"]`
+- `.paper-sentence.has-annotation`
+- `.has-paragraph-annotation`
+- `.has-section-annotation`
+- `#global-findings .global-finding`
 - `#coverage-receipt`
 
 Fix mismatches by adding missing rows, correcting counts, or splitting the report. Record: `Coverage consistency: N claims checked, M repaired, 0 unresolved`.

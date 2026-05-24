@@ -708,8 +708,38 @@ def test_paragraph_section_and_paper_annotations_render_as_bubbles() -> None:
         raise AssertionError("Paragraph annotation card missing target")
     if cards_soup.select_one('[data-target-section="intro"]') is None:
         raise AssertionError("Section annotation card missing target")
-    if cards_soup.select_one('[data-target-paper="paper"]') is None:
+    if cards_soup.select_one('[data-target-paper^="paper-"]') is None:
         raise AssertionError("Paper annotation card missing target")
+
+
+def test_unanchored_paper_annotations_do_not_create_overview_buttons() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <p><span class="paper-sentence" data-sentence-id="s1">Clean sentence.</span></p>
+</body></html>
+""",
+        "lxml",
+    )
+    annotations = [
+        {
+            "issue_id": "figure_caption:L1",
+            "severity": "minor",
+            "issue_type": "figure_caption",
+            "target_level": "paper",
+            "paper_id": "paper",
+            "title": "Caption is not anchored",
+            "problem": "Rendered caption issue has no unique sentence anchor.",
+            "unanchored": "true",
+        }
+    ]
+    applied = module.apply_annotations(soup, annotations)
+    if soup.select_one("#paper-overview-annotations .annotation-bubble.paper") is not None:
+        raise AssertionError("Unanchored paper issue should not create a paper overview button")
+    cards = module.render_annotation_cards(applied)
+    if 'data-unanchored="true"' not in cards or 'data-target-paper=' in cards:
+        raise AssertionError("Unanchored paper issue should render only as an unanchored card")
 
 
 def test_issue_artifacts_render_as_unanchored_annotation_cards() -> None:
@@ -742,7 +772,7 @@ def test_issue_artifacts_render_as_unanchored_annotation_cards() -> None:
                             "confidence": "medium",
                             "severity_rationale": "It affects main evidence.",
                             "downgrade_condition": "Readable compiled table.",
-                            "render_hint": {"anchor": "page:1", "display_group": "submission-readiness"},
+                            "render_hint": {"anchor": "page:1", "display_group": "compiled-display-checks"},
                         }
                     ],
                 }
@@ -758,8 +788,8 @@ def test_issue_artifacts_render_as_unanchored_annotation_cards() -> None:
     if annotation.get("unanchored") != "true":
         raise AssertionError("page-level issue artifact should render as unanchored card")
     cards = module.render_annotation_cards(annotations)
-    if "Main table is cramped" not in cards or "submission-readiness" not in cards:
-        raise AssertionError("Issue artifact annotation card did not preserve title/display group")
+    if "Main table is cramped" not in cards or "编译后展示检查" not in cards:
+        raise AssertionError("Issue artifact annotation card did not preserve title/display group label")
 
 
 def main() -> int:
@@ -779,6 +809,7 @@ def main() -> int:
     test_annotation_cards_show_meaningful_numeric_evidence()
     test_missing_explicit_sentence_id_falls_back_to_snippet_match()
     test_paragraph_section_and_paper_annotations_render_as_bubbles()
+    test_unanchored_paper_annotations_do_not_create_overview_buttons()
     test_issue_artifacts_render_as_unanchored_annotation_cards()
     print("render_paper_html regression tests passed")
     return 0

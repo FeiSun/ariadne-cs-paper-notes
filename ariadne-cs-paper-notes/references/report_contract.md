@@ -1,45 +1,26 @@
 # Ariadne Report Contract
 
-Use this file for full workbench-style reports and structured JSON artifacts. For HTML-specific rules, also load `html_contract.md`. For strict numeric rendering, also load `numeric_contract.md`.
+Use this file for structured JSON artifacts and the paper-reader report contract. For HTML-specific rules, also load `html_contract.md`. For strict numeric rendering, also load `numeric_contract.md`.
 
-## Workbench Order
+## Paper-Reader Order
 
-The Reader-Journey passes are internal. Render reports as a revision workbench in this order:
+The Reader-Journey passes are internal. Student-facing HTML now uses a paper-first shape:
 
-1. **Executive Diagnosis and Salvageable Core / 总评诊断与可救骨架**
-2. **Issue Index / Finding Ledger / 问题索引**
-3. **Claim-Evidence Audit / 主张与证据审计**
-4. **Deep Reading Notes / 逐章精读批注**
-5. **Submission Readiness / 数字/公式/图表/版式/提交就绪**
-6. **Local Patterns / 共性问题汇总**
-7. **Revision Plan / 修改路线**
-8. **Coverage Receipt and Artifacts / 覆盖回执与 artifacts**
+1. **Paper Reader / 论文正文批注**
+2. **Global Findings / 全局重要问题** only when `--full-report` is requested or the manifest declares `paper-reader-with-global-findings`
+3. **Coverage Receipt / 覆盖回执**
 
-Focused reviews keep the supported subset in the same relative order. Omit paper-level slots only when input cannot support them, and say so.
+The old workbench sections (`总评诊断`, `问题索引`, `主张证据`, `精读批注`, `提交就绪`, `共性问题`, `修改路线`) are legacy and must not be emitted by paper-reader HTML. Sentence, paragraph, and section notes belong in overlay anchors and annotation cards, not in a separate deep-reading ledger.
 
-## Section Content
+## Finding Ledger JSON
 
-### Executive Diagnosis and Salvageable Core
-
-Include:
-
-- 一句话 verdict;
-- paper type and review contract;
-- highest-risk weakness and why it blocks reader belief;
-- salvageable core: minimal viable paper after fixing Blockers/top Majors;
-- claims to delete, downgrade, or support with new evidence.
-
-Include **Salvageable Core** when the report has at least two `Blocker` findings or at least three `Major` findings. Use four compact blocks: minimal viable paper, delete/downgrade, fix type, next revision thread.
-
-### Issue Index / Finding Ledger
-
-This is the canonical source for core issue explanations. Include all `Blocker`, `Major`, and revision-relevant grouped `Minor/Polish`. For paper-reader overlays, keep the full teaching content here and let local annotations point back by `issue_id`; do not duplicate diagnosis, reader friction, principle, evidence basis, or self-check fields in `annotations.json`.
+`findings.json` is the canonical source for core issue explanations. Include all `Blocker`, `Major`, and revision-relevant grouped `Minor/Polish`. For paper-reader overlays, keep the full teaching content here and let local annotations point back by `issue_id`; do not duplicate diagnosis, reader friction, principle, evidence basis, or self-check fields in `annotations.json`.
 
 Use stable finding ids in `F<number>` form, such as `F1`, `F2`, `F12`. Use suffixes such as `F3a`, `F3b`, `F3c` only when splitting one grouped issue. Do not use severity-prefixed ids such as `B1`, `M3`, `N2`, or `P1`.
 
 Every later `关联问题` links to a defined id. Later sections should write local consequence plus linked id, not repeat full diagnosis.
 
-### Paper-Reader Annotation Artifacts
+## Paper-Reader Annotation Artifacts
 
 For source-derived overlay reports, prefer anchor-only annotations:
 
@@ -55,7 +36,7 @@ For source-derived overlay reports, prefer anchor-only annotations:
 
 `findings.json` stores the full review prose once. `annotations.json` stores only anchor, short UI label, and current source artifact/hash. Render with `scripts/render_paper_html.py --annotations annotations.json --findings findings.json`; the renderer joins the teaching content at HTML generation time.
 
-For source-derived paper-reader annotation pages, render from the exact canonical source artifact used for review-unit extraction and leave `--full-report` off. Use `--full-report` only for explicit full workbench-style reports:
+For source-derived paper-reader annotation pages, render from the exact canonical source artifact used for review-unit extraction. Leave `--full-report` off for overlay plus coverage; add `--full-report` only when the user wants the extra `#global-findings` section. `--issues-dir` may contribute display-facing specialist overlays such as layout, numeric, and figure/caption, but hidden source hygiene, hidden reference metadata, and macro-only symbol findings should remain in JSON/audit artifacts unless they visibly affect the rendered paper:
 
 ```bash
 scripts/render_paper_html.py <main.tex> \
@@ -63,28 +44,27 @@ scripts/render_paper_html.py <main.tex> \
   --reuse-raw-html \
   --annotations <bundle>/annotations.json \
   --findings <bundle>/findings.json \
-  --claims <bundle>/claims.json \
   --coverage <bundle>/coverage.json \
-  --pass-observations <bundle>/pass_observations.json \
   --issues-dir <bundle>/issue_artifacts \
   --output <stem>.html
 ```
 
-For full workbench reports, add `--full-report` and ensure `render_manifest.json` declares the workbench sections as rendered. For paper-reader-only pages, `render_manifest.json` should declare only `paper-reader` and `coverage-receipt`. The renderer, not an LLM, must emit the sections declared in `render_manifest.json`. If `--reuse-raw-html` is omitted during final rendering, the renderer may regenerate source HTML and change anchors; artifact audit should treat that as unsafe for source-derived overlay reports.
+With `--full-report`, `render_manifest.json` should declare `paper-reader`, `global-findings`, and `coverage-receipt`; without it, declare only `paper-reader` and `coverage-receipt`. The renderer, not an LLM, must emit the sections declared in `render_manifest.json`. If `--reuse-raw-html` is omitted during final rendering, the renderer may regenerate source HTML and change anchors; artifact audit should treat that as unsafe for source-derived overlay reports.
 
-Suggested ledger columns:
+## Global Findings
 
-- `ID`
-- `严重度`
-- `问题类型`
-- `一句话问题`
-- `主要位置`
-- `后文引用位置`
-- `状态 / 下一步`
+Global findings are not a re-rendered issue index. Include only independent whole-paper Major/Blocker critiques, for example:
 
-### Claim-Evidence Audit
+- novelty or positioning weakness;
+- story-logic / thesis-to-evidence gap;
+- experiment-design or evaluation-independence threat;
+- paper-wide claim calibration and limitation visibility.
 
-Include when abstract/main claims are available:
+Bind local issues to their real location instead. A judge-risk finding about `LLM-as-a-Judge Verification` should be a section/paragraph annotation there, not a global finding. LaTeX macro, hidden BibTeX, and source-hygiene findings should stay out of student-facing global findings unless they visibly affect the rendered paper or submission checklist.
+
+## Claim-Evidence JSON
+
+Record when abstract/main claims are available:
 
 - Abstract Promise Tracking;
 - Claim-Evidence Map;
@@ -92,11 +72,11 @@ Include when abstract/main claims are available:
 - title/abstract/introduction/conclusion alignment;
 - skim-test observations from Pass 1 when they affect recoverability.
 
-Every abstract sentence containing a number, causal verb, novelty/scope claim, "first", "significant", "state-of-the-art", "robust", "efficient", "general", or "all/across" should appear in the promise table.
+Every abstract sentence containing a number, causal verb, novelty/scope claim, "first", "significant", "state-of-the-art", "robust", "efficient", "general", or "all/across" should appear in `claims.json` or the argument map. Do not emit a separate top-level claim-evidence HTML table for paper-reader reports.
 
-### Deep Reading Notes
+## Overlay Reading Notes
 
-Organize in manuscript order. Do not split `分章批注`, `逐段手术`, and `句子级批注` into separate top-level sections.
+Organize in manuscript order through paper-reader anchors. Do not split `分章批注`, `逐段手术`, and `句子级批注` into separate top-level HTML sections.
 
 For each visible section:
 
@@ -106,9 +86,9 @@ For each visible section:
 
 Do not render visible `clean` rows. Clean units appear in coverage counts and optional machine-readable artifacts.
 
-### Submission Readiness
+## Submission Readiness Signals
 
-Put cross-cutting artifact checks here:
+Keep cross-cutting artifact checks in issue artifacts and overlay/global annotations:
 
 - numerical/table arithmetic and table completeness;
 - formula/symbol/algorithm consistency;
@@ -117,15 +97,15 @@ Put cross-cutting artifact checks here:
 - references/citations, checklist, venue compliance, anonymity, source hygiene;
 - Polish Sweep.
 
-Use linked finding ids and concrete values; avoid repeating Issue Index diagnosis.
+Use linked finding ids and concrete values; avoid repeating finding diagnosis in multiple visible places.
 
-### Local Patterns
+## Local Patterns
 
-Summarize repeated writing habits only. Give 2-3 representative locations and link to canonical finding ids or deep-reading rows. Do not relist every instance.
+Summarize repeated writing habits as findings only when they affect the reader across multiple anchors. Give representative locations through `target_anchors` and do not relist every instance in HTML.
 
-### Revision Plan
+## Revision Plan Data
 
-Render as an execution table, not prose recap. Suggested columns:
+If a revision plan is requested separately, save it as structured data or a separate artifact, not as a default paper-reader section. Suggested fields:
 
 - `优先级`: `P0`, `P1`, `P2`, `P3`
 - `任务`
@@ -136,7 +116,7 @@ Render as an execution table, not prose recap. Suggested columns:
 
 Keep rows short and link finding ids instead of repeating diagnoses.
 
-### Coverage Receipt and Artifacts
+## Coverage Receipt and Artifacts
 
 Include:
 
@@ -240,7 +220,7 @@ Minimum shape:
       "confidence": "medium",
       "render_hint": {
         "anchor": "page:12",
-        "display_group": "submission-readiness"
+        "target_level": "paper"
       }
     }
   ]
@@ -261,7 +241,7 @@ The compiler should deduplicate issue artifacts conservatively:
 
 - Same or overlapping `evidence_refs` plus same domain and same diagnosis type: merge into one finding, preserving all `source_issue_ids`.
 - Same anchor plus different domains: usually keep separate findings and add `related_issue_ids`; merge only when the reader-facing diagnosis and next action are identical.
-- Prose issue and specialist issue at the same anchor: prose finding stays primary when it explains the reader/argument consequence; specialist issue becomes provenance, a sub-finding, or a linked Submission Readiness row.
+- Prose issue and specialist issue at the same anchor: prose finding stays primary when it explains the reader/argument consequence; specialist issue becomes provenance, a sub-finding, or a linked overlay/global finding.
 - Same table/figure/page but different failure modes, such as layout overflow versus caption takeaway: keep separate findings and cross-link.
 - Whole-paper Phase B findings may absorb multiple lower-level issues only when the lower-level findings would be redundant after synthesis; otherwise link them with `related_issue_ids`.
 
@@ -355,7 +335,7 @@ Phase B artifacts:
 
 The compactor should include only section-level summaries, top issue ids, compact claim candidates, cross-section term/claim signals, and specialist issue summaries. It must not copy full review units, full paragraph decisions, full raw audits, or complete bibliography/layout/PDF dumps into `phase_b_context.json`.
 
-Use Chinese labels in visible UI. In compact Issue Index cards, prefer only: `位置`, `片段`, `诊断`, `依据`, `置信度`, `验证方式`, `判级理由`, `读者卡点`. In paper-reader margin cards, keep the card focused on the teaching note: `问题是什么`, `为什么有问题`, `违反原则`, optional informative `严重度理由`, optional manuscript-level `核查依据`, and `自改问题`. Do not show `位置`, `原句/片段`, or `证据/验证` in sentence/paragraph/section/paper overlay cards because the active paper anchor already supplies location and original text. Show `核查依据` only for concrete manuscript-level checks, not for generic grammar/prose judgments. Do not show mechanical provenance such as generated ids or source-derived renderer details. Prefer `自改问题` over `下一稿任务`; keep detailed command-style repair steps in JSON, local rows, or Revision Plan unless the user genuinely requested direct revision instructions.
+Use Chinese labels in visible UI. In paper-reader margin cards, keep the card focused on the teaching note: `问题是什么`, `为什么有问题`, `违反原则`, optional informative `严重度理由`, optional manuscript-level `核查依据`, and `自改问题`. Do not show `位置`, `原句/片段`, or `证据/验证` in sentence/paragraph/section/paper overlay cards because the active paper anchor already supplies location and original text. Show `核查依据` only for concrete manuscript-level checks, not for generic grammar/prose judgments. Do not show mechanical provenance such as generated ids or source-derived renderer details. Prefer `自改问题` over `下一稿任务`; keep detailed command-style repair steps in JSON or a requested revision-plan artifact.
 
 ## Claim Schema
 

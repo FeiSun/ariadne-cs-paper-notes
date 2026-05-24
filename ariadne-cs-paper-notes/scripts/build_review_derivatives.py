@@ -12,15 +12,9 @@ from pathlib import Path
 from typing import Any
 
 
-WORKBENCH_SECTIONS = [
+PAPER_READER_GLOBAL_SECTIONS = [
     "paper-reader",
-    "executive-diagnosis",
-    "issue-index",
-    "claim-evidence-audit",
-    "deep-reading-notes",
-    "submission-readiness",
-    "local-comments",
-    "revision-plan",
+    "global-findings",
     "coverage-receipt",
 ]
 PAPER_READER_ONLY_SECTIONS = [
@@ -28,7 +22,7 @@ PAPER_READER_ONLY_SECTIONS = [
     "coverage-receipt",
 ]
 RENDER_MODES = {
-    "compiled-review": WORKBENCH_SECTIONS,
+    "paper-reader-with-global-findings": PAPER_READER_GLOBAL_SECTIONS,
     "paper-reader-only": PAPER_READER_ONLY_SECTIONS,
 }
 PASS_KEYS = {
@@ -206,17 +200,18 @@ def build_render_manifest(
     html_source: str,
     visible_scope: str,
     deferred_findings: list[str],
+    source_integrity_check: str = "skipped",
     rendered_sections: list[str] | None = None,
 ) -> dict[str, Any]:
-    sections = [{"id": section_id, "status": "rendered"} for section_id in (rendered_sections or WORKBENCH_SECTIONS)]
+    sections = [{"id": section_id, "status": "rendered"} for section_id in (rendered_sections or PAPER_READER_GLOBAL_SECTIONS)]
     paper_reader: dict[str, Any] = {
         "html_source": html_source,
         "source_fidelity": source_fidelity,
         "source_artifact": str(source_artifact) if source_artifact else "",
         "source_hash": source_hash,
-        "sentence_id_scheme": "section-index-v1",
+        "sentence_id_scheme": "section-paragraph-sentence-v2",
         "annotation_mode": "overlay-only",
-        "source_integrity_check": "skipped",
+        "source_integrity_check": source_integrity_check,
     }
     if visible_scope:
         paper_reader["visible_scope"] = visible_scope
@@ -314,7 +309,8 @@ def build_all(
     source_fidelity: str,
     html_source: str,
     visible_scope: str,
-    render_mode: str = "compiled-review",
+    source_integrity_check: str = "skipped",
+    render_mode: str = "paper-reader-with-global-findings",
 ) -> dict[str, Any]:
     findings_payload = load_json(findings_path)
     annotations_payload = load_json(annotations_path)
@@ -337,6 +333,7 @@ def build_all(
         source_fidelity=source_fidelity,
         html_source=html_source,
         visible_scope=visible_scope,
+        source_integrity_check=source_integrity_check,
         deferred_findings=[],
         rendered_sections=rendered_sections,
     )
@@ -357,9 +354,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-fidelity", default="deterministic", choices=("deterministic", "limited-scope", "fixture"))
     parser.add_argument("--html-source", default="pandoc", choices=("latexml", "ar5iv", "pandoc", "extracted-text", "manual-fixture"))
     parser.add_argument("--visible-scope", default="")
+    parser.add_argument("--source-integrity-check", default="skipped", choices=("verified", "mismatch", "skipped"))
     parser.add_argument(
         "--render-mode",
-        default="compiled-review",
+        default="paper-reader-with-global-findings",
         choices=tuple(RENDER_MODES),
         help="Sections expected in the final HTML render.",
     )
@@ -380,6 +378,7 @@ def main(argv: list[str] | None = None) -> int:
         source_fidelity=args.source_fidelity,
         html_source=args.html_source,
         visible_scope=args.visible_scope,
+        source_integrity_check=args.source_integrity_check,
         render_mode=args.render_mode,
     )
     write_json(args.coverage_out, payloads["coverage"])

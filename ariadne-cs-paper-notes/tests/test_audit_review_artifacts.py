@@ -535,7 +535,7 @@ def valid_issue_artifact(**overrides: object) -> dict[str, object]:
                 "confidence": "medium",
                 "severity_rationale": "The issue affects the main evidence.",
                 "downgrade_condition": "Readable main-table layout in the compiled PDF.",
-                "render_hint": {"anchor": "page:1", "display_group": "submission-readiness"},
+                "render_hint": {"anchor": "page:1", "display_group": "compiled-display-checks"},
             }
         ],
     }

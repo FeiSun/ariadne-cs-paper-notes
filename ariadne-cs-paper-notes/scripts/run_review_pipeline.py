@@ -582,7 +582,7 @@ def compile_artifacts(ctx: PipelineContext) -> None:
 
 
 def build_derivatives(ctx: PipelineContext, *, requested_scope: str, full_report: bool) -> None:
-    render_mode = "compiled-review" if full_report else "paper-reader-only"
+    render_mode = "paper-reader-with-global-findings" if full_report else "paper-reader-only"
     cmd = [
         sys.executable,
         script("build_review_derivatives.py"),
@@ -600,6 +600,8 @@ def build_derivatives(ctx: PipelineContext, *, requested_scope: str, full_report
         requested_scope,
         "--render-mode",
         render_mode,
+        "--source-integrity-check",
+        "verified",
         "--output-file",
         str(ctx.report_html),
         "--coverage-out",
@@ -643,14 +645,9 @@ def render_final(ctx: PipelineContext, args: argparse.Namespace) -> None:
         "--reuse-raw-html",
         "--coverage",
         str(ctx.bundle / "coverage.json"),
-        "--pass-observations",
-        str(ctx.bundle / "pass_observations.json"),
     ]
     if args.full_report:
         cmd.append("--full-report")
-    claims = ctx.bundle / "claims.json"
-    if claims.exists():
-        cmd.extend(["--claims", str(claims)])
     if args.inline_images:
         cmd.append("--inline-images")
     step = run_command("render_final_report", cmd, outputs=[ctx.report_html, ctx.source_html], timeout=args.render_timeout)
@@ -776,7 +773,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-render", action="store_true", help="Do not render source HTML; requires --source-html or existing source")
     parser.add_argument("--prepare-only", action="store_true", help="Stop after deterministic prep and Phase A resume packet")
     parser.add_argument("--allow-partial-compile", action="store_true", help="Compile available issues even if Prose Phase A/B is incomplete")
-    parser.add_argument("--full-report", action="store_true", help="Render full compiled-review workbench sections after the paper-reader overlay")
+    parser.add_argument("--full-report", action="store_true", help="Render global Major/Blocker paper-level findings after the paper-reader overlay")
     parser.add_argument("--skip-final-render", action="store_true", help="Compile artifacts but skip final HTML rendering")
     parser.add_argument("--skip-audit", action="store_true", help="Skip final audits")
     parser.add_argument("--inline-images", action="store_true", help="Inline rendered PDF figures in final HTML")

@@ -169,11 +169,11 @@ This file records implementation decisions, tradeoffs, and spec clarifications m
 - Decision not explicit in the spec: page images are tool-only artifacts; the main orchestrator should read only the runner summary and final curated issue artifact. This preserves the context-isolation principle for visual evidence.
 - Tradeoff: the deterministic figure/caption checker remains the default. The vision hook is opt-in because semantic visual judgment needs a model with image access and may vary by provider.
 
-## 2026-05-24 -- Deterministic Full Report Renderer
+## 2026-05-24 -- Paper-Reader Global Findings Renderer
 
 - `render_paper_html.py` now supports `--reuse-raw-html` so final rendering can overlay annotations onto the exact source-derived HTML that was used to extract review units. This prevents final render from rerunning Pandoc and changing sentence anchors after Prose Phase A/B.
-- The renderer also supports `--full-report`, `--claims`, `--coverage`, and `--pass-observations`. In full-report mode it deterministically emits the workbench sections required by `render_manifest.json`: executive diagnosis, issue index, claim-evidence audit, deep reading notes, submission readiness, local comments, revision plan, and coverage receipt.
-- Decision not explicit in the spec: the first deterministic workbench renderer is intentionally conservative and table-driven. It prioritizes artifact auditability and stable IDs over a hand-polished narrative layout. The Prose Agent still owns the prose inside `findings.json` and `claims.json`.
+- The renderer supports `--full-report`, `--coverage`, and global finding rendering. In current paper-reader mode, `--full-report` appends only `#global-findings` plus `#coverage-receipt`; it no longer emits the legacy workbench sections (`executive-diagnosis`, `issue-index`, `claim-evidence-audit`, `deep-reading-notes`, `submission-readiness`, `local-comments`, `revision-plan`).
+- Decision not explicit in the spec: paper-reader HTML is now the canonical student-facing shape. Full teaching content lives in `findings.json` and is joined into overlay cards; only independent whole-paper Major/Blocker findings are duplicated below the paper as `#global-findings`.
 - Fixed a contract gap where compiled findings with only `target_anchors` did not become paper-reader overlay annotations. The renderer now infers sentence/paragraph/section targets from `target_anchors`, `primary_anchor`, or `anchor`.
 
 ## 2026-05-24 -- Fake-Agent End-to-End Canary

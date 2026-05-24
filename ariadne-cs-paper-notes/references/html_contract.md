@@ -8,7 +8,7 @@ Use this file when the user asks for HTML, 网页, 可视化报告, 批注报告
 - Keep precise technical terms in English when clearer: claim, evidence, baseline, ablation, caption, limitation, coverage.
 - Produce a self-contained `.html` unless the user asks otherwise.
 - The HTML is a teaching annotation interface, not merely a report. Put the paper text first and attach comments directly to the sentences that need attention.
-- When the user asks specifically for a paper-HTML annotation page, default to a paper-reader-only deliverable: set `data-report-kind="paper-reader-only"` on `.review-report`, keep `#paper-reader`, `#annotation-panel`, provenance metadata, annotation cards, and a compact coverage receipt, and do not recreate the full workbench tables unless requested.
+- When the user asks specifically for a paper-HTML annotation page, default to a paper-reader deliverable: set `data-report-kind="paper-reader-only"` for overlay plus coverage, or `data-report-kind="paper-reader-with-global-findings"` when explicitly adding independent whole-paper findings. Keep `#paper-reader`, `#annotation-panel`, provenance metadata, annotation cards, and a compact coverage receipt. Do not recreate the legacy full workbench tables.
 - Do not require external network assets, remote fonts, CDN scripts, or CSS frameworks.
 - Inline JavaScript is allowed for self-contained filters/toggles.
 - Do not claim live PDF synchronization, clickable PDF jumping, embedded PDF annotations, or written PDF comments unless implemented and checked.
@@ -18,23 +18,28 @@ Use this file when the user asks for HTML, 网页, 可视化报告, 批注报告
 
 ## Required Sections
 
-Paper-reader-only annotation pages use `#paper-reader` and `#coverage-receipt`. Full workbench sections are opt-in for requests that explicitly ask for a report/workbench/table-style artifact in addition to the annotated paper.
-
-Full-paper HTML reports use these ids:
+Paper-reader-only annotation pages use `#paper-reader` and `#coverage-receipt`:
 
 ```html
-<article class="review-report">
+<article class="review-report" data-report-kind="paper-reader-only">
   <header>...</header>
   <nav aria-label="Review sections">...</nav>
   <section id="paper-reader">...</section>
   <main>
-    <section id="executive-diagnosis">...</section>
-    <section id="issue-index">...</section>
-    <section id="claim-evidence-audit">...</section>
-    <section id="deep-reading-notes">...</section>
-    <section id="submission-readiness">...</section>
-    <section id="local-comments">...</section>
-    <section id="revision-plan">...</section>
+    <section id="coverage-receipt">...</section>
+  </main>
+</article>
+```
+
+When the user asks for `--full-report` or an extra global diagnosis after the overlay, use only `#global-findings` between the paper reader and coverage receipt:
+
+```html
+<article class="review-report" data-report-kind="paper-reader-with-global-findings">
+  <header>...</header>
+  <nav aria-label="Review sections">...</nav>
+  <section id="paper-reader">...</section>
+  <main>
+    <section id="global-findings">...</section>
     <section id="coverage-receipt">...</section>
   </main>
 </article>
@@ -45,23 +50,17 @@ Use these Chinese section labels:
 | Section id | 中文标签 |
 |---|---|
 | `paper-reader` | 论文正文批注 |
-| `executive-diagnosis` | 总评诊断与可救骨架 |
-| `issue-index` | 问题索引 |
-| `claim-evidence-audit` | 主张与证据审计 |
-| `deep-reading-notes` | 逐章精读批注 |
-| `submission-readiness` | 数字/公式/图表/版式/提交就绪 |
-| `local-comments` | 共性问题汇总 |
-| `revision-plan` | 修改路线 |
-| `coverage-receipt` | 覆盖回执与 artifacts |
+| `global-findings` | 全局重要问题 |
+| `coverage-receipt` | 覆盖回执 |
 
-Do not use legacy top-level note sections such as `top-priorities`, `section-review`, `paragraph-surgery`, `margin-notes`, `keep-notes`, `section-comments`, or `section-reflections`.
+Do not use legacy top-level note sections such as `executive-diagnosis`, `issue-index`, `claim-evidence-audit`, `deep-reading-notes`, `submission-readiness`, `local-comments`, `revision-plan`, `top-priorities`, `section-review`, `paragraph-surgery`, `margin-notes`, `keep-notes`, `section-comments`, or `section-reflections` in paper-reader reports.
 
 ## Layout and Style
 
 Use a sober paper-annotation design:
 
 - header with paper title/path, review date, input artifacts, requested scope;
-- summary band with central claim, readiness, severity counts;
+- summary band with source/provenance metadata and annotation counts;
 - top/sticky navigation;
 - readable paper column with advisor annotations beside it;
 - the first major viewport after the header must be the annotated paper, not a table-heavy report section;
@@ -90,7 +89,7 @@ The saved HTML must contain an inspectable annotation workspace before the workb
 ```html
 <section id="paper-reader" class="paper-reader" aria-label="Annotated paper">
   <div class="reader-shell">
-    <article class="paper-pane" data-paper-html-source="latexml|ar5iv|pandoc|extracted-text" data-source-fidelity="deterministic|limited-scope" data-source-artifact="..." data-source-hash="sha256:..." data-sentence-id-scheme="section-index-v1" data-annotation-mode="overlay-only">
+    <article class="paper-pane" data-paper-html-source="latexml|ar5iv|pandoc|extracted-text" data-source-fidelity="deterministic|limited-scope" data-source-artifact="..." data-source-hash="sha256:..." data-sentence-id-scheme="section-paragraph-sentence-v2" data-annotation-mode="overlay-only">
       <p>
         <span class="paper-sentence" data-sentence-id="s-intro-001">Clean sentence.</span>
         <span class="paper-sentence has-annotation" data-sentence-id="s-intro-002" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="prose" tabindex="0" role="button" aria-describedby="ann-s-intro-002">Problem sentence.</span>
@@ -131,20 +130,18 @@ Paper-reader annotation requirements:
 - Default to a quiet reading state: annotation details may be hidden until the student clicks or keyboard-activates an issue sentence/bubble. When active, the matching card or card group for that anchor must be the only prominent anchored detail, and the UI must make the anchor-card relationship obvious with a pointer, backlink, arrow, or equivalent visual connector.
 - Clicking or keyboard-activating an issue anchor highlights it and shows its matching annotation card. Provide `上一条` / `下一条` controls at least for issue-sentence navigation.
 - Severity and type filters must apply to both paper sentence markers and annotation cards. If filtering is absent, show a static legend instead of clickable controls.
-- `data-issue-ids` may contain multiple ids separated by spaces. Link each id to the canonical `#issue-index` finding such as `F1`.
+- `data-issue-ids` may contain multiple ids separated by spaces. Each id must exist either in the hidden `#finding-anchor-index`, an overlay annotation card, or a `#global-findings` card.
 - If the paper view is generated from LaTeXML/ar5iv-style HTML, preserve equations/tables/figures as much as possible and wrap prose sentences without breaking math, citations, or inline code.
-- If a numeric signal in `numeric_audit.json` maps to a sentence or phrase in the paper pane, its annotation card must render the concrete `表中数值`, `可见复算值`, `差值`, and `口径说明`, and link to the canonical numeric finding. If no exact sentence can be located, render the signal in `#submission-readiness` and do not invent a paper sentence anchor.
+- If a numeric signal in `numeric_audit.json` maps to a sentence or phrase in the paper pane, its annotation card must render the concrete `表中数值`, `可见复算值`, `差值`, and `口径说明`, and link to the canonical numeric finding id. If no exact sentence can be located, render it as an unanchored annotation card or a true global finding; do not invent a paper sentence anchor.
 
 ## Filters and Tags
 
 If severity filters such as `全部 / Blocker / Major / Minor / Polish` are shown, they must work. Every severity-badged issue item must have `data-severity` on a stable container so it hides as a unit:
 
-- finding cards;
-- Issue Index rows;
-- Deep Reading section/paragraph/sentence rows;
-- local-pattern rows;
-- claim-evidence rows with risk labels;
-- submission/PDF/layout rows.
+- paper sentence markers;
+- paragraph/section/paper overview bubbles;
+- annotation cards;
+- global finding cards.
 
 Wire buttons with inline JavaScript and update active/`aria-pressed` states. If filtering is not implemented, show a static legend instead of clickable-looking buttons.
 
@@ -152,30 +149,13 @@ Add `data-issue-type` when clear: `math`, `numeric`, `evaluation`, `claim`, `lay
 
 When a filter hides all filterable children in a section/table, show a small empty state such as `该严重度暂无项` / `该表无此严重度项`.
 
-## Deep Reading HTML
+## Global Findings HTML
 
-Inside `#deep-reading-notes`, keep notes in manuscript order. Required row/block kinds:
+`#global-findings` is only for independent whole-paper Major/Blocker findings that are not better anchored to a sentence, paragraph, or section. Appropriate examples include novelty weakness, story-logic gaps, experiment-design threats, judge independence, evidence sufficiency, or a paper-wide claim calibration problem.
 
-- `data-note-kind="section"`: one section-reflection row/block per visible section with `读后一句话`, `章节任务是否对齐`, `建议结构`, `未闭合问题`, `关联问题`, `下一稿任务`.
-- `data-note-kind="paragraph"`: one row per visible paragraph with a substantive issue or non-trivial surgery decision. Include paragraph job, decision (`保留`, `原位修改`, `合并`, `拆分`, `移动`, `删除`), why, linked finding, next structural task.
-- `data-note-kind="sentence"`: one row per substantive sentence issue. Include `位置`, `检查维度`, `原句/片段`, `读者卡点`, one atomic `违反原则`, `关联问题`, `自改问题`, `严重度`.
+Do not put local issues in `#global-findings`. If an issue belongs to a concrete subsection such as `LLM-as-a-Judge Verification`, bind it to that heading or paragraph. Do not include source/macro/BibTeX/hidden-LaTeX hygiene issues unless the problem is visible in the paper rendering or directly affects submission-facing layout.
 
-Do not render visible `clean` rows or a visible sentence coverage ledger. If a sentence-like coverage ledger is produced, save it as a companion artifact or note it in `render_manifest.json`.
-
-## Submission Readiness HTML
-
-Suggested subsections:
-
-- `数值与表格`
-- `公式与符号`
-- `图表与 caption`
-- `PDF 版式`
-- `引用与 checklist`
-- `Polish Sweep`
-
-Every `render_required` numeric signal must appear with concrete values. See `numeric_contract.md`.
-
-For page-level layout rows, suggested columns are `PDF 页`, `严重度`, `版式卡点`, `关联问题`, `下一稿任务`.
+Every `render_required` numeric signal must appear with concrete values. Prefer the closest paper anchor; if none exists, render the numeric finding as an unanchored card or a global finding with the same concrete values. See `numeric_contract.md`.
 
 ## Coverage Receipt HTML
 

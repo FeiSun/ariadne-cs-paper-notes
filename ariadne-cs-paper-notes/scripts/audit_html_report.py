@@ -13,7 +13,16 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 
 
-REQUIRED_SECTIONS = {
+PAPER_READER_ONLY_SECTIONS = {
+    "paper-reader",
+    "coverage-receipt",
+}
+PAPER_READER_GLOBAL_SECTIONS = {
+    "paper-reader",
+    "global-findings",
+    "coverage-receipt",
+}
+LEGACY_WORKBENCH_SECTIONS = {
     "paper-reader",
     "executive-diagnosis",
     "issue-index",
@@ -23,6 +32,10 @@ REQUIRED_SECTIONS = {
     "local-comments",
     "revision-plan",
     "coverage-receipt",
+}
+REQUIRED_SECTIONS_BY_KIND = {
+    "paper-reader-only": PAPER_READER_ONLY_SECTIONS,
+    "paper-reader-with-global-findings": PAPER_READER_GLOBAL_SECTIONS,
 }
 
 NUMERIC_CONTEXT_RE = re.compile(
@@ -37,11 +50,6 @@ CONCRETE_NUMERIC_CUE_RE = re.compile(
 )
 NUMERIC_TEXT_TAGS = {"p", "li", "td", "th", "article", "section"}
 
-TEACHING_SECTIONS = {
-    "deep-reading-notes",
-    "local-comments",
-}
-
 LEGACY_SPLIT_NOTE_SECTIONS = {
     "top-priorities",
     "section-review",
@@ -49,6 +57,7 @@ LEGACY_SPLIT_NOTE_SECTIONS = {
     "margin-notes",
     "keep-notes",
 }
+FORBIDDEN_WORKBENCH_SECTIONS = LEGACY_WORKBENCH_SECTIONS - PAPER_READER_GLOBAL_SECTIONS
 
 PAPER_HTML_SOURCES = {"latexml", "ar5iv", "pandoc", "extracted-text", "manual-fixture"}
 DELIVERABLE_PAPER_HTML_SOURCES = {"latexml", "ar5iv", "pandoc", "extracted-text"}
@@ -81,8 +90,6 @@ ANNOTATION_ONLY_ATTRS = {
     "role",
     "tabindex",
 }
-
-
 def compact_text(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
@@ -320,10 +327,13 @@ class AriadneHTMLParser(HTMLParser):
                 self.paper_section_ids.add(element_id)
             if element_id == "paper-overview-annotations":
                 self.paper_overview_ids.add("paper")
+            paper_button_id = attr.get("data-paper-id", "")
+            if paper_button_id and "annotation-bubble" in class_names and "paper" in class_names:
+                self.paper_overview_ids.add(paper_button_id)
             for level, target_id, marker_class in (
                 ("paragraph", paragraph_id, "has-paragraph-annotation"),
                 ("section", element_id or "", "has-section-annotation"),
-                ("paper", "paper" if element_id == "paper-overview-annotations" else "", "has-paper-annotation"),
+                ("paper", paper_button_id if "annotation-bubble" in class_names and "paper" in class_names else "", "has-paper-annotation"),
             ):
                 if target_id and marker_class in class_names:
                     issue_ids = attr.get("data-issue-ids", "")
@@ -478,12 +488,20 @@ def audit(path: Path) -> tuple[list[str], list[str]]:
 
     errors: list[str] = []
     warnings: list[str] = []
-    paper_reader_only = parser.report_kind == "paper-reader-only"
-
-    required_sections = {"paper-reader", "coverage-receipt"} if paper_reader_only else REQUIRED_SECTIONS
+    report_kind = parser.report_kind
+    is_current_paper_reader = report_kind in REQUIRED_SECTIONS_BY_KIND
+    required_sections = REQUIRED_SECTIONS_BY_KIND.get(report_kind, LEGACY_WORKBENCH_SECTIONS)
     missing_sections = sorted(required_sections - parser.ids)
     for section_id in missing_sections:
         errors.append(f"missing required section #{section_id}")
+
+    if is_current_paper_reader:
+        forbidden_workbench = sorted(FORBIDDEN_WORKBENCH_SECTIONS & parser.ids)
+        if forbidden_workbench:
+            errors.append(
+                "paper-reader reports must not render legacy workbench sections: "
+                + ", ".join(f"#{section_id}" for section_id in forbidden_workbench)
+            )
 
     if "paper-reader" in parser.ids:
         if "annotation-panel" not in parser.ids:
@@ -595,16 +613,11 @@ def audit(path: Path) -> tuple[list[str], list[str]]:
     if parser.section_stack or parser.issue_item_stack or parser.text_stack or parser.table_stack:
         errors.append("HTML appears structurally incomplete or misnested; parser stacks were not fully closed")
 
-    if not paper_reader_only:
-        missing_teaching = sorted(TEACHING_SECTIONS - parser.ids)
-        for section_id in missing_teaching:
-            errors.append(f"missing teaching-layer section #{section_id}")
-
     for anchor in sorted(parser.href_anchors):
         if anchor not in parser.ids:
             errors.append(f"nav/link target #{anchor} has no matching element id")
 
-    if not paper_reader_only:
+    if not is_current_paper_reader:
         if parser.counts["margin_rows"] == 0:
             errors.append("#deep-reading-notes has no sentence rows (`data-note-kind=\"sentence\"`)")
         if parser.counts["surgery_rows"] == 0:
@@ -618,7 +631,7 @@ def audit(path: Path) -> tuple[list[str], list[str]]:
                 + ", ".join(legacy + [item for item in ("section-comments", "section-reflections") if item in parser.ids])
             )
 
-    if not paper_reader_only:
+    if not is_current_paper_reader:
         declared_margin = find_declared_count(
             text,
             [
@@ -668,7 +681,7 @@ def audit(path: Path) -> tuple[list[str], list[str]]:
         warnings.append("coverage receipt does not mention Coverage consistency gate")
     if "pending in" in text and "Pending in" not in text:
         warnings.append("pending units are mentioned outside the standard Pending in receipt column")
-    if not paper_reader_only:
+    if not is_current_paper_reader:
         issue_index_text = parser.section_texts.get("issue-index", "")
         if "降级条件" in issue_index_text or "下一稿任务" in issue_index_text:
             errors.append("#issue-index should be compact; move 降级条件/下一稿任务 to findings.json, deep-reading rows, or Revision Plan")
@@ -695,7 +708,7 @@ def audit(path: Path) -> tuple[list[str], list[str]]:
     for ref, source in parser.linked_finding_refs:
         if ref not in parser.defined_finding_ids:
             errors.append(f"linked finding `{ref}` has no matching finding/id anchor")
-    if not paper_reader_only:
+    if report_kind != "paper-reader-only":
         for ref, source in parser.issue_sentence_refs:
             if ref not in parser.defined_finding_ids:
                 errors.append(f"paper sentence `{source}` references finding `{ref}` with no matching finding/id anchor")

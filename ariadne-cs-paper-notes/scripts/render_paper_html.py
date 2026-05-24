@@ -34,7 +34,7 @@ LATEX_BIBLIOGRAPHY_RE = re.compile(r"\\bibliography\{([^}]+)\}")
 LATEX_ADD_BIB_RESOURCE_RE = re.compile(r"\\addbibresource(?:\[[^\]]*\])?\{([^}]+)\}")
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?。！？])(\s+)(?=[A-Z0-9\"'“‘(])")
 SENTENCE_ENDINGS = (".", "!", "?", "。", "！", "？")
-REVIEW_IMPORT_SECTION_LABELS = {
+LEGACY_REVIEW_IMPORT_SECTION_LABELS = {
     "executive-diagnosis": "总评诊断",
     "paper-type-contract": "论文类型与审稿契约",
     "top-priorities": "修改优先级",
@@ -66,17 +66,19 @@ SEVERITY_RANK = {
     "polish": 1,
 }
 ANCHOR_LEVELS = {"sentence", "paragraph", "section", "paper"}
-WORKBENCH_SECTION_LABELS = {
-    "executive-diagnosis": "总评诊断与可救骨架",
-    "issue-index": "问题索引",
-    "claim-evidence-audit": "主张与证据审计",
-    "deep-reading-notes": "逐章精读批注",
-    "submission-readiness": "提交就绪",
-    "local-comments": "共性问题汇总",
-    "revision-plan": "修改路线",
+REPORT_SECTION_LABELS = {
+    "global-findings": "全局重要问题",
     "coverage-receipt": "覆盖回执",
 }
+RENDER_GROUP_LABELS = {
+    "layout": "编译版式检查",
+    "numeric": "表格数值检查",
+    "figure_caption": "图表说明检查",
+    "compiled-display-checks": "编译后展示检查",
+    "submission-readiness": "编译后展示检查",
+}
 SUBMISSION_DOMAINS = {"layout", "numeric", "reference", "symbol", "source_hygiene", "figure_caption", "polish"}
+ISSUE_ARTIFACT_RENDER_DOMAINS = {"layout", "numeric", "figure_caption"}
 ANCHOR_LEVEL_LABELS = {
     "sentence": "句子",
     "paragraph": "段落",
@@ -283,12 +285,21 @@ def normalize_annotation_item(item: dict[str, object], idx: int, *, source: str)
             return []
         raise SystemExit(f"annotation #{idx} missing target id for `{anchor_level}` annotation")
     anchor_ids = raw_ids if isinstance(raw_ids, list) else [raw_ids]
-    severity = str(item.get("severity", "major")).strip().lower()
-    if severity not in SEVERITY_LABELS:
-        raise SystemExit(f"annotation #{idx} has invalid severity `{severity}`")
+    raw_severity = str(item.get("severity") or "").strip().lower()
+    if raw_severity and raw_severity not in SEVERITY_LABELS:
+        raise SystemExit(f"annotation #{idx} has invalid severity `{raw_severity}`")
+    raw_issue_type = str(item.get("issue_type") or item.get("type") or "").strip()
+    if not raw_issue_type and source == "findings":
+        raw_issue_type = issue_type_from_text(
+            str(item.get("location") or ""),
+            str(item.get("title") or ""),
+            str(item.get("diagnosis") or ""),
+            str(item.get("evidence_basis") or ""),
+            str(item.get("reported_value") or ""),
+            str(item.get("visible_computed_value") or ""),
+        )
     base = {
         "issue_id": item.get("issue_id") or item.get("id") or f"A{idx}",
-        "issue_type": item.get("issue_type") or item.get("type") or "prose",
         "target_level": anchor_level,
         "short": item.get("short") or item.get("short_comment") or item.get("one_line") or item.get("title") or item.get("diagnosis") or "",
         "title": item.get("title") or item.get("one_line") or item.get("diagnosis") or "句子问题",
@@ -321,7 +332,10 @@ def normalize_annotation_item(item: dict[str, object], idx: int, *, source: str)
         if not normalized_id and anchor_level != "paper":
             continue
         annotation = {key: str(value) for key, value in base.items()}
-        annotation["severity"] = severity
+        if raw_severity:
+            annotation["severity"] = raw_severity
+        if raw_issue_type:
+            annotation["issue_type"] = raw_issue_type
         annotation[target_key] = normalized_id or "paper"
         annotations.append(annotation)
     if not annotations and source != "findings":
@@ -361,10 +375,20 @@ def normalize_finding_content(item: dict[str, object], idx: int) -> dict[str, st
     if severity not in SEVERITY_LABELS:
         severity = "major"
     issue_id = str(item.get("id") or item.get("issue_id") or f"F{idx}")
+    issue_type = str(item.get("issue_type") or item.get("type") or "").strip()
+    if not issue_type:
+        issue_type = issue_type_from_text(
+            str(item.get("location") or ""),
+            str(item.get("title") or ""),
+            str(item.get("diagnosis") or ""),
+            str(item.get("evidence_basis") or ""),
+            str(item.get("reported_value") or ""),
+            str(item.get("visible_computed_value") or ""),
+        )
     return {
         "issue_id": issue_id,
         "severity": severity,
-        "issue_type": str(item.get("issue_type") or item.get("type") or "prose"),
+        "issue_type": issue_type,
         "short": str(item.get("short") or item.get("short_comment") or item.get("one_line") or item.get("title") or item.get("diagnosis") or ""),
         "title": str(item.get("title") or item.get("one_line") or item.get("diagnosis") or "批注"),
         "problem": str(item.get("problem") or item.get("what") or item.get("diagnosis") or ""),
@@ -424,14 +448,11 @@ def load_findings_rows(path: Path | None) -> list[dict[str, object]]:
     return [row for row in rows if isinstance(row, dict)]
 
 
-def load_claim_rows(path: Path | None) -> list[dict[str, object]]:
-    if path is None or not path.exists():
-        return []
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    rows = payload.get("claims", []) if isinstance(payload, dict) else payload
-    if not isinstance(rows, list):
-        raise SystemExit("claims JSON must be a list or an object with a `claims` list")
-    return [row for row in rows if isinstance(row, dict)]
+def render_group_label(value: object, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    if not text:
+        text = fallback
+    return RENDER_GROUP_LABELS.get(text, text)
 
 
 def load_optional_json(path: Path | None) -> object:
@@ -455,6 +476,8 @@ def issue_artifact_to_annotations(path: Path) -> list[dict[str, str]]:
     if not isinstance(payload, dict):
         raise SystemExit(f"issue artifact `{path}` must be an object")
     domain = str(payload.get("domain") or path.stem.replace("_issues", ""))
+    if domain not in ISSUE_ARTIFACT_RENDER_DOMAINS:
+        return []
     issues = payload.get("issues", [])
     if not isinstance(issues, list):
         raise SystemExit(f"issue artifact `{path}` must contain an `issues` list")
@@ -497,7 +520,7 @@ def issue_artifact_to_annotations(path: Path) -> list[dict[str, str]]:
             "confidence": issue.get("confidence") or "",
             "evidence_basis": "; ".join(str(item) for item in issue.get("evidence_refs", []) if item),
             "verification_method": f"issue_artifact:{path.name}",
-            "source_section_label": render_hint.get("display_group") or domain,
+            "source_section_label": render_group_label(render_hint.get("display_group"), domain),
         }
         if target_level == "sentence":
             annotation["sentence_id"] = anchor
@@ -685,7 +708,7 @@ def load_review_html_annotations(path: Path | None) -> list[dict[str, str]]:
     soup = BeautifulSoup(path.read_text(encoding="utf-8"), "lxml")
     annotations: list[dict[str, str]] = []
     idx = 1
-    for section_id, section_label in REVIEW_IMPORT_SECTION_LABELS.items():
+    for section_id, section_label in LEGACY_REVIEW_IMPORT_SECTION_LABELS.items():
         section = soup.find(id=section_id)
         if section is None:
             continue
@@ -1121,6 +1144,24 @@ def issue_label_text(annotation: dict[str, str], count: int = 1) -> str:
     return f"{SEVERITY_SHORT_LABELS.get(severity, severity.title())} · {issue_type}"
 
 
+def paper_issue_button_text(annotation: dict[str, str], idx: int) -> str:
+    title = re.sub(r"\s+", " ", annotation.get("short", "").strip() or annotation.get("title", "").strip())
+    if title:
+        return title if len(title) <= 42 else title[:41].rstrip() + "..."
+    severity = annotation.get("severity", "major")
+    issue_type = annotation.get("issue_type", "paper") or "paper"
+    return f"{idx}. {SEVERITY_SHORT_LABELS.get(severity, severity.title())} · {issue_type}"
+
+
+def paper_target_id(annotation: dict[str, str], idx: int) -> str:
+    issue_id = annotation.get("issue_id", "").strip()
+    if issue_id:
+        safe_issue_id = re.sub(r"[^A-Za-z0-9_.:-]+", "-", issue_id).strip("-")
+        if safe_issue_id:
+            return f"paper-{safe_issue_id}"
+    return f"paper-{idx}"
+
+
 def annotation_target_id(annotation: dict[str, str]) -> str:
     level = annotation.get("target_level", "sentence")
     if level == "paragraph":
@@ -1210,21 +1251,27 @@ def ensure_paper_overview(soup: BeautifulSoup, annotations: list[dict[str, str]]
     overview["data-severity"] = strongest_severity([item.get("severity", "major") for item in annotations])
     overview["data-issue-type"] = "paper"
     overview["data-issue-ids"] = " ".join(ordered_unique([item.get("issue_id", "") for item in annotations]))
-    overview["aria-describedby"] = " ".join(card_id_for("paper", "paper", idx) for idx, _ in enumerate(annotations, 1))
+    overview["aria-describedby"] = " ".join(
+        card_id_for("paper", paper_target_id(annotation, idx), idx)
+        for idx, annotation in enumerate(annotations, 1)
+    )
     title = soup.new_tag("strong")
     title.string = "全文结构批注"
     overview.append(title)
     for idx, annotation in enumerate(annotations, 1):
+        target_id = paper_target_id(annotation, idx)
         button = soup.new_tag("button")
         button["type"] = "button"
         button["class"] = "annotation-bubble paper"
         button["data-anchor-level"] = "paper"
-        button["data-paper-id"] = "paper"
+        button["data-paper-id"] = target_id
+        button["data-has-issue"] = "true"
         button["data-severity"] = annotation.get("severity", "major")
         button["data-issue-type"] = annotation.get("issue_type", "paper")
         button["data-issue-ids"] = annotation.get("issue_id", f"A{idx}")
-        button["onclick"] = "AriadnePaperReaderOpenAnnotation('paper', 'paper')"
-        button.string = issue_label_text(annotation, len(annotations) if len(annotations) > 1 else 1)
+        button["aria-describedby"] = card_id_for("paper", target_id, idx)
+        button["onclick"] = "AriadnePaperReaderOpenAnnotation('paper', this.getAttribute('data-paper-id'))"
+        button.string = paper_issue_button_text(annotation, idx)
         overview.append(button)
     first = body.find(["header", "h1", "p", "section", "article", "div"])
     if first is not None:
@@ -1287,6 +1334,12 @@ def apply_annotations(soup: BeautifulSoup, annotations: list[dict[str, str]]) ->
     target_groups: dict[tuple[str, str], list[dict[str, str]]] = {}
     for idx, annotation in enumerate(annotations, 1):
         level = annotation.get("target_level", "sentence")
+        if annotation.get("unanchored") == "true":
+            annotation = dict(annotation)
+            annotation["card_id"] = f"ann-unanchored-{idx}"
+            annotation["target_level"] = level
+            applied.append(annotation)
+            continue
         target_id = annotation_target_id(annotation)
         if not target_id:
             annotation = dict(annotation)
@@ -1342,8 +1395,8 @@ def apply_annotations(soup: BeautifulSoup, annotations: list[dict[str, str]]) ->
         for card_idx, target_annotation in enumerate(paper_annotations, 1):
             target_annotation.setdefault("issue_id", f"A{card_idx}")
             target_annotation.setdefault("issue_type", "paper")
-            target_annotation["card_id"] = card_id_for("paper", "paper", card_idx)
-            target_annotation["paper_id"] = "paper"
+            target_annotation["paper_id"] = paper_target_id(target_annotation, card_idx)
+            target_annotation["card_id"] = card_id_for("paper", target_annotation["paper_id"], card_idx)
     return applied
 
 
@@ -1437,6 +1490,8 @@ def wrap_sentences(soup: BeautifulSoup) -> int:
             continue
         if node.name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             section_slug = compact_section_slug(node.get("id") or node.get_text(" ", strip=True), f"section-{paragraph_index}")
+            if not node.get("id"):
+                node["id"] = section_slug
             paragraph_index = 0
         if node.name not in SENTENCE_CONTAINER_TAGS or is_inside_skipped_tag(node):
             continue
@@ -1445,6 +1500,48 @@ def wrap_sentences(soup: BeautifulSoup) -> int:
             node["data-paragraph-id"] = f"p-{section_slug}-{paragraph_index:03d}"
         total_sentences += wrap_sentence_container(node, soup, section_slug, paragraph_index)
     return total_sentences
+
+
+def heading_already_numbered(text: str) -> bool:
+    return bool(re.match(r"^\s*(?:\d+(?:\.\d+)*|[A-Z])\.?\s+", text))
+
+
+def ensure_display_section_numbers(soup: BeautifulSoup) -> None:
+    body = soup.body or soup
+    counters: dict[int, int] = {}
+    first_numbered_level: int | None = None
+    skip_titles = {
+        "abstract",
+        "references",
+        "acknowledgements",
+        "acknowledgments",
+        "neurips paper checklist",
+    }
+    for heading in body.find_all(["h1", "h2", "h3", "h4"], recursive=True):
+        if not isinstance(heading, Tag):
+            continue
+        text = normalized_text(heading)
+        if not text or heading_already_numbered(text):
+            continue
+        heading_id = str(heading.get("id") or "").strip().lower()
+        lowered = text.lower().strip()
+        if lowered in skip_titles or heading_id in {"abstract", "references", "refs", "neurips-paper-checklist"}:
+            continue
+        if first_numbered_level is None and not heading_id:
+            continue
+        if first_numbered_level is None:
+            first_numbered_level = int(heading.name[1])
+        level = int(heading.name[1])
+        relative_level = max(1, level - first_numbered_level + 1)
+        for key in list(counters):
+            if key > relative_level:
+                del counters[key]
+        counters[relative_level] = counters.get(relative_level, 0) + 1
+        parent_value = counters.get(relative_level - 1, 0)
+        if relative_level > 1 and parent_value == 0:
+            counters[relative_level - 1] = 1
+        parts = [str(counters.get(idx, 1)) for idx in range(1, relative_level + 1)]
+        heading["data-section-number"] = ".".join(parts)
 
 
 def body_inner_html(soup: BeautifulSoup) -> str:
@@ -1491,9 +1588,15 @@ def prepare_source_soup(
         title = extract_title(soup, tex_path)
         sentence_count = len(soup.select(".paper-sentence[data-sentence-id]"))
         if sentence_count == 0:
-            sentence_count = wrap_sentences(soup)
-            title = extract_title(soup, tex_path)
-            raw_html_path.write_text(source_artifact_shell(title, body_inner_html(soup)), encoding="utf-8")
+            stable_sentence_nodes = [node for node in soup.select("[data-sentence-id]") if isinstance(node, Tag)]
+            if stable_sentence_nodes:
+                for node in stable_sentence_nodes:
+                    add_class(node, "paper-sentence")
+                sentence_count = len(stable_sentence_nodes)
+            else:
+                sentence_count = wrap_sentences(soup)
+                title = extract_title(soup, tex_path)
+                raw_html_path.write_text(source_artifact_shell(title, body_inner_html(soup)), encoding="utf-8")
         return soup, title, sentence_count
 
     run_pandoc(tex_path, raw_html_path)
@@ -1715,14 +1818,6 @@ def finding_id_link(finding_id: object) -> str:
     return f'<a class="finding-link" href="#{html.escape(text)}">{html.escape(text)}</a>'
 
 
-def joined_links(values: object) -> str:
-    if isinstance(values, list):
-        ids = [str(item).strip() for item in values if str(item).strip()]
-    else:
-        ids = [str(values).strip()] if str(values or "").strip() else []
-    return ", ".join(finding_id_link(item) for item in ids)
-
-
 def display_text(value: object, *, fallback: str = "", max_chars: int = 480) -> str:
     if isinstance(value, list):
         text = "; ".join(display_text(item, max_chars=max_chars) for item in value if display_text(item, max_chars=max_chars))
@@ -1742,214 +1837,64 @@ def finding_anchor_text(finding: dict[str, object]) -> str:
     return str(finding.get("primary_anchor") or finding.get("location") or "")
 
 
-def render_issue_index(findings: list[dict[str, object]]) -> str:
-    if not findings:
-        body = '<p class="empty-state">当前 compiled findings 为空。</p>'
+def finding_source_domain(finding: dict[str, object]) -> str:
+    source_ids = finding.get("source_issue_ids")
+    if isinstance(source_ids, list):
+        for source_id in source_ids:
+            text = str(source_id or "")
+            if ":" in text:
+                return text.split(":", 1)[0]
+    return str(finding.get("domain") or finding.get("issue_type") or "").strip()
+
+
+def is_global_finding(finding: dict[str, object]) -> bool:
+    domain = finding_source_domain(finding)
+    if domain in SUBMISSION_DOMAINS:
+        return False
+    anchor = str(finding.get("primary_anchor") or "").strip()
+    anchors = finding.get("target_anchors")
+    anchor_values = [str(item).strip() for item in anchors] if isinstance(anchors, list) else []
+    if anchor.startswith("page:") or any(value.startswith("page:") for value in anchor_values):
+        return False
+    if domain == "whole_paper":
+        return True
+    if anchor == "paper" or "paper" in anchor_values:
+        return True
+    location = str(finding.get("location") or "").strip().lower()
+    snippet = str(finding.get("snippet") or "").strip().lower()
+    return location in {"全文结构", "whole paper"} or snippet == "whole paper"
+
+
+def render_global_findings(findings: list[dict[str, object]]) -> str:
+    global_findings = [
+        finding
+        for finding in findings
+        if is_global_finding(finding) and severity_key(finding.get("severity")) in {"blocker", "major"}
+    ]
+    if not global_findings:
+        body = '<p class="empty-state">没有独立于具体句段的 Major/Blocker 全局意见；局部问题已保留在正文 overlay 批注中。</p>'
     else:
         articles = []
-        rows = []
-        for finding in findings:
-            finding_id = display_text(finding.get("id"))
-            severity = severity_key(finding.get("severity"))
-            issue_type = display_text(finding.get("issue_type"), fallback="prose")
-            title = display_text(finding.get("title") or finding.get("diagnosis"), fallback="Untitled finding")
-            location = display_text(finding.get("location") or finding_anchor_text(finding), fallback="paper")
-            diagnosis = display_text(finding.get("diagnosis"), fallback="No diagnosis supplied.")
+        for finding in global_findings:
             articles.append(
                 f"""
-      <article class="finding" id="{finding_id}" data-severity="{severity}" data-issue-type="{issue_type}">
-        <div>{severity_badge(finding.get("severity"))} {finding_id} {title}</div>
-        <p><strong>位置：</strong>{location}</p>
-        <p><strong>诊断：</strong>{diagnosis}</p>
-        <p><strong>读者卡点：</strong>{display_text(finding.get("reader_friction"), fallback="See diagnosis.")}</p>
+      <article class="global-finding" id="global-{display_text(finding.get('id'))}" data-severity="{severity_key(finding.get('severity'))}" data-issue-type="{display_text(finding.get('issue_type'), fallback='whole_paper')}">
+        <p class="annotation-meta">{severity_badge(finding.get('severity'))}<span>{display_text(finding.get('issue_type'), fallback='whole_paper')}</span><span>{finding_id_link(finding.get('id'))}</span></p>
+        <h3>{display_text(finding.get('title') or finding.get('diagnosis'), fallback='全局问题')}</h3>
+        <dl>
+          <dt>问题是什么</dt><dd>{display_text(finding.get('diagnosis'), fallback='未填写')}</dd>
+          <dt>为什么有问题</dt><dd>{display_text(finding.get('reader_friction'), fallback='未填写')}</dd>
+          <dt>违反原则</dt><dd>{display_text(finding.get('writing_principle'), fallback='claim-evidence alignment')}</dd>
+          <dt>下一稿任务</dt><dd>{display_text(finding.get('next_draft_task') or finding.get('self_check'), fallback='收束全稿主张与证据边界。')}</dd>
+        </dl>
       </article>"""
             )
-            rows.append(
-                f"<tr data-severity=\"{severity}\" data-issue-type=\"{issue_type}\"><td>{finding_id_link(finding.get('id'))}</td>"
-                f"<td>{severity_badge(finding.get('severity'))}</td><td>{issue_type}</td><td>{title}</td>"
-                f"<td>{location}</td><td>{display_text(finding.get('next_draft_task') or finding.get('self_check'), fallback='复查并修订。')}</td></tr>"
-            )
-        body = "".join(articles) + f"""
-      <div class="table-wrap">
-        <table class="report-table">
-          <caption>Finding ledger</caption>
-          <thead><tr><th scope="col">ID</th><th scope="col">严重度</th><th scope="col">类型</th><th scope="col">问题</th><th scope="col">位置</th><th scope="col">下一步</th></tr></thead>
-          <tbody>{''.join(rows)}</tbody>
-        </table>
-      </div>"""
+        body = "".join(articles)
     return f"""
-    <section id="issue-index">
-      <h2>{WORKBENCH_SECTION_LABELS['issue-index']}</h2>
+    <section id="global-findings" class="global-findings">
+      <h2>{REPORT_SECTION_LABELS['global-findings']}</h2>
+      <p class="empty-state">这里仅保留不依附于具体句子或段落的全局结构意见；句子、段落和章节问题请直接看上方论文正文 overlay。</p>
       {body}
-    </section>"""
-
-
-def render_executive_diagnosis(findings: list[dict[str, object]]) -> str:
-    top = findings[0] if findings else {}
-    return f"""
-    <section id="executive-diagnosis">
-      <h2>{WORKBENCH_SECTION_LABELS['executive-diagnosis']}</h2>
-      <p><strong>一句话 verdict：</strong>{display_text(top.get('title') or top.get('diagnosis'), fallback='当前报告由 JSON artifacts deterministic 生成，未检测到 compiled finding。')}</p>
-      <article class="finding">
-        <h3>可救骨架</h3>
-        <p><strong>Minimal viable paper：</strong>{display_text(top.get('self_check'), fallback='保留核心贡献，但让主张、证据和读者路径显式对齐。')}</p>
-        <p><strong>Next revision thread：</strong>{display_text(top.get('next_draft_task') or top.get('downgrade_condition'), fallback='优先处理最高严重度 finding。')}</p>
-      </article>
-    </section>"""
-
-
-def render_claim_evidence(claims: list[dict[str, object]], findings: list[dict[str, object]]) -> str:
-    if claims:
-        rows = []
-        for claim in claims:
-            linked = claim.get("linked_findings") or claim.get("linked_finding_ids") or []
-            rows.append(
-                "<tr data-severity=\"major\" data-issue-type=\"claim\">"
-                f"<td>{display_text(claim.get('claim_text') or claim.get('text'), fallback='Claim')}</td>"
-                f"<td>{display_text(claim.get('claim_type'), fallback='claim')}</td>"
-                f"<td>{display_text(claim.get('location'), fallback='paper')}</td>"
-                f"<td>{display_text(claim.get('visible_evidence') or claim.get('evidence'), fallback='Evidence not specified.')}</td>"
-                f"<td>{display_text(claim.get('status'), fallback='needs review')}</td>"
-                f"<td>{joined_links(linked)}</td>"
-                f"<td>{display_text(claim.get('next_draft_task'), fallback='Align claim and visible evidence.')}</td>"
-                "</tr>"
-            )
-    else:
-        rows = [
-            "<tr data-severity=\"major\" data-issue-type=\"claim\">"
-            f"<td>{display_text(findings[0].get('title') if findings else '', fallback='No explicit claim artifact')}</td>"
-            "<td>claim</td><td>paper</td><td>Derived from compiled findings.</td><td>needs review</td><td></td><td>Write claims.json in Phase B.</td></tr>"
-        ]
-    return f"""
-    <section id="claim-evidence-audit">
-      <h2>{WORKBENCH_SECTION_LABELS['claim-evidence-audit']}</h2>
-      <div class="table-wrap">
-        <table class="report-table">
-          <caption>Abstract promise tracking and claim-evidence map</caption>
-          <thead><tr><th scope="col">Claim</th><th scope="col">Type</th><th scope="col">Location</th><th scope="col">Visible evidence</th><th scope="col">Verdict</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead>
-          <tbody>{''.join(rows)}</tbody>
-        </table>
-      </div>
-    </section>"""
-
-
-def render_deep_reading(findings: list[dict[str, object]], annotations: list[dict[str, str]], pass_observations: object) -> str:
-    sentence_notes = [item for item in annotations if item.get("target_level") == "sentence"]
-    paragraph_notes = [item for item in annotations if item.get("target_level") == "paragraph"]
-    section_notes = [item for item in annotations if item.get("target_level") == "section"]
-    if not sentence_notes and findings:
-        sentence_notes = [
-            {
-                "issue_id": str(findings[0].get("id") or "F1"),
-                "sentence_id": str(finding_anchor_text(findings[0]) or "paper"),
-                "severity": severity_key(findings[0].get("severity")),
-                "issue_type": str(findings[0].get("issue_type") or "prose"),
-                "diagnosis": str(findings[0].get("diagnosis") or findings[0].get("title") or ""),
-                "self_check": str(findings[0].get("self_check") or ""),
-            }
-        ]
-    if not paragraph_notes:
-        paragraph_notes = [{"issue_id": "", "paragraph_id": "paper", "severity": "minor", "issue_type": "prose", "diagnosis": "Paragraph-level review is represented by compiled artifacts.", "self_check": "Check paragraph job and transitions."}]
-    if not section_notes:
-        section_notes = [{"issue_id": "", "section_id": "paper", "severity": "minor", "issue_type": "prose", "diagnosis": "Section reflection is represented by Phase A artifacts.", "self_check": "Check section role in the argument."}]
-    sentence_rows = [
-        f"<tr data-note-kind=\"sentence\" data-severity=\"{severity_key(item.get('severity'))}\" data-issue-type=\"{display_text(item.get('issue_type'), fallback='prose')}\"><td>句子</td><td>{display_text(item.get('sentence_id'), fallback='paper')}</td><td>{display_text(item.get('diagnosis') or item.get('title') or item.get('short'), fallback='See finding.')}</td><td>{finding_id_link(item.get('issue_id'))}</td><td>{display_text(item.get('self_check') or item.get('next_draft_task'), fallback='Revise this local unit.')}</td></tr>"
-        for item in sentence_notes
-    ]
-    paragraph_rows = [
-        f"<tr data-note-kind=\"paragraph\" data-decision=\"revise\" data-severity=\"{severity_key(item.get('severity'))}\" data-issue-type=\"{display_text(item.get('issue_type'), fallback='prose')}\"><td>段落</td><td>{display_text(item.get('paragraph_id'), fallback='paper')}</td><td>{display_text(item.get('diagnosis') or item.get('title') or item.get('short'), fallback='Paragraph needs review.')}</td><td>{finding_id_link(item.get('issue_id'))}</td><td>{display_text(item.get('self_check') or item.get('next_draft_task'), fallback='Check paragraph job.')}</td></tr>"
-        for item in paragraph_notes
-    ]
-    section_rows = [
-        f"<tr data-note-kind=\"section\" data-severity=\"{severity_key(item.get('severity'))}\" data-issue-type=\"{display_text(item.get('issue_type'), fallback='prose')}\"><td>{display_text(item.get('section_id'), fallback='paper')}</td><td>{display_text(item.get('diagnosis') or item.get('title') or item.get('short'), fallback='Section needs review.')}</td><td>{finding_id_link(item.get('issue_id'))}</td><td>{display_text(item.get('self_check') or item.get('next_draft_task'), fallback='Check section role.')}</td></tr>"
-        for item in section_notes
-    ]
-    return f"""
-    <section id="deep-reading-notes">
-      <h2>{WORKBENCH_SECTION_LABELS['deep-reading-notes']}</h2>
-      <div class="table-wrap">
-        <table class="report-table">
-          <caption>Section reflection</caption>
-          <thead><tr><th scope="col">章节</th><th scope="col">读后一句话</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead>
-          <tbody>{''.join(section_rows)}</tbody>
-        </table>
-      </div>
-      <div class="table-wrap">
-        <table class="report-table">
-          <caption>Paragraph and sentence notes</caption>
-          <thead><tr><th scope="col">层级</th><th scope="col">位置</th><th scope="col">读者卡点</th><th scope="col">关联问题</th><th scope="col">下一稿任务 / 自改问题</th></tr></thead>
-          <tbody>{''.join(paragraph_rows)}{''.join(sentence_rows)}</tbody>
-        </table>
-      </div>
-    </section>"""
-
-
-def render_submission_readiness(findings: list[dict[str, object]]) -> str:
-    rows = []
-    for finding in findings:
-        issue_type = str(finding.get("issue_type") or "").lower()
-        source_ids = " ".join(str(item) for item in finding.get("source_issue_ids", []) if item)
-        domain = source_ids.split(":", 1)[0] if ":" in source_ids else issue_type
-        if domain not in SUBMISSION_DOMAINS and issue_type not in SUBMISSION_DOMAINS:
-            continue
-        rows.append(
-            f"<tr data-severity=\"{severity_key(finding.get('severity'))}\" data-issue-type=\"{display_text(finding.get('issue_type'), fallback='submission')}\"><td>{display_text(domain or issue_type, fallback='submission')}</td><td>{display_text(finding.get('location') or finding_anchor_text(finding), fallback='paper')}</td><td>{severity_badge(finding.get('severity'))}</td><td>{display_text(finding.get('diagnosis') or finding.get('title'), fallback='See finding.')}</td><td>{finding_id_link(finding.get('id'))}</td><td>{display_text(finding.get('next_draft_task') or finding.get('self_check'), fallback='Fix before submission.')}</td></tr>"
-        )
-    if not rows and findings:
-        rows.append(
-            f"<tr data-severity=\"{severity_key(findings[0].get('severity'))}\" data-issue-type=\"submission\"><td>compiled artifacts</td><td>{display_text(findings[0].get('location'), fallback='paper')}</td><td>{severity_badge(findings[0].get('severity'))}</td><td>{display_text(findings[0].get('diagnosis'), fallback='No specialist issues rendered.')}</td><td>{finding_id_link(findings[0].get('id'))}</td><td>Run or inspect specialist artifacts before submission.</td></tr>"
-        )
-    return f"""
-    <section id="submission-readiness">
-      <h2>{WORKBENCH_SECTION_LABELS['submission-readiness']}</h2>
-      <div class="table-wrap">
-        <table class="report-table">
-          <caption>Submission readiness checks</caption>
-          <thead><tr><th scope="col">类别</th><th scope="col">位置</th><th scope="col">严重度</th><th scope="col">卡点</th><th scope="col">关联问题</th><th scope="col">下一稿任务</th></tr></thead>
-          <tbody>{''.join(rows)}</tbody>
-        </table>
-      </div>
-    </section>"""
-
-
-def render_local_comments(findings: list[dict[str, object]]) -> str:
-    rows = [
-        f"<tr data-severity=\"{severity_key(finding.get('severity'))}\" data-issue-type=\"{display_text(finding.get('issue_type'), fallback='prose')}\"><td>{severity_badge(finding.get('severity'))}</td><td>{display_text(finding.get('title'), fallback='Finding')}</td><td>{display_text(finding.get('reader_friction') or finding.get('diagnosis'), fallback='See finding.')}</td><td>{display_text(finding.get('location') or finding_anchor_text(finding), fallback='paper')}</td><td>{finding_id_link(finding.get('id'))}</td></tr>"
-        for finding in findings[:8]
-    ]
-    if not rows:
-        rows.append("<tr data-severity=\"minor\" data-issue-type=\"prose\"><td><span class=\"badge minor\">[i] Minor</span></td><td>No recurring patterns</td><td>No compiled findings.</td><td>paper</td><td></td></tr>")
-    return f"""
-    <section id="local-comments">
-      <h2>{WORKBENCH_SECTION_LABELS['local-comments']}</h2>
-      <div class="table-wrap">
-        <table class="report-table">
-          <caption>Recurring issue patterns</caption>
-          <thead><tr><th scope="col">严重度</th><th scope="col">共性问题</th><th scope="col">读者卡点</th><th scope="col">代表位置</th><th scope="col">关联问题</th></tr></thead>
-          <tbody>{''.join(rows)}</tbody>
-        </table>
-      </div>
-    </section>"""
-
-
-def render_revision_plan(findings: list[dict[str, object]]) -> str:
-    rows = []
-    for idx, finding in enumerate(findings[:10], 1):
-        rows.append(
-            f"<tr><td>P{0 if idx <= 3 else 1}</td><td>{display_text(finding.get('next_draft_task') or finding.get('self_check'), fallback='Resolve finding before resubmission.')}</td><td>{finding_id_link(finding.get('id'))}</td><td>{display_text(finding.get('issue_type'), fallback='writing')}</td><td>{'M' if severity_key(finding.get('severity')) in {'blocker', 'major'} else 'S'}</td><td>{display_text(finding.get('downgrade_condition'), fallback='Finding no longer appears in compiled artifacts.')}</td></tr>"
-        )
-    if not rows:
-        rows.append("<tr><td>P1</td><td>No compiled findings.</td><td></td><td>Writing</td><td>S</td><td>Run Prose Phase A/B.</td></tr>")
-    return f"""
-    <section id="revision-plan">
-      <h2>{WORKBENCH_SECTION_LABELS['revision-plan']}</h2>
-      <div class="table-wrap">
-        <table class="report-table">
-          <caption>Executable revision plan</caption>
-          <thead><tr><th scope="col">优先级</th><th scope="col">任务</th><th scope="col">关联问题</th><th scope="col">区域</th><th scope="col">工作量</th><th scope="col">验收方式</th></tr></thead>
-          <tbody>{''.join(rows)}</tbody>
-        </table>
-      </div>
     </section>"""
 
 
@@ -1968,7 +1913,7 @@ def render_coverage_receipt(coverage: object, *, raw_hash_attr: str, source_arti
         )
     return f"""
     <section id="coverage-receipt">
-      <h2>{WORKBENCH_SECTION_LABELS['coverage-receipt']}</h2>
+      <h2>{REPORT_SECTION_LABELS['coverage-receipt']}</h2>
       <div class="table-wrap">
         <table class="report-table">
           <caption>Coverage receipt</caption>
@@ -1993,26 +1938,18 @@ def render_coverage_receipt(coverage: object, *, raw_hash_attr: str, source_arti
     </section>"""
 
 
-def render_workbench_sections(
+def render_global_report_sections(
     *,
     findings: list[dict[str, object]],
     annotations: list[dict[str, str]],
-    claims: list[dict[str, object]],
     coverage: object,
-    pass_observations: object,
     raw_hash_attr: str,
     source_artifact: str,
     sentence_count: int,
 ) -> str:
     return "\n".join(
         [
-            render_executive_diagnosis(findings),
-            render_issue_index(findings),
-            render_claim_evidence(claims, findings),
-            render_deep_reading(findings, annotations, pass_observations),
-            render_submission_readiness(findings),
-            render_local_comments(findings),
-            render_revision_plan(findings),
+            render_global_findings(findings),
             render_coverage_receipt(
                 coverage,
                 raw_hash_attr=raw_hash_attr,
@@ -2044,9 +1981,7 @@ def report_shell(
     sentence_count: int,
     annotations: list[dict[str, str]],
     findings: list[dict[str, object]] | None = None,
-    claims: list[dict[str, object]] | None = None,
     coverage: object = None,
-    pass_observations: object = None,
     full_report: bool = False,
 ) -> str:
     source_artifact = html.escape(str(raw_html_path))
@@ -2057,27 +1992,19 @@ def report_shell(
     annotation_panel_state = ' data-empty="true"' if annotations else ""
     annotation_cards = render_annotation_cards(annotations)
     finding_anchor_index = render_finding_anchor_index(annotations)
-    report_kind = "compiled-review" if full_report else "paper-reader-only"
-    header_title = "Ariadne Compiled Review" if full_report else "Ariadne Paper Reader Preview"
-    workbench_nav = (
+    report_kind = "paper-reader-with-global-findings" if full_report else "paper-reader-only"
+    header_title = "Ariadne Paper Reader Review" if full_report else "Ariadne Paper Reader Preview"
+    global_nav = (
         """
-    <a href="#executive-diagnosis">总评诊断</a>
-    <a href="#issue-index">问题索引</a>
-    <a href="#claim-evidence-audit">主张证据</a>
-    <a href="#deep-reading-notes">精读批注</a>
-    <a href="#submission-readiness">提交就绪</a>
-    <a href="#local-comments">共性问题</a>
-    <a href="#revision-plan">修改路线</a>"""
+    <a href="#global-findings">全局重要问题</a>"""
         if full_report
         else ""
     )
-    workbench_html = (
-        render_workbench_sections(
+    companion_html = (
+        render_global_report_sections(
             findings=findings or [],
             annotations=annotations,
-            claims=claims or [],
             coverage=coverage,
-            pass_observations=pass_observations,
             raw_hash_attr=raw_hash_attr,
             source_artifact=source_artifact,
             sentence_count=sentence_count,
@@ -2127,6 +2054,7 @@ def report_shell(
     .paper-pane h2 {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:22px; margin:24px 0 12px; }}
     .paper-pane h3 {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:18px; margin:20px 0 10px; }}
     .paper-pane h4 {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:17px; margin:18px 0 8px; }}
+    .paper-pane h1[data-section-number]::before, .paper-pane h2[data-section-number]::before, .paper-pane h3[data-section-number]::before, .paper-pane h4[data-section-number]::before {{ content:attr(data-section-number) " "; }}
     .paper-pane ul, .paper-pane ol {{ padding-left:1.7em; margin:1em 0; max-width:760px; }}
     .paper-pane li {{ margin:.35em 0; padding-left:.2em; }}
     .paper-pane li > p {{ margin:.25em 0 .65em; }}
@@ -2180,6 +2108,7 @@ def report_shell(
     .paper-sentence {{ border-radius:4px; padding:1px 2px; scroll-margin-top:92px; }}
     .paper-sentence.has-annotation {{ position:relative; cursor:pointer; text-decoration-line:underline; text-decoration-thickness:2px; text-underline-offset:4px; transition:background-color .12s ease, outline-color .12s ease; }}
     .paper-sentence.has-annotation::after {{ content:attr(data-inline-label); display:inline-flex; align-items:center; max-width:160px; margin-left:6px; padding:1px 6px; border-radius:999px; border:1px solid currentColor; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:11px; font-weight:700; line-height:1.35; vertical-align:baseline; white-space:nowrap; pointer-events:none; }}
+    .paper-overview-annotations .annotation-bubble.paper {{ max-width:100%; overflow-wrap:anywhere; text-align:left; border-radius:6px; white-space:normal; }}
     .paper-sentence[data-severity="blocker"] {{ background:var(--blocker-bg); text-decoration-color:var(--blocker); }}
     .paper-sentence[data-severity="major"] {{ background:var(--major-bg); text-decoration-color:var(--major); }}
     .paper-sentence[data-severity="minor"] {{ background:var(--minor-bg); text-decoration-color:var(--minor); }}
@@ -2236,7 +2165,7 @@ def report_shell(
   </header>
   <nav aria-label="Review sections">
     <a href="#paper-reader">论文正文批注</a>
-{workbench_nav}
+{global_nav}
     <a href="#coverage-receipt">覆盖回执</a>
   </nav>
   {finding_anchor_index}
@@ -2264,7 +2193,7 @@ def report_shell(
     </div>
   </section>
   <main>
-{workbench_html}
+{companion_html}
   </main>
 </article>
 <script>
@@ -2394,9 +2323,7 @@ def render(
     asset_dir: Path | None = None,
     inline_images: bool = False,
     reuse_raw_html: bool = False,
-    claims_path: Path | None = None,
     coverage_path: Path | None = None,
-    pass_observations_path: Path | None = None,
     full_report: bool = False,
 ) -> tuple[Path, Path, int]:
     tex_path = tex_path.resolve()
@@ -2413,6 +2340,7 @@ def render(
         inline_images=inline_images,
         reuse_raw_html=reuse_raw_html,
     )
+    ensure_display_section_numbers(soup)
     raw_hash = sha256_path(raw_html_path)
     imported_annotations = load_review_html_annotations(review_html_path)
     explicit_annotations = load_annotations(annotations_path)
@@ -2421,9 +2349,7 @@ def render(
     merged_annotations = merge_annotation_findings(imported_annotations + explicit_annotations + issue_annotations, findings_by_id)
     annotations = apply_annotations(soup, assign_sentence_targets(soup, merged_annotations))
     finding_rows = load_findings_rows(findings_path)
-    claim_rows = load_claim_rows(claims_path)
     coverage_payload = load_optional_json(coverage_path)
-    pass_observations_payload = load_optional_json(pass_observations_path)
     source_html = body_inner_html(soup)
     output_path.write_text(
         report_shell(
@@ -2435,9 +2361,7 @@ def render(
             sentence_count=sentence_count,
             annotations=annotations,
             findings=finding_rows,
-            claims=claim_rows,
             coverage=coverage_payload,
-            pass_observations=pass_observations_payload,
             full_report=full_report,
         ),
         encoding="utf-8",
@@ -2453,9 +2377,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--annotations", type=Path, help="Optional JSON list/object of sentence annotations to overlay")
     parser.add_argument("--findings", type=Path, help="Optional findings JSON to join with anchor-only annotations")
     parser.add_argument("--issues-dir", type=Path, help="Optional directory of curated *_issues.json artifacts to render as cards")
-    parser.add_argument("--claims", type=Path, help="Optional claims.json for compiled review workbench")
-    parser.add_argument("--coverage", type=Path, help="Optional coverage.json for compiled review workbench")
-    parser.add_argument("--pass-observations", type=Path, help="Optional pass_observations.json for compiled review workbench")
+    parser.add_argument("--coverage", type=Path, help="Optional coverage.json for the coverage receipt")
     parser.add_argument("--review-html", type=Path, help="Optional existing Ariadne HTML report to import as annotation content")
     parser.add_argument("--asset-dir", type=Path, help="Directory for rendered local figure assets")
     parser.add_argument(
@@ -2471,7 +2393,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--full-report",
         action="store_true",
-        help="Render deterministic compiled-review workbench sections from JSON artifacts",
+        help="Render global Major/Blocker paper-level findings after the paper-reader overlay",
     )
     args = parser.parse_args(argv)
     output, raw, count = render(
@@ -2485,9 +2407,7 @@ def main(argv: list[str] | None = None) -> int:
         args.asset_dir,
         args.inline_images,
         args.reuse_raw_html,
-        args.claims,
         args.coverage,
-        args.pass_observations,
         args.full_report,
     )
     print(f"HTML report: {output}")

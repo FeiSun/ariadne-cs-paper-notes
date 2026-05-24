@@ -140,8 +140,34 @@ def test_derivatives_manifest_can_match_paper_reader_only_render() -> None:
         raise AssertionError(f"Unexpected paper-reader-only manifest sections: {sections}")
 
 
+def test_derivatives_manifest_can_match_global_findings_render() -> None:
+    module = load_module(SCRIPT, "build_review_derivatives")
+    payloads = module.build_all(
+        findings_path=ARTIFACTS / "findings.json",
+        annotations_path=ARTIFACTS / "annotations.json",
+        issues_dir=None,
+        layout_audit_path=ARTIFACTS / "layout_audit.json",
+        source_artifact=SOURCE,
+        source_hash="",
+        requested_scope="fixture paper-reader overlay plus global findings",
+        output_files=[str(HTML)],
+        source_fidelity="fixture",
+        html_source="manual-fixture",
+        visible_scope="",
+        render_mode="paper-reader-with-global-findings",
+    )
+    sections = [
+        section["id"]
+        for section in payloads["render_manifest"].get("sections", [])
+        if section.get("status") == "rendered"
+    ]
+    if sections != ["paper-reader", "global-findings", "coverage-receipt"]:
+        raise AssertionError(f"Unexpected global-findings manifest sections: {sections}")
+
+
 if __name__ == "__main__":
     test_derivative_artifacts_satisfy_existing_audit_contract()
     test_derivatives_cli_writes_all_outputs()
     test_derivatives_manifest_can_match_paper_reader_only_render()
+    test_derivatives_manifest_can_match_global_findings_render()
     print("build_review_derivatives regression tests passed")
