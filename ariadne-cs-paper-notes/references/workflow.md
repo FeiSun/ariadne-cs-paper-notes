@@ -144,7 +144,7 @@ scripts/run_review_pipeline.py <main.tex-or-project> --bundle <bundle>
 
 It prepares/builds the PDF when possible, renders source HTML, extracts review units, runs deterministic specialists, writes `phase_a_resume_status.json`, `phase_a_next_step.json`, and `phase_a_prompt_packet.json`, and then stops if Prose Phase A/B artifacts are missing. When Phase A artifacts exist, it also writes `phase_b_context.json` and `phase_b_prompt_packet.json`. After the Prose agents have written their JSON/JSONL artifacts, rerun the same command to compile, derive, render, and audit. Use `--allow-partial-compile` only for debugging or specialist-only previews; partial compile output must not be presented as a full-paper prose review.
 
-For final compiled reports, the coordinator calls `render_paper_html.py` with `--reuse-raw-html --full-report` so the final overlay uses the exact canonical source HTML that generated `review_units`. This prevents sentence anchors from changing between Prose Phase A and final rendering. The renderer emits the workbench sections deterministically from JSON artifacts; agents must not write HTML.
+For source-derived HTML annotation pages, the coordinator calls `render_paper_html.py` with `--reuse-raw-html` and leaves `--full-report` off, so the deliverable stays paper-first: original manuscript text with overlay annotations and a compact coverage receipt. The exact canonical source HTML that generated `review_units` must be reused so sentence anchors do not change between Prose Phase A and final rendering. Pass `--full-report` only when the user explicitly asks for a full workbench-style report after the annotated paper; agents must not write HTML.
 
 If a vision-capable figure/caption specialist is available, pass `--vision-figure-agent-cmd "<command>"`. The runner creates tool-only page images and a compact vision packet; only the curated `figure_caption` issue artifact and compact runner summary should enter orchestration context.
 
@@ -200,7 +200,7 @@ The derivative builder writes `coverage.json`, `render_manifest.json`, and `pass
 
 ## Reader-Journey Passes
 
-Run these passes internally. Render externally in the workbench order from `report_contract.md`.
+Run these passes internally. For paper-reader HTML批注, render them primarily as article-anchored overlay annotations plus coverage. For explicit full workbench reports, render externally in the workbench order from `report_contract.md`.
 
 ### Pass 0 -- Engagement Contract
 

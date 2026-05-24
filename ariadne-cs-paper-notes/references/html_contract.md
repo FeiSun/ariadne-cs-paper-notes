@@ -8,7 +8,7 @@ Use this file when the user asks for HTML, 网页, 可视化报告, 批注报告
 - Keep precise technical terms in English when clearer: claim, evidence, baseline, ablation, caption, limitation, coverage.
 - Produce a self-contained `.html` unless the user asks otherwise.
 - The HTML is a teaching annotation interface, not merely a report. Put the paper text first and attach comments directly to the sentences that need attention.
-- When the user asks specifically for a paper-HTML annotation page, a paper-reader-only deliverable is allowed: set `data-report-kind="paper-reader-only"` on `.review-report`, keep `#paper-reader`, `#annotation-panel`, provenance metadata, annotation cards, and a compact coverage receipt, and do not recreate the full workbench tables unless requested.
+- When the user asks specifically for a paper-HTML annotation page, default to a paper-reader-only deliverable: set `data-report-kind="paper-reader-only"` on `.review-report`, keep `#paper-reader`, `#annotation-panel`, provenance metadata, annotation cards, and a compact coverage receipt, and do not recreate the full workbench tables unless requested.
 - Do not require external network assets, remote fonts, CDN scripts, or CSS frameworks.
 - Inline JavaScript is allowed for self-contained filters/toggles.
 - Do not claim live PDF synchronization, clickable PDF jumping, embedded PDF annotations, or written PDF comments unless implemented and checked.
@@ -17,6 +17,8 @@ Use this file when the user asks for HTML, 网页, 可视化报告, 批注报告
 - If deterministic TeX-to-HTML is unavailable, render only the explicitly requested visible scope from extracted source/PDF text. Mark the scope limitation in the HTML and `render_manifest.json`; do not present the paper-reader as full-paper coverage.
 
 ## Required Sections
+
+Paper-reader-only annotation pages use `#paper-reader` and `#coverage-receipt`. Full workbench sections are opt-in for requests that explicitly ask for a report/workbench/table-style artifact in addition to the annotated paper.
 
 Full-paper HTML reports use these ids:
 

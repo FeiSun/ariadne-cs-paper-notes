@@ -78,6 +78,7 @@ def base_args(root: Path, tex: Path, bundle: Path, source: Path, **overrides):
         "skip_render": True,
         "prepare_only": False,
         "allow_partial_compile": False,
+        "full_report": False,
         "skip_final_render": True,
         "skip_audit": True,
         "inline_images": False,
@@ -443,6 +444,7 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
         )
         findings = json.loads((bundle / "findings.json").read_text(encoding="utf-8"))
         annotations = json.loads((bundle / "annotations.json").read_text(encoding="utf-8"))
+        manifest = json.loads((bundle / "render_manifest.json").read_text(encoding="utf-8"))
         status = json.loads((bundle / "pipeline_status.json").read_text(encoding="utf-8"))
         html = (bundle / "report.html").read_text(encoding="utf-8")
 
@@ -458,6 +460,57 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
             raise AssertionError(f"Pipeline did not run {required}: {step_names}")
     if "The paper-level contribution is not yet self-contained" not in html:
         raise AssertionError("Final report did not render the fake whole-paper finding")
+    if 'data-report-kind="paper-reader-only"' not in html:
+        raise AssertionError("Default pipeline render should be paper-reader-only")
+    if 'id="issue-index"' in html:
+        raise AssertionError("Default paper-reader render should not append workbench issue tables")
+    section_ids = [section["id"] for section in manifest.get("sections", []) if section.get("status") == "rendered"]
+    if section_ids != ["paper-reader", "coverage-receipt"]:
+        raise AssertionError(f"Paper-reader manifest should only declare rendered overlay sections, got {section_ids}")
+
+
+def test_full_report_flag_is_opt_in_for_final_render() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        tex = root / "main.tex"
+        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        bundle = root / "bundle"
+        source = root / "main.source.html"
+        tiny_source_html(source)
+        (bundle / "annotations.json").parent.mkdir(parents=True, exist_ok=True)
+        write_json(bundle / "annotations.json", {"annotations": []})
+        write_json(bundle / "findings.json", {"findings": []})
+        write_json(bundle / "coverage.json", {"units": []})
+        write_json(bundle / "pass_observations.json", {})
+        ctx = module.PipelineContext(
+            input_path=tex,
+            entry_tex=tex,
+            bundle=bundle,
+            issue_artifacts=bundle / "issue_artifacts",
+            pdf=None,
+            report_html=bundle / "report.html",
+            source_html=source,
+            review_units_jsonl=bundle / "main.review_units.jsonl",
+            review_units_md=bundle / "main.review_units.md",
+        )
+        calls: list[list[str]] = []
+
+        def fake_run_command(name, cmd, *, outputs=None, timeout=300):
+            calls.append(cmd)
+            return module.PipelineStep(name, "completed", command=cmd, outputs=[str(path) for path in outputs or []])
+
+        original_run_command = module.run_command
+        module.run_command = fake_run_command
+        try:
+            module.render_final(ctx, base_args(root, tex, bundle, source, skip_final_render=False, full_report=False))
+            if "--full-report" in calls[-1]:
+                raise AssertionError("Default final render should not pass --full-report")
+            module.render_final(ctx, base_args(root, tex, bundle, source, skip_final_render=False, full_report=True))
+            if "--full-report" not in calls[-1]:
+                raise AssertionError("Explicit full_report=True should pass --full-report")
+        finally:
+            module.run_command = original_run_command
 
 
 if __name__ == "__main__":
@@ -467,4 +520,5 @@ if __name__ == "__main__":
     test_pipeline_builds_shard_manifest_when_review_units_exceed_threshold()
     test_pipeline_can_invoke_prose_agent_dry_run()
     test_pipeline_fake_agent_end_to_end_compile_render_audit()
+    test_full_report_flag_is_opt_in_for_final_render()
     print("run_review_pipeline regression tests passed")

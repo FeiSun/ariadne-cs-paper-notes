@@ -55,13 +55,12 @@ For source-derived overlay reports, prefer anchor-only annotations:
 
 `findings.json` stores the full review prose once. `annotations.json` stores only anchor, short UI label, and current source artifact/hash. Render with `scripts/render_paper_html.py --annotations annotations.json --findings findings.json`; the renderer joins the teaching content at HTML generation time.
 
-For final compiled reports, render from the exact canonical source artifact used for review-unit extraction:
+For source-derived paper-reader annotation pages, render from the exact canonical source artifact used for review-unit extraction and leave `--full-report` off. Use `--full-report` only for explicit full workbench-style reports:
 
 ```bash
 scripts/render_paper_html.py <main.tex> \
   --raw-html <stem>.source.html \
   --reuse-raw-html \
-  --full-report \
   --annotations <bundle>/annotations.json \
   --findings <bundle>/findings.json \
   --claims <bundle>/claims.json \
@@ -71,7 +70,7 @@ scripts/render_paper_html.py <main.tex> \
   --output <stem>.html
 ```
 
-The renderer, not an LLM, must emit the workbench sections declared in `render_manifest.json`. If `--reuse-raw-html` is omitted during final rendering, the renderer may regenerate source HTML and change anchors; artifact audit should treat that as unsafe for source-derived overlay reports.
+For full workbench reports, add `--full-report` and ensure `render_manifest.json` declares the workbench sections as rendered. For paper-reader-only pages, `render_manifest.json` should declare only `paper-reader` and `coverage-receipt`. The renderer, not an LLM, must emit the sections declared in `render_manifest.json`. If `--reuse-raw-html` is omitted during final rendering, the renderer may regenerate source HTML and change anchors; artifact audit should treat that as unsafe for source-derived overlay reports.
 
 Suggested ledger columns:
 

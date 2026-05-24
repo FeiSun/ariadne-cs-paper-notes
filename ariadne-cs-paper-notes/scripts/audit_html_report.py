@@ -618,50 +618,51 @@ def audit(path: Path) -> tuple[list[str], list[str]]:
                 + ", ".join(legacy + [item for item in ("section-comments", "section-reflections") if item in parser.ids])
             )
 
-    declared_margin = find_declared_count(
-        text,
-        [
-            "Visible sentence issue notes",
-            "Visible sentence notes",
-            "Visible sentence-like issue rows",
-            "Sentence notes",
-            "句子级批注",
-            "Margin notes",
-            "逐句批注",
-        ],
-    )
-    if declared_margin is not None and declared_margin != parser.counts["margin_rows"]:
-        errors.append(
-            f"declared sentence/margin-note count {declared_margin} != body count {parser.counts['margin_rows']}"
+    if not paper_reader_only:
+        declared_margin = find_declared_count(
+            text,
+            [
+                "Visible sentence issue notes",
+                "Visible sentence notes",
+                "Visible sentence-like issue rows",
+                "Sentence notes",
+                "句子级批注",
+                "Margin notes",
+                "逐句批注",
+            ],
         )
+        if declared_margin is not None and declared_margin != parser.counts["margin_rows"]:
+            errors.append(
+                f"declared sentence/margin-note count {declared_margin} != body count {parser.counts['margin_rows']}"
+            )
 
-    declared_surgery = find_declared_count(
-        text,
-        [
-            "Visible paragraph issue rows",
-            "Visible paragraph rows",
-            "Paragraph rows",
-            "Paragraph surgery rows",
-            "逐段手术",
-            "Paragraph surgery",
-            "段落级批注",
-        ],
-    )
-    if declared_surgery is not None and declared_surgery != parser.counts["surgery_rows"]:
-        errors.append(f"declared paragraph row count {declared_surgery} != body count {parser.counts['surgery_rows']}")
-
-    declared_section_reflections = find_declared_count(
-        text,
-        [
-            "Section reflection rows",
-            "章节读后反思",
-            "章节反思",
-        ],
-    )
-    if declared_section_reflections is not None and declared_section_reflections != parser.counts["section_review_rows"]:
-        errors.append(
-            f"declared section-reflection count {declared_section_reflections} != body count {parser.counts['section_review_rows']}"
+        declared_surgery = find_declared_count(
+            text,
+            [
+                "Visible paragraph issue rows",
+                "Visible paragraph rows",
+                "Paragraph rows",
+                "Paragraph surgery rows",
+                "逐段手术",
+                "Paragraph surgery",
+                "段落级批注",
+            ],
         )
+        if declared_surgery is not None and declared_surgery != parser.counts["surgery_rows"]:
+            errors.append(f"declared paragraph row count {declared_surgery} != body count {parser.counts['surgery_rows']}")
+
+        declared_section_reflections = find_declared_count(
+            text,
+            [
+                "Section reflection rows",
+                "章节读后反思",
+                "章节反思",
+            ],
+        )
+        if declared_section_reflections is not None and declared_section_reflections != parser.counts["section_review_rows"]:
+            errors.append(
+                f"declared section-reflection count {declared_section_reflections} != body count {parser.counts['section_review_rows']}"
+            )
 
     if "Coverage consistency" not in text and "coverage consistency" not in text:
         warnings.append("coverage receipt does not mention Coverage consistency gate")

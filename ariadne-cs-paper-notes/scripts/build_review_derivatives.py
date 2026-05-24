@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_SECTIONS = [
+WORKBENCH_SECTIONS = [
     "paper-reader",
     "executive-diagnosis",
     "issue-index",
@@ -23,6 +23,14 @@ DEFAULT_SECTIONS = [
     "revision-plan",
     "coverage-receipt",
 ]
+PAPER_READER_ONLY_SECTIONS = [
+    "paper-reader",
+    "coverage-receipt",
+]
+RENDER_MODES = {
+    "compiled-review": WORKBENCH_SECTIONS,
+    "paper-reader-only": PAPER_READER_ONLY_SECTIONS,
+}
 PASS_KEYS = {
     "pass_0_engagement_contract": "Pass 0",
     "pass_1_cold_start_skim": "Pass 1",
@@ -198,8 +206,9 @@ def build_render_manifest(
     html_source: str,
     visible_scope: str,
     deferred_findings: list[str],
+    rendered_sections: list[str] | None = None,
 ) -> dict[str, Any]:
-    sections = [{"id": section_id, "status": "rendered"} for section_id in DEFAULT_SECTIONS]
+    sections = [{"id": section_id, "status": "rendered"} for section_id in (rendered_sections or WORKBENCH_SECTIONS)]
     paper_reader: dict[str, Any] = {
         "html_source": html_source,
         "source_fidelity": source_fidelity,
@@ -305,6 +314,7 @@ def build_all(
     source_fidelity: str,
     html_source: str,
     visible_scope: str,
+    render_mode: str = "compiled-review",
 ) -> dict[str, Any]:
     findings_payload = load_json(findings_path)
     annotations_payload = load_json(annotations_path)
@@ -312,6 +322,7 @@ def build_all(
     findings = as_list_payload(findings_payload, "findings")
     annotations = as_list_payload(annotations_payload, "annotations")
     artifacts = load_issue_artifacts(issues_dir)
+    rendered_sections = RENDER_MODES[render_mode]
     coverage = build_coverage(
         findings=findings,
         annotations=annotations,
@@ -327,6 +338,7 @@ def build_all(
         html_source=html_source,
         visible_scope=visible_scope,
         deferred_findings=[],
+        rendered_sections=rendered_sections,
     )
     pass_observations = build_pass_observations(findings=findings, issue_artifacts=artifacts, requested_scope=requested_scope)
     return {"coverage": coverage, "render_manifest": manifest, "pass_observations": pass_observations}
@@ -345,6 +357,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-fidelity", default="deterministic", choices=("deterministic", "limited-scope", "fixture"))
     parser.add_argument("--html-source", default="pandoc", choices=("latexml", "ar5iv", "pandoc", "extracted-text", "manual-fixture"))
     parser.add_argument("--visible-scope", default="")
+    parser.add_argument(
+        "--render-mode",
+        default="compiled-review",
+        choices=tuple(RENDER_MODES),
+        help="Sections expected in the final HTML render.",
+    )
     parser.add_argument("--coverage-out", required=True, type=Path)
     parser.add_argument("--manifest-out", required=True, type=Path)
     parser.add_argument("--pass-observations-out", required=True, type=Path)
@@ -362,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         source_fidelity=args.source_fidelity,
         html_source=args.html_source,
         visible_scope=args.visible_scope,
+        render_mode=args.render_mode,
     )
     write_json(args.coverage_out, payloads["coverage"])
     write_json(args.manifest_out, payloads["render_manifest"])
