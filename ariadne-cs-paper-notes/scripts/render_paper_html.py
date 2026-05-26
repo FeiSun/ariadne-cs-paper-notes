@@ -27,11 +27,24 @@ SENTENCE_ID_SCHEME = "section-paragraph-sentence-v2"
 PDF_ASSET_DPI = "144"
 LAYOUT_PARAM_RE = re.compile(r"^(?:[rlc]\s*)?(?:max\s+width\s*=\s*)?(?:\d+(?:\.\d+)?)?$", re.IGNORECASE)
 LATEX_INPUT_RE = re.compile(r"\\(?:input|include)\{([^}]+)\}")
+LATEX_USEPACKAGE_RE = re.compile(r"\\usepackage(?:\[(?P<options>[^\]]*)\])?\{(?P<packages>[^}]+)\}")
 LATEX_ENV_RE = re.compile(r"\\begin\{(figure\*?|table\*?|wrapfigure|wraptable|algorithm\*?)\}(?:\[[^\]]*\]|\{[^{}]*\})*.*?\\end\{\1\}", re.DOTALL)
 LATEX_LABEL_RE = re.compile(r"\\label\{([^}]+)\}")
 LATEX_GRAPHICS_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
 LATEX_BIBLIOGRAPHY_RE = re.compile(r"\\bibliography\{([^}]+)\}")
 LATEX_ADD_BIB_RESOURCE_RE = re.compile(r"\\addbibresource(?:\[[^\]]*\])?\{([^}]+)\}")
+LATEX_APPENDIX_RE = re.compile(r"\\appendix\b")
+LATEX_DOCUMENTCLASS_RE = re.compile(r"\\documentclass(?:\[(?P<options>[^\]]*)\])?\{(?P<class>[^}]+)\}")
+LATEX_SECTION_WITH_LABEL_RE = re.compile(
+    r"\\(?:section|subsection)\*?(?:\[[^\]]*\])?\{((?:[^{}]|\{[^{}]*\})*)\}"
+    r"(?P<between>(?:\s|%[^\n]*(?:\n|$)|\\label\{[^{}]+\}){0,800})",
+    re.DOTALL,
+)
+ANONYMOUS_FRONT_MATTER_RE = re.compile(
+    r"\bAnonymous(?:\s+(?:ACL|ARR|EMNLP|NeurIPS|ICLR|ICML|submission|authors?|paper|manuscript)){0,4}\b|"
+    r"\bsubmitted\s+anonymously\b|\banonymous\s+submission\b|\banonymous\s+authors?\b",
+    re.IGNORECASE,
+)
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?。！？])(\s+)(?=[A-Z0-9\"'“‘(])")
 SENTENCE_ENDINGS = (".", "!", "?", "。", "！", "？")
 LEGACY_REVIEW_IMPORT_SECTION_LABELS = {
@@ -120,6 +133,22 @@ def first_nonempty(item: dict[str, object], *keys: str) -> object | None:
             continue
         return value
     return None
+
+
+def is_artifact_only(item: dict[str, object]) -> bool:
+    visibility = str(
+        item.get("render_visibility")
+        or item.get("visibility")
+        or item.get("student_visibility")
+        or ""
+    ).strip().lower()
+    if visibility in {"artifact_only", "audit_only", "hidden"}:
+        return True
+    if visibility in {"student_visible", "visible", "render"}:
+        return False
+    if str(item.get("student_visible") or "").strip().lower() in {"0", "false", "no"}:
+        return True
+    return False
 
 
 def normalize_anchor_level(value: object | None) -> str:
@@ -280,10 +309,15 @@ def normalize_annotation_item(item: dict[str, object], idx: int, *, source: str)
     else:
         raw_ids = first_nonempty(item, "paper_id", "target_paper") or "paper"
         target_key = "paper_id"
-    if raw_ids is None:
-        if source == "findings":
-            return []
-        raise SystemExit(f"annotation #{idx} missing target id for `{anchor_level}` annotation")
+        if raw_ids is None:
+            if source == "findings":
+                if str(item.get("render_visibility") or "").strip().lower() in {"student_visible", "visible", "render"}:
+                    fallback = normalize_finding_content(item, idx)
+                    fallback["target_level"] = "paper"
+                    fallback["paper_id"] = "paper"
+                    return [fallback]
+                return []
+            raise SystemExit(f"annotation #{idx} missing target id for `{anchor_level}` annotation")
     anchor_ids = raw_ids if isinstance(raw_ids, list) else [raw_ids]
     raw_severity = str(item.get("severity") or "").strip().lower()
     if raw_severity and raw_severity not in SEVERITY_LABELS:
@@ -366,6 +400,8 @@ def load_annotations(path: Path | None) -> list[dict[str, str]]:
     for idx, item in enumerate(items, 1):
         if not isinstance(item, dict):
             raise SystemExit(f"annotation #{idx} must be an object")
+        if is_artifact_only(item):
+            continue
         annotations.extend(normalize_annotation_item(item, idx, source=source))
     return annotations
 
@@ -427,14 +463,20 @@ def load_findings(path: Path | None) -> dict[str, dict[str, str]]:
     for idx, item in enumerate(findings, 1):
         if not isinstance(item, dict):
             raise SystemExit(f"finding #{idx} must be an object")
+        if is_artifact_only(item):
+            continue
         finding_id = str(item.get("id") or item.get("issue_id") or "").strip()
         if not finding_id:
             raise SystemExit(f"finding #{idx} missing `id`")
         normalized = normalize_annotation_item({**item, "issue_id": finding_id}, idx, source="findings")
         if normalized:
-            output[finding_id] = normalized[0]
+            finding = dict(normalized[0])
         else:
-            output[finding_id] = normalize_finding_content({**item, "issue_id": finding_id}, idx)
+            finding = normalize_finding_content({**item, "issue_id": finding_id}, idx)
+        source_issue_ids = item.get("source_issue_ids")
+        if isinstance(source_issue_ids, list):
+            finding["source_issue_ids"] = [str(value) for value in source_issue_ids if str(value or "").strip()]
+        output[finding_id] = finding
     return output
 
 
@@ -445,7 +487,7 @@ def load_findings_rows(path: Path | None) -> list[dict[str, object]]:
     rows = payload.get("findings", []) if isinstance(payload, dict) else payload
     if not isinstance(rows, list):
         raise SystemExit("findings JSON must be a list or an object with a `findings` list")
-    return [row for row in rows if isinstance(row, dict)]
+    return [row for row in rows if isinstance(row, dict) and not is_artifact_only(row)]
 
 
 def render_group_label(value: object, fallback: str = "") -> str:
@@ -485,6 +527,8 @@ def issue_artifact_to_annotations(path: Path) -> list[dict[str, str]]:
     for idx, issue in enumerate(issues, 1):
         if not isinstance(issue, dict):
             raise SystemExit(f"issue artifact `{path}` issue #{idx} must be an object")
+        if is_artifact_only(issue):
+            continue
         local_id = str(issue.get("local_id") or issue.get("id") or issue.get("issue_id") or f"{domain[:1].upper()}{idx}")
         issue_id = f"{domain}:{local_id}"
         render_hint = issue.get("render_hint") if isinstance(issue.get("render_hint"), dict) else {}
@@ -532,13 +576,16 @@ def issue_artifact_to_annotations(path: Path) -> list[dict[str, str]]:
             annotation["paper_id"] = "paper"
             if anchor:
                 annotation["location"] = anchor
+            if anchor.startswith("page:"):
+                annotation["page_anchor"] = anchor
         normalized = normalize_annotation_item(annotation, idx, source="annotations")
         if not normalized:
             continue
         for item in normalized:
             if target_level == "paper" and anchor.startswith("page:"):
-                item["unanchored"] = "true"
-                item["paper_id"] = ""
+                item["paper_id"] = paper_target_id(item, idx)
+                item["page_anchor"] = anchor
+                item["source_section_label"] = item.get("source_section_label") or render_group_label(domain, domain)
             annotations.append(item)
     return annotations
 
@@ -548,6 +595,28 @@ def load_issue_artifact_annotations(issues_dir: Path | None) -> list[dict[str, s
     for path in issue_artifact_paths(issues_dir):
         annotations.extend(issue_artifact_to_annotations(path))
     return annotations
+
+
+def compiled_source_issue_ids(findings_by_id: dict[str, dict[str, str]]) -> set[str]:
+    source_ids: set[str] = set()
+    for finding in findings_by_id.values():
+        values = finding.get("source_issue_ids")
+        if isinstance(values, list):
+            for value in values:
+                text = str(value or "").strip()
+                if text:
+                    source_ids.add(text)
+    return source_ids
+
+
+def filter_compiled_issue_artifact_annotations(
+    annotations: list[dict[str, str]],
+    findings_by_id: dict[str, dict[str, str]],
+) -> list[dict[str, str]]:
+    source_ids = compiled_source_issue_ids(findings_by_id)
+    if not source_ids:
+        return annotations
+    return [annotation for annotation in annotations if annotation.get("issue_id", "") not in source_ids]
 
 
 def merge_annotation_findings(
@@ -743,6 +812,17 @@ def normalized_text(tag: Tag) -> str:
     return re.sub(r"\s+", " ", tag.get_text(" ", strip=True)).strip()
 
 
+def class_names(tag: Tag) -> list[str]:
+    classes = tag.get("class", [])
+    if isinstance(classes, str):
+        return classes.split()
+    return [str(item) for item in classes]
+
+
+def has_class(tag: Tag, class_name: str) -> bool:
+    return class_name in class_names(tag)
+
+
 def is_layout_parameter_text(value: str) -> bool:
     text = normalized_text(BeautifulSoup(f"<span>{html.escape(value)}</span>", "html.parser").span)
     if not text:
@@ -753,12 +833,260 @@ def is_layout_parameter_text(value: str) -> bool:
 
 
 def add_class(tag: Tag, class_name: str) -> None:
-    classes = tag.get("class", [])
-    if isinstance(classes, str):
-        classes = classes.split()
+    classes = class_names(tag)
     if class_name not in classes:
         classes.append(class_name)
     tag["class"] = classes
+
+
+def latex_package_options(tex_path: Path, package: str) -> set[str] | None:
+    expanded = strip_latex_comments(read_latex_tree(tex_path))
+    package = package.strip()
+    for match in LATEX_USEPACKAGE_RE.finditer(expanded):
+        packages = [item.strip() for item in match.group("packages").split(",")]
+        if package not in packages:
+            continue
+        options = match.group("options") or ""
+        return {item.strip().lower() for item in options.split(",") if item.strip()}
+    return None
+
+
+def latex_documentclass_options(tex_path: Path) -> set[str]:
+    expanded = strip_latex_comments(read_latex_tree(tex_path))
+    match = LATEX_DOCUMENTCLASS_RE.search(expanded)
+    if match is None:
+        return set()
+    options = match.group("options") or ""
+    return {item.strip().lower() for item in options.split(",") if item.strip()}
+
+
+def latex_source_requests_two_column(tex_path: Path) -> bool:
+    expanded = strip_latex_comments(read_latex_tree(tex_path))
+    return "twocolumn" in latex_documentclass_options(tex_path) or bool(re.search(r"\\twocolumn\b", expanded))
+
+
+PDF_BBOX_PAGE_RE = re.compile(r"<page\b(?P<attrs>[^>]*)>", re.IGNORECASE)
+PDF_BBOX_LINE_RE = re.compile(r"<line\b(?P<attrs>[^>]*)>", re.IGNORECASE)
+PDF_BBOX_ATTR_RE = re.compile(r'([A-Za-z][\w:-]*)="([^"]*)"')
+
+
+def pdf_bbox_attrs(raw_attrs: str) -> dict[str, float]:
+    attrs: dict[str, float] = {}
+    for key, value in PDF_BBOX_ATTR_RE.findall(raw_attrs):
+        try:
+            attrs[key] = float(value)
+        except ValueError:
+            continue
+    return attrs
+
+
+def pdf_page_line_boxes(pdf_path: Path, *, max_pages: int = 3) -> list[dict[str, object]]:
+    pdftotext = shutil.which("pdftotext")
+    if not pdf_path.exists() or not pdftotext:
+        return []
+    pages: list[dict[str, object]] = []
+    for page_number in range(1, max_pages + 1):
+        try:
+            result = subprocess.run(
+                [pdftotext, "-f", str(page_number), "-l", str(page_number), "-bbox-layout", str(pdf_path), "-"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            break
+        if result.returncode != 0:
+            break
+        page_match = PDF_BBOX_PAGE_RE.search(result.stdout)
+        if page_match is None:
+            continue
+        page_attrs = pdf_bbox_attrs(page_match.group("attrs"))
+        lines = [pdf_bbox_attrs(match.group("attrs")) for match in PDF_BBOX_LINE_RE.finditer(result.stdout)]
+        lines = [line for line in lines if line.get("xMax", 0) > line.get("xMin", 0)]
+        pages.append(
+            {
+                "width": page_attrs.get("width", 0.0),
+                "height": page_attrs.get("height", 0.0),
+                "lines": lines,
+            }
+        )
+    return pages
+
+
+def pdf_looks_two_column(pdf_path: Path) -> bool:
+    for page in pdf_page_line_boxes(pdf_path):
+        width = float(page.get("width") or 0)
+        height = float(page.get("height") or 0)
+        if width <= 0 or height <= 0:
+            continue
+        raw_lines = page.get("lines") or []
+        if not isinstance(raw_lines, list):
+            continue
+        body_lines: list[dict[str, float]] = []
+        for line in raw_lines:
+            if not isinstance(line, dict):
+                continue
+            y_min = float(line.get("yMin") or 0)
+            if height * 0.12 <= y_min <= height * 0.92:
+                body_lines.append(line)
+        if len(body_lines) < 16:
+            continue
+        left_lines = sum(1 for line in body_lines if float(line.get("xMax") or 0) < width * 0.54)
+        right_lines = sum(1 for line in body_lines if float(line.get("xMin") or 0) > width * 0.46)
+        full_width_lines = sum(
+            1
+            for line in body_lines
+            if float(line.get("xMin") or 0) < width * 0.35 and float(line.get("xMax") or 0) > width * 0.65
+        )
+        column_line_share = (left_lines + right_lines) / max(len(body_lines), 1)
+        if left_lines >= 6 and right_lines >= 6 and column_line_share >= 0.55 and full_width_lines <= max(8, len(body_lines) * 0.35):
+            return True
+    return False
+
+
+def is_acl_review_mode(tex_path: Path) -> bool:
+    options = latex_package_options(tex_path, "acl")
+    return options is not None and "review" in options
+
+
+def pdf_first_page_text(pdf_path: Path) -> str:
+    if not pdf_path.exists() or shutil.which("pdftotext") is None:
+        return ""
+    try:
+        result = subprocess.run(
+            ["pdftotext", "-f", "1", "-l", "1", "-layout", "-enc", "UTF-8", str(pdf_path), "-"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return result.stdout
+
+
+def first_page_front_matter_text(pdf_path: Path) -> str:
+    text = pdf_first_page_text(pdf_path)
+    if not text.strip():
+        return ""
+    match = re.search(r"\b(Abstract|Introduction|1\s+Introduction)\b", text, re.IGNORECASE)
+    return text[: match.start()] if match else text[:2000]
+
+
+def pdf_front_matter_is_anonymous(tex_path: Path) -> bool:
+    front_matter = first_page_front_matter_text(tex_path.with_suffix(".pdf"))
+    return bool(front_matter and ANONYMOUS_FRONT_MATTER_RE.search(front_matter))
+
+
+def compiled_front_matter_is_anonymous(soup: BeautifulSoup) -> bool:
+    author = soup.select_one(".paper-author, .author")
+    if not isinstance(author, Tag):
+        return False
+    text = normalize_for_match(normalized_text(author))
+    anonymous_markers = {
+        "anonymous acl submission",
+        "anonymous submission",
+        "anonymous authors",
+        "anonymous author",
+        "anonymous arr submission",
+        "anonymous emnlp submission",
+        "anonymous neurips submission",
+        "submitted anonymously",
+    }
+    if any(str(author.get(attr) or "").strip().lower() == "true" for attr in ("data-acl-review-anonymous", "data-anonymous-front-matter")):
+        return True
+    return bool(text in anonymous_markers or text.startswith("anonymous ") or "submitted anonymously" in text)
+
+
+def resolve_paper_layout(tex_path: Path, requested: str = "source") -> str:
+    requested = (requested or "source").strip().lower()
+    if requested in {"single", "two-column", "paged", "paged-two-column"}:
+        return requested
+    pdf_path = tex_path.with_suffix(".pdf")
+    two_column = latex_source_requests_two_column(tex_path) or pdf_looks_two_column(pdf_path)
+    if pdf_path.exists():
+        return "paged-two-column" if two_column else "paged"
+    return "two-column" if two_column else "single"
+
+
+def front_matter_header(soup: BeautifulSoup) -> Tag | None:
+    header = soup.find("header", id="title-block-header")
+    if isinstance(header, Tag):
+        return header
+    header = soup.find(id="title-block-header")
+    return header if isinstance(header, Tag) else None
+
+
+def mark_front_matter_node(node: Tag, role: str) -> None:
+    node["data-paper-role"] = role
+    node["data-review-skip"] = "front-matter"
+
+
+def normalize_front_matter(soup: BeautifulSoup, tex_path: Path) -> None:
+    """Make pandoc's title block match venue review-mode front matter."""
+
+    header = front_matter_header(soup)
+    title = None
+    if header is not None:
+        title = header.find("h1", class_="title") or header.find("h1")
+    if title is None:
+        title = soup.find("h1", class_="title")
+    if isinstance(title, Tag):
+        add_class(title, "paper-title")
+        mark_front_matter_node(title, "title")
+        if not title.get("id"):
+            title["id"] = compact_section_slug(normalized_text(title), "paper-title")
+
+    if header is not None:
+        insertion_point: Tag = header
+        for abstract in list(header.find_all("div", class_="abstract", recursive=False)):
+            extracted = abstract.extract()
+            insertion_point.insert_after(extracted)
+            insertion_point = extracted
+
+    author_nodes: list[Tag] = []
+    if header is not None:
+        author_nodes.extend(tag for tag in header.find_all(["p", "div"], class_="author", recursive=False) if isinstance(tag, Tag))
+    if not author_nodes:
+        author_nodes.extend(tag for tag in soup.find_all(["p", "div"], class_="author") if isinstance(tag, Tag))
+
+    if is_acl_review_mode(tex_path) or pdf_front_matter_is_anonymous(tex_path):
+        if not author_nodes and isinstance(title, Tag):
+            author = soup.new_tag("p")
+            author["class"] = ["author"]
+            title.insert_after(author)
+            author_nodes = [author]
+        for extra in author_nodes[1:]:
+            extra.decompose()
+        if author_nodes:
+            author = author_nodes[0]
+            author.clear()
+            for attr in (
+                "data-paragraph-id",
+                "data-has-issue",
+                "data-severity",
+                "data-issue-type",
+                "data-issue-ids",
+                "aria-describedby",
+                "onclick",
+                "onkeydown",
+                "role",
+                "tabindex",
+            ):
+                if author.has_attr(attr):
+                    del author[attr]
+            add_class(author, "paper-author")
+            add_class(author, "paper-anonymous-author")
+            author["data-acl-review-anonymous"] = "true"
+            author["data-anonymous-front-matter"] = "true"
+            mark_front_matter_node(author, "author")
+            author.string = "Anonymous ACL submission" if is_acl_review_mode(tex_path) else "Anonymous submission"
+    else:
+        for author in author_nodes:
+            add_class(author, "paper-author")
+            mark_front_matter_node(author, "author")
 
 
 def cleanup_pandoc_artifacts(soup: BeautifulSoup) -> None:
@@ -863,9 +1191,69 @@ def normalize_asset_path(raw_path: str) -> str:
     return value.replace("\\", "/")
 
 
-def latex_label_units(tex_path: Path) -> list[dict[str, str]]:
+def latex_braced_content(text: str, open_brace_idx: int) -> tuple[str, int] | None:
+    if open_brace_idx < 0 or open_brace_idx >= len(text) or text[open_brace_idx] != "{":
+        return None
+    depth = 0
+    escaped = False
+    for idx in range(open_brace_idx, len(text)):
+        char = text[idx]
+        if char == "\\" and not escaped:
+            escaped = True
+            continue
+        if char == "{" and not escaped:
+            depth += 1
+        elif char == "}" and not escaped:
+            depth -= 1
+            if depth == 0:
+                return text[open_brace_idx + 1 : idx], idx + 1
+        escaped = False
+    return None
+
+
+def latex_command_braced_arg(block: str, command: str) -> str:
+    match = re.search(rf"\\{re.escape(command)}(?:\[[^\]]*\])?\s*\{{", block)
+    if not match:
+        return ""
+    parsed = latex_braced_content(block, match.end() - 1)
+    return parsed[0].strip() if parsed else ""
+
+
+def tabular_content(block: str) -> str:
+    match = re.search(r"\\begin\{tabular\}", block)
+    if not match:
+        return ""
+    idx = match.end()
+    while idx < len(block) and block[idx].isspace():
+        idx += 1
+    if idx < len(block) and block[idx] == "[":
+        end_opt = block.find("]", idx + 1)
+        if end_opt == -1:
+            return ""
+        idx = end_opt + 1
+        while idx < len(block) and block[idx].isspace():
+            idx += 1
+    if idx >= len(block) or block[idx] != "{":
+        return ""
+    parsed_spec = latex_braced_content(block, idx)
+    if parsed_spec is None:
+        return ""
+    content_start = parsed_spec[1]
+    depth = 1
+    env_re = re.compile(r"\\(begin|end)\{tabular\}")
+    for env_match in env_re.finditer(block, content_start):
+        if env_match.group(1) == "begin":
+            depth += 1
+        else:
+            depth -= 1
+            if depth == 0:
+                return block[content_start : env_match.start()]
+    return ""
+
+
+def latex_label_units(tex_path: Path) -> list[dict[str, object]]:
     expanded = strip_latex_comments(read_latex_tree(tex_path))
-    units: list[dict[str, str]] = []
+    units: list[dict[str, object]] = []
     for match in LATEX_ENV_RE.finditer(expanded):
         env = match.group(1)
         block = match.group(0)
@@ -884,8 +1272,328 @@ def latex_label_units(tex_path: Path) -> list[dict[str, str]]:
             following_assets = [asset for offset, asset in graphics if offset >= label_match.start()]
             asset = preceding_assets[-1] if preceding_assets else following_assets[0] if following_assets else ""
             label = label_match.group(1)
-            units.append({"kind": kind, "label": label, "asset": asset})
+            units.append(
+                {
+                    "kind": kind,
+                    "label": label,
+                    "asset": asset,
+                    "env": env,
+                    "wide": env.endswith("*"),
+                    "caption": latex_command_braced_arg(block, "caption"),
+                    "tabular": tabular_content(block) if kind == "table" else "",
+                }
+            )
     return units
+
+
+def mark_latex_float_widths(soup: BeautifulSoup, tex_path: Path) -> int:
+    marked = 0
+    for unit in latex_label_units(tex_path):
+        label = str(unit.get("label") or "")
+        if not label:
+            continue
+        kind = str(unit.get("kind") or "")
+        target = latex_label_target(soup, label, "figure" if kind == "figure" else "table" if kind == "table" else None)
+        if target is None:
+            continue
+        if bool(unit.get("wide")):
+            add_class(target, "paper-float-wide")
+        else:
+            add_class(target, "paper-float-single")
+        marked += 1
+    return marked
+
+
+def split_latex_table_rows(tabular: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    current: list[str] = []
+    cell: list[str] = []
+    brace_depth = 0
+    env_depth = 0
+    idx = 0
+    while idx < len(tabular):
+        if tabular.startswith("\\begin{tabular}", idx):
+            env_depth += 1
+            cell.append("\\begin{tabular}")
+            idx += len("\\begin{tabular}")
+            continue
+        if tabular.startswith("\\end{tabular}", idx):
+            env_depth = max(0, env_depth - 1)
+            cell.append("\\end{tabular}")
+            idx += len("\\end{tabular}")
+            continue
+        if tabular.startswith("\\\\", idx) and brace_depth == 0 and env_depth == 0:
+            current.append("".join(cell).strip())
+            cell = []
+            if any(part.strip() for part in current):
+                rows.append(current)
+            current = []
+            idx += 2
+            continue
+        char = tabular[idx]
+        if char == "\\":
+            command = re.match(r"\\[A-Za-z]+", tabular[idx:])
+            if command and command.group(0) in {"\\toprule", "\\midrule", "\\bottomrule"} and brace_depth == 0 and env_depth == 0:
+                idx += len(command.group(0))
+                continue
+            cell.append(char)
+            if idx + 1 < len(tabular):
+                cell.append(tabular[idx + 1])
+                idx += 2
+                continue
+        if char == "{" and (idx == 0 or tabular[idx - 1] != "\\"):
+            brace_depth += 1
+        elif char == "}" and (idx == 0 or tabular[idx - 1] != "\\"):
+            brace_depth = max(0, brace_depth - 1)
+        if char == "&" and brace_depth == 0 and env_depth == 0:
+            current.append("".join(cell).strip())
+            cell = []
+        else:
+            cell.append(char)
+        idx += 1
+    trailing = "".join(cell).strip()
+    if trailing:
+        current.append(trailing)
+    if any(part.strip() for part in current):
+        rows.append(current)
+    return rows
+
+
+def strip_latex_environment_begin(text: str, env: str) -> str:
+    pattern = re.compile(rf"\\begin\{{{re.escape(env)}\}}")
+    parts: list[str] = []
+    cursor = 0
+    for match in pattern.finditer(text):
+        parts.append(text[cursor : match.start()])
+        idx = match.end()
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
+        if idx < len(text) and text[idx] == "[":
+            opt_end = text.find("]", idx + 1)
+            if opt_end != -1:
+                idx = opt_end + 1
+                while idx < len(text) and text[idx].isspace():
+                    idx += 1
+        if idx < len(text) and text[idx] == "{":
+            parsed = latex_braced_content(text, idx)
+            if parsed is not None:
+                idx = parsed[1]
+        cursor = idx
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def latex_inline_to_html(soup: BeautifulSoup, value: str) -> list[object]:
+    text = strip_latex_environment_begin(value.strip(), "tabular")
+    text = text.replace("\\end{tabular}", "")
+    text = text.replace("\\toprule", "").replace("\\midrule", "").replace("\\bottomrule", "")
+    text = text.replace("\\textwidth", "")
+    text = re.sub(r"@\{\}", "", text)
+    text = re.sub(r"L\{[^{}]*\}", "", text)
+    text = re.sub(r"\\texttt\{([^{}]*)\}", r"`\1`", text)
+    text = re.sub(r"\\(?:citet|citep|cite|ref)\{([^{}]*)\}", r"[\1]", text)
+    text = re.sub(r"~", " ", text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text).strip()
+    parts: list[object] = []
+    cursor = 0
+    for match in re.finditer(r"\$([^$]+)\$|\\\\", text):
+        if match.start() > cursor:
+            parts.append(NavigableString(text[cursor : match.start()]))
+        if match.group(0) == "\\\\":
+            parts.append(soup.new_tag("br"))
+        else:
+            code = soup.new_tag("code")
+            code.string = match.group(1)
+            parts.append(code)
+        cursor = match.end()
+    if cursor < len(text):
+        parts.append(NavigableString(text[cursor:]))
+    return parts or [NavigableString("")]
+
+
+def append_latex_inline(soup: BeautifulSoup, tag: Tag, value: str) -> None:
+    for part in latex_inline_to_html(soup, value):
+        tag.append(part)
+
+
+def rebuilt_table_from_latex(soup: BeautifulSoup, unit: dict[str, object], table_number: int) -> Tag | None:
+    tabular = str(unit.get("tabular") or "")
+    rows = split_latex_table_rows(tabular)
+    rows = [row for row in rows if any(cell.strip() for cell in row)]
+    if not rows:
+        return None
+    wrapper = soup.new_tag("div")
+    wrapper["class"] = ["table*" if unit.get("wide") else "table", "paper-table", "paper-table-rebuilt"]
+    if unit.get("wide"):
+        wrapper["class"].append("paper-float-wide")
+    else:
+        wrapper["class"].append("paper-float-single")
+    label = str(unit.get("label") or "")
+    if label:
+        wrapper["id"] = label
+    table = soup.new_tag("table")
+    table["class"] = "paper-rebuilt-table"
+    caption_text = str(unit.get("caption") or "").strip()
+    if caption_text:
+        caption = soup.new_tag("caption")
+        strong = soup.new_tag("strong")
+        strong.string = f"Table {table_number}: "
+        caption.append(strong)
+        append_latex_inline(soup, caption, caption_text)
+        table.append(caption)
+    header, body_rows = rows[0], rows[1:]
+    thead = soup.new_tag("thead")
+    tr = soup.new_tag("tr")
+    for cell_text in header:
+        th = soup.new_tag("th")
+        append_latex_inline(soup, th, cell_text)
+        tr.append(th)
+    thead.append(tr)
+    table.append(thead)
+    tbody = soup.new_tag("tbody")
+    for row in body_rows:
+        tr = soup.new_tag("tr")
+        for cell_text in row:
+            td = soup.new_tag("td")
+            append_latex_inline(soup, td, cell_text)
+            tr.append(td)
+        tbody.append(tr)
+    table.append(tbody)
+    wrapper.append(table)
+    return wrapper
+
+
+def replace_broken_latex_tables(soup: BeautifulSoup, tex_path: Path) -> int:
+    replaced = 0
+    table_number = 0
+    for unit in latex_label_units(tex_path):
+        if unit.get("kind") != "table":
+            continue
+        table_number += 1
+        label = str(unit.get("label") or "")
+        if not label:
+            continue
+        target = latex_label_target(soup, label, "table")
+        if not isinstance(target, Tag):
+            continue
+        target_text = normalized_text(target)
+        broken = target.find("table") is None or "@L" in target_text or " & " in target_text
+        if not broken:
+            continue
+        rebuilt = rebuilt_table_from_latex(soup, unit, table_number)
+        if rebuilt is None:
+            continue
+        target.replace_with(rebuilt)
+        replaced += 1
+    return replaced
+
+
+def add_float_caption_numbers(soup: BeautifulSoup, tex_path: Path) -> int:
+    counters = {"figure": 0, "table": 0}
+    updated = 0
+    for unit in latex_label_units(tex_path):
+        kind = str(unit.get("kind") or "")
+        if kind not in counters:
+            continue
+        counters[kind] += 1
+        label = str(unit.get("label") or "")
+        target = latex_label_target(soup, label, kind)
+        if not isinstance(target, Tag):
+            continue
+        caption = target.find("figcaption") or target.find("caption")
+        caption_text = str(unit.get("caption") or "").strip()
+        if caption is None and caption_text:
+            caption = soup.new_tag("figcaption" if kind == "figure" else "caption")
+            append_latex_inline(soup, caption, caption_text)
+            if kind == "figure":
+                target.append(caption)
+            else:
+                table = target.find("table")
+                if isinstance(table, Tag):
+                    table.insert(0, caption)
+                else:
+                    target.insert(0, caption)
+        if not isinstance(caption, Tag):
+            continue
+        prefix = f"{'Figure' if kind == 'figure' else 'Table'} {counters[kind]}:"
+        if normalized_text(caption).lower().startswith(prefix.lower()):
+            continue
+        strong = soup.new_tag("strong")
+        strong.string = f"{prefix} "
+        caption.insert(0, strong)
+        updated += 1
+    return updated
+
+
+def mark_latex_paragraph_headings(soup: BeautifulSoup, tex_path: Path) -> int:
+    expanded = strip_latex_comments(read_latex_tree(tex_path))
+    titles = {normalize_for_match(match.group(1)) for match in re.finditer(r"\\paragraph\{([^{}]+)\}", expanded)}
+    marked = 0
+    for heading in soup.find_all(["h4", "h5", "h6"]):
+        if normalize_for_match(normalized_text(heading)) in titles:
+            add_class(heading, "paper-run-in-heading")
+            heading.attrs.pop("data-section-number", None)
+            marked += 1
+    return marked
+
+
+def bibliography_before_appendix(tex_path: Path) -> bool:
+    expanded = strip_latex_comments(read_latex_tree(tex_path))
+    bib_match = LATEX_BIBLIOGRAPHY_RE.search(expanded) or re.search(r"\\printbibliography\b", expanded)
+    appendix_match = LATEX_APPENDIX_RE.search(expanded)
+    return bool(bib_match and appendix_match and bib_match.start() < appendix_match.start())
+
+
+def latex_appendix_heading_ids(tex_path: Path) -> list[str]:
+    expanded = strip_latex_comments(read_latex_tree(tex_path))
+    appendix_match = LATEX_APPENDIX_RE.search(expanded)
+    if appendix_match is None:
+        return []
+    heading_ids: list[str] = []
+    for match in LATEX_SECTION_WITH_LABEL_RE.finditer(expanded, appendix_match.end()):
+        labels = LATEX_LABEL_RE.findall(match.group("between") or "")
+        if labels:
+            heading_ids.extend(labels)
+            continue
+        heading_ids.append(compact_section_slug(match.group(1), f"appendix-{len(heading_ids) + 1}"))
+    return ordered_unique(heading_ids)
+
+
+def first_appendix_heading(soup: BeautifulSoup, tex_path: Path | None = None) -> Tag | None:
+    appendix_ids = latex_appendix_heading_ids(tex_path) if tex_path is not None else []
+    for heading_id in appendix_ids:
+        heading = soup.find(id=heading_id)
+        if isinstance(heading, Tag):
+            return heading
+    for heading in soup.find_all(["h1", "h2"]):
+        heading_id = str(heading.get("id") or "").lower()
+        text = normalized_text(heading).lower()
+        if heading_id.startswith(("app:", "apd:", "appendix")) or text.startswith("appendix"):
+            return heading
+        if heading_id in {"sec:proof", "proof-of-the-theoretical-analysis"}:
+            return heading
+    return None
+
+
+def restore_bibliography_position(soup: BeautifulSoup, tex_path: Path) -> bool:
+    if not bibliography_before_appendix(tex_path):
+        return False
+    refs_heading = soup.find(id="references")
+    refs_body = soup.find(id="refs")
+    appendix_heading = first_appendix_heading(soup, tex_path)
+    if not isinstance(refs_heading, Tag) or not isinstance(refs_body, Tag) or not isinstance(appendix_heading, Tag):
+        return False
+    if refs_heading.find_next_sibling(id="refs") is not refs_body:
+        return False
+    if refs_heading.find_next("h1") is appendix_heading:
+        return False
+    move_nodes: list[Tag] = [refs_heading.extract(), refs_body.extract()]
+    footnotes = soup.find(id="footnotes")
+    if isinstance(footnotes, Tag):
+        move_nodes.append(footnotes.extract())
+    for node in move_nodes:
+        appendix_heading.insert_before(node)
+    return True
 
 
 def same_asset_path(left: str, right: str) -> bool:
@@ -915,6 +1623,15 @@ def add_label_anchor(soup: BeautifulSoup, target: Tag, label: str) -> Tag:
     return anchor
 
 
+def insert_label_anchor_before(soup: BeautifulSoup, target: Tag, label: str) -> Tag:
+    anchor = soup.new_tag("span")
+    anchor["id"] = label
+    anchor["class"] = "paper-latex-label-anchor"
+    anchor["aria-hidden"] = "true"
+    target.insert_before(anchor)
+    return anchor
+
+
 def node_or_ancestor_has_id(node: Tag) -> bool:
     current: Tag | None = node
     while current is not None:
@@ -924,29 +1641,86 @@ def node_or_ancestor_has_id(node: Tag) -> bool:
     return False
 
 
+def is_float_container(node: Tag, kind: str | None = None) -> bool:
+    classes = class_names(node)
+    if node.name == "figure":
+        return kind in {None, "figure"}
+    if node.name == "table":
+        return kind in {None, "table"}
+    table_classes = {"table", "table*", "wraptable", "paper-table", "paper-table-rebuilt"}
+    figure_classes = {"figure", "figure*", "wrapfigure", "paper-figure"}
+    generic_float_classes = {"paper-float", "paper-float-single", "paper-float-wide"}
+    if kind in {None, "table"} and any(
+        class_name in table_classes or class_name.startswith("table") for class_name in classes
+    ):
+        return True
+    if kind in {None, "figure"} and any(
+        class_name in figure_classes or class_name.startswith("figure") for class_name in classes
+    ):
+        return True
+    if any(class_name in generic_float_classes for class_name in classes):
+        if kind == "table":
+            return node.find("table") is not None or str(node.get("id") or "").startswith("tab:")
+        if kind == "figure":
+            return node.find(["img", "svg", "embed"]) is not None or str(node.get("id") or "").startswith("fig:")
+        return True
+    node_id = str(node.get("id") or "")
+    return (kind == "table" and node_id.startswith("tab:")) or (kind == "figure" and node_id.startswith("fig:"))
+
+
+def float_container_for_node(node: Tag, kind: str | None = None) -> Tag:
+    current: Tag | None = node
+    fallback = node
+    while current is not None:
+        if current.name in {"body", "html"}:
+            break
+        if is_float_container(current, kind):
+            fallback = current
+        current = current.parent if isinstance(current.parent, Tag) else None
+    return fallback
+
+
+def latex_label_target(soup: BeautifulSoup, label: str, kind: str | None = None) -> Tag | None:
+    target = soup.find(id=label)
+    if not isinstance(target, Tag):
+        return None
+    if kind in {"table", "figure", "algorithm"} or has_class(target, "paper-latex-label-anchor"):
+        return float_container_for_node(target, "figure" if kind == "figure" else "table" if kind == "table" else None)
+    return target
+
+
 def table_label_targets(soup: BeautifulSoup) -> list[Tag]:
     targets: list[Tag] = []
-    for container in soup.find_all(["div", "figure"]):
-        classes = container.get("class", [])
-        if isinstance(classes, str):
-            classes = classes.split()
-        if any(class_name in {"table", "table*"} or class_name.startswith("table") for class_name in classes):
-            if container not in targets:
-                targets.append(container)
-    for table in soup.find_all("table"):
-        current: Tag | None = table
-        target = table
-        while current is not None:
-            classes = current.get("class", [])
-            if isinstance(classes, str):
-                classes = classes.split()
-            if current.name in {"figure", "div"} and any("table" in class_name for class_name in classes):
-                target = current
-                break
-            current = current.parent if isinstance(current.parent, Tag) else None
+    for node in soup.find_all(["div", "figure", "table"]):
+        if node.name != "table" and not is_float_container(node, "table"):
+            continue
+        target = float_container_for_node(node, "table")
         if target not in targets:
             targets.append(target)
     return targets
+
+
+def restore_mathml_labels(soup: BeautifulSoup) -> int:
+    """Restore equation labels that pandoc leaves only inside MathML annotations."""
+
+    existing_ids = {str(tag.get("id")) for tag in soup.find_all(id=True)}
+    restored = 0
+    for math_node in soup.find_all("math"):
+        if not isinstance(math_node, Tag):
+            continue
+        annotation_text = "\n".join(annotation.get_text("\n", strip=False) for annotation in math_node.find_all("annotation"))
+        labels = ordered_unique([match.group(1) for match in LATEX_LABEL_RE.finditer(annotation_text)])
+        for label in labels:
+            if not label or label in existing_ids:
+                continue
+            if not math_node.get("id"):
+                math_node["id"] = label
+                add_class(math_node, "paper-latex-label-target")
+            else:
+                insert_label_anchor_before(soup, math_node, label)
+            existing_ids.add(label)
+            restored += 1
+    return restored
 
 
 def restore_latex_labels(soup: BeautifulSoup, tex_path: Path) -> int:
@@ -970,15 +1744,28 @@ def restore_latex_labels(soup: BeautifulSoup, tex_path: Path) -> int:
         existing_ids.add(unit["label"])
         restored += 1
 
+    table_targets = table_label_targets(soup)
+    used_table_targets: set[int] = set()
+    table_cursor = 0
     table_units = [unit for unit in units if unit["kind"] == "table"]
-    for unit, target in zip(table_units, table_label_targets(soup)):
-        if unit["label"] in existing_ids:
+    for unit in table_units:
+        label = str(unit["label"])
+        existing = latex_label_target(soup, label, "table")
+        if existing is not None:
+            used_table_targets.add(id(existing))
             continue
+        while table_cursor < len(table_targets) and id(table_targets[table_cursor]) in used_table_targets:
+            table_cursor += 1
+        if table_cursor >= len(table_targets):
+            continue
+        target = table_targets[table_cursor]
+        table_cursor += 1
         if not node_or_ancestor_has_id(target):
-            target["id"] = unit["label"]
+            target["id"] = label
         else:
-            add_label_anchor(soup, target, unit["label"])
-        existing_ids.add(unit["label"])
+            add_label_anchor(soup, target, label)
+        existing_ids.add(label)
+        used_table_targets.add(id(target))
         restored += 1
 
     for unit in units:
@@ -1107,6 +1894,8 @@ def ensure_references_heading(soup: BeautifulSoup) -> None:
 def normalize_for_match(value: str) -> str:
     text = html.unescape(value or "")
     text = re.sub(r"[“”\"'`‘’]", "", text)
+    text = text.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-").replace("\u2013", "-").replace("\u2014", "-")
+    text = re.sub(r"-\s+", "", text)
     text = re.sub(r"[\s\u00a0]+", " ", text)
     text = re.sub(r"^[.。,:;，；\s]+|[.。,:;，；\s]+$", "", text)
     return text.lower()
@@ -1131,6 +1920,32 @@ def snippet_candidates(annotation: dict[str, str]) -> list[str]:
             candidates.append(normalized)
             seen.add(normalized)
     return candidates
+
+
+def is_source_only_identity_false_positive(annotation: dict[str, str], soup: BeautifulSoup) -> bool:
+    if not compiled_front_matter_is_anonymous(soup):
+        return False
+    joined = normalize_for_match(
+        " ".join(
+            str(annotation.get(key, ""))
+            for key in (
+                "title",
+                "short",
+                "problem",
+                "diagnosis",
+                "why",
+                "reader_friction",
+                "task",
+                "self_check",
+                "severity_rationale",
+            )
+        )
+    )
+    if not joined:
+        return False
+    has_identity_claim = any(token in joined for token in ("暴露作者身份", "首页身份", "作者姓名", "author identity", "front matter exposes identity"))
+    has_anonymous_context = any(token in joined for token in ("匿名评审", "acl review", "review mode", "double blind", "双盲"))
+    return has_identity_claim and has_anonymous_context
 
 
 def issue_label_text(annotation: dict[str, str], count: int = 1) -> str:
@@ -1228,8 +2043,9 @@ def annotate_anchor_node(target: Tag, annotations: list[dict[str, str]], *, leve
     bubble["data-issue-type"] = issue_types[0] if len(issue_types) == 1 else "multiple"
     bubble["data-issue-ids"] = " ".join(issue_ids)
     bubble["aria-describedby"] = target.get("aria-describedby", "")
+    bubble["title"] = label
     bubble["onclick"] = f"AriadnePaperReaderOpenAnnotation('{level}', this.getAttribute('data-{level}-id'))"
-    bubble.string = label
+    bubble.string = "§" if level == "section" else label
     if level == "section":
         target.append(NavigableString(" "))
         target.append(bubble)
@@ -1282,6 +2098,7 @@ def ensure_paper_overview(soup: BeautifulSoup, annotations: list[dict[str, str]]
 
 
 def assign_sentence_targets(soup: BeautifulSoup, annotations: list[dict[str, str]]) -> list[dict[str, str]]:
+    annotations = [annotation for annotation in annotations if not is_source_only_identity_false_positive(annotation, soup)]
     sentence_nodes = list(soup.select(".paper-sentence[data-sentence-id]"))
     valid_sentence_ids = {str(node.get("data-sentence-id", "")) for node in sentence_nodes}
     valid_paragraph_ids = {str(node.get("data-paragraph-id", "")) for node in soup.select("[data-paragraph-id]")}
@@ -1403,8 +2220,11 @@ def apply_annotations(soup: BeautifulSoup, annotations: list[dict[str, str]]) ->
 def is_inside_skipped_tag(node: Tag) -> bool:
     parent = node
     while parent is not None:
-        if isinstance(parent, Tag) and parent.name in SKIP_PARENT_TAGS:
-            return True
+        if isinstance(parent, Tag):
+            if parent.name in SKIP_PARENT_TAGS:
+                return True
+            if parent.get("data-review-skip"):
+                return True
         parent = parent.parent
     return False
 
@@ -1493,7 +2313,13 @@ def wrap_sentences(soup: BeautifulSoup) -> int:
             if not node.get("id"):
                 node["id"] = section_slug
             paragraph_index = 0
-        if node.name not in SENTENCE_CONTAINER_TAGS or is_inside_skipped_tag(node):
+            if is_inside_skipped_tag(node):
+                continue
+        if is_inside_skipped_tag(node):
+            if node.name in SENTENCE_CONTAINER_TAGS and normalized_text(node):
+                paragraph_index += 1
+            continue
+        if node.name not in SENTENCE_CONTAINER_TAGS:
             continue
         paragraph_index += 1
         if node.name in {"p", "li", "figcaption", "caption"} and not node.get("data-paragraph-id"):
@@ -1506,10 +2332,39 @@ def heading_already_numbered(text: str) -> bool:
     return bool(re.match(r"^\s*(?:\d+(?:\.\d+)*|[A-Z])\.?\s+", text))
 
 
-def ensure_display_section_numbers(soup: BeautifulSoup) -> None:
+def integer_to_alpha(index: int) -> str:
+    if index <= 0:
+        return str(index)
+    letters: list[str] = []
+    value = index
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        letters.append(chr(ord("A") + remainder))
+    return "".join(reversed(letters))
+
+
+def is_appendix_heading(heading: Tag, appendix_ids: set[str], appendix_started: bool) -> bool:
+    heading_id = str(heading.get("id") or "").strip().lower()
+    text = normalized_text(heading).lower().strip()
+    if heading_id in appendix_ids:
+        return True
+    if heading_id.startswith(("app:", "apd:", "appendix")):
+        return True
+    if text.startswith("appendix"):
+        return True
+    if appendix_started and heading.name == "h1" and heading_id not in {"references", "neurips-paper-checklist"}:
+        return True
+    return False
+
+
+def ensure_display_section_numbers(soup: BeautifulSoup, tex_path: Path | None = None) -> None:
     body = soup.body or soup
     counters: dict[int, int] = {}
+    appendix_counters: dict[int, int] = {}
     first_numbered_level: int | None = None
+    appendix_first_level: int | None = None
+    appendix_started = False
+    appendix_ids = {value.lower() for value in latex_appendix_heading_ids(tex_path)} if tex_path is not None else set()
     skip_titles = {
         "abstract",
         "references",
@@ -1521,6 +2376,9 @@ def ensure_display_section_numbers(soup: BeautifulSoup) -> None:
         if not isinstance(heading, Tag):
             continue
         text = normalized_text(heading)
+        if has_class(heading, "paper-title") or has_class(heading, "paper-run-in-heading") or heading.get("data-review-skip"):
+            heading.attrs.pop("data-section-number", None)
+            continue
         if not text or heading_already_numbered(text):
             continue
         heading_id = str(heading.get("id") or "").strip().lower()
@@ -1532,6 +2390,23 @@ def ensure_display_section_numbers(soup: BeautifulSoup) -> None:
         if first_numbered_level is None:
             first_numbered_level = int(heading.name[1])
         level = int(heading.name[1])
+        if is_appendix_heading(heading, appendix_ids, appendix_started):
+            appendix_started = True
+            if appendix_first_level is None:
+                appendix_first_level = level
+            relative_level = max(1, level - appendix_first_level + 1)
+            for key in list(appendix_counters):
+                if key > relative_level:
+                    del appendix_counters[key]
+            appendix_counters[relative_level] = appendix_counters.get(relative_level, 0) + 1
+            if relative_level > 1 and appendix_counters.get(relative_level - 1, 0) == 0:
+                appendix_counters[relative_level - 1] = 1
+            parts = [
+                integer_to_alpha(appendix_counters.get(1, 1)),
+                *[str(appendix_counters.get(idx, 1)) for idx in range(2, relative_level + 1)],
+            ]
+            heading["data-section-number"] = ".".join(parts)
+            continue
         relative_level = max(1, level - first_numbered_level + 1)
         for key in list(counters):
             if key > relative_level:
@@ -1544,10 +2419,582 @@ def ensure_display_section_numbers(soup: BeautifulSoup) -> None:
         heading["data-section-number"] = ".".join(parts)
 
 
+def sync_section_reference_numbers(soup: BeautifulSoup) -> int:
+    section_numbers: dict[str, str] = {}
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if not isinstance(heading, Tag):
+            continue
+        heading_id = str(heading.get("id") or "")
+        number = str(heading.get("data-section-number") or "")
+        if heading_id and number:
+            section_numbers[heading_id] = number
+    updated = 0
+    for link in soup.find_all("a"):
+        if not isinstance(link, Tag):
+            continue
+        ref = str(link.get("data-reference") or "").strip()
+        href = str(link.get("href") or "").strip()
+        if not ref and href.startswith("#"):
+            ref = href[1:]
+        number = section_numbers.get(ref)
+        if not number:
+            continue
+        current = normalized_text(link)
+        if current and not re.fullmatch(r"\[?[A-Za-z]?\d+(?:\.\d+)*\]?", current):
+            continue
+        link.clear()
+        link.append(NavigableString(number))
+        updated += 1
+    return updated
+
+
 def body_inner_html(soup: BeautifulSoup) -> str:
     if soup.body is None:
         return str(soup)
     return "\n".join(str(child) for child in soup.body.children)
+
+
+def text_without_citations(node: Tag) -> str:
+    parts: list[str] = []
+
+    def visit(child: object) -> None:
+        if isinstance(child, NavigableString):
+            parts.append(str(child))
+            return
+        if not isinstance(child, Tag):
+            return
+        if has_class(child, "citation") or child.get("data-cites"):
+            return
+        for grandchild in child.contents:
+            visit(grandchild)
+
+    visit(node)
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
+def sentence_page_anchor_text(node: Tag, max_chars: int = 120) -> str:
+    text = text_without_citations(node)
+    text = re.sub(r"\([^)]*(?:\?{2,}|\bet al\.|\b\d{4}\b|;)[^)]*\)", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\?{2,}", " ", text)
+    text = normalize_for_match(text)
+    text = re.sub(r"[^a-z0-9]+", " ", text).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rsplit(" ", 1)[0] or text[:max_chars]
+
+
+def text_match_tokens(text: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    stopwords = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "our",
+        "that",
+        "the",
+        "their",
+        "this",
+        "to",
+        "we",
+        "with",
+    }
+    return [token for token in tokens if len(token) >= 3 and token not in stopwords]
+
+
+def sentence_page_phrases(node: Tag) -> list[str]:
+    text = sentence_page_anchor_text(node, max_chars=260)
+    tokens = text_match_tokens(text)
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for width in (8, 7, 6, 5, 4):
+        if len(tokens) < width:
+            continue
+        for start in range(0, len(tokens) - width + 1):
+            phrase = " ".join(tokens[start : start + width])
+            if phrase not in seen:
+                phrases.append(phrase)
+                seen.add(phrase)
+    return phrases
+
+
+def page_match_score(phrases: list[str], page_text: str) -> int:
+    score = 0
+    for phrase in phrases:
+        if phrase in page_text:
+            score += len(phrase.split()) ** 2
+    return score
+
+
+def pdf_text_pages(pdf_path: Path) -> list[str]:
+    if not pdf_path.exists() or shutil.which("pdftotext") is None:
+        return []
+    try:
+        result = subprocess.run(
+            ["pdftotext", "-layout", "-enc", "UTF-8", str(pdf_path), "-"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    pages: list[str] = []
+    for raw_page in result.stdout.split("\f"):
+        normalized = normalize_for_match(raw_page)
+        normalized = " ".join(text_match_tokens(re.sub(r"[^a-z0-9]+", " ", normalized)))
+        pages.append(normalized)
+    while pages and not pages[-1]:
+        pages.pop()
+    return pages
+
+
+def best_matching_page(
+    phrases: list[str],
+    pages: list[str],
+    *,
+    start_page: int = 1,
+    max_lookahead: int | None = None,
+    min_score: int = 16,
+) -> int:
+    if not phrases or not pages:
+        return 0
+    start_idx = max(start_page - 1, 0)
+    end_idx = len(pages) if max_lookahead is None else min(len(pages), start_idx + max_lookahead + 1)
+    matched_page = 0
+    best_score = 0
+    for idx in range(start_idx, end_idx):
+        score = page_match_score(phrases, pages[idx])
+        if score > best_score:
+            best_score = score
+            matched_page = idx + 1
+    return matched_page if best_score >= min_score else 0
+
+
+def sentence_page_assignments_from_pages(soup: BeautifulSoup, pages: list[str]) -> dict[str, int]:
+    if not pages:
+        return {}
+    assignments: dict[str, int] = {}
+    search_page = 1
+    close_lookahead = 2
+    for node in soup.select(".paper-sentence[data-sentence-id]"):
+        if not isinstance(node, Tag):
+            continue
+        sentence_id = str(node.get("data-sentence-id") or "")
+        if not sentence_id:
+            continue
+        phrases = sentence_page_phrases(node)
+        matched_page = best_matching_page(phrases, pages, start_page=search_page, max_lookahead=close_lookahead)
+        if not matched_page:
+            matched_page = best_matching_page(phrases, pages, start_page=search_page, max_lookahead=None, min_score=64)
+        if matched_page and matched_page >= search_page:
+            search_page = matched_page
+        assignments[sentence_id] = search_page
+    return assignments
+
+
+def sentence_page_assignments(soup: BeautifulSoup, pdf_path: Path) -> dict[str, int]:
+    return sentence_page_assignments_from_pages(soup, pdf_text_pages(pdf_path))
+
+
+def float_page_phrases(node: Tag) -> list[str]:
+    caption = node.find("figcaption") or node.find("caption")
+    anchor = caption if isinstance(caption, Tag) else node
+    return sentence_page_phrases(anchor)
+
+
+def block_page_assignments_from_pages(soup: BeautifulSoup, pages: list[str]) -> dict[str, int]:
+    if not pages:
+        return {}
+    assignments: dict[str, int] = {}
+    search_page = 1
+    for node in soup.find_all(True):
+        if not isinstance(node, Tag) or not node.get("id") or not is_float_container(node):
+            continue
+        target = float_container_for_node(node)
+        if target is not node:
+            continue
+        block_id = str(node.get("id") or "")
+        phrases = float_page_phrases(node)
+        matched_page = best_matching_page(phrases, pages, start_page=search_page)
+        if not matched_page:
+            continue
+        assignments[block_id] = matched_page
+        search_page = max(search_page, matched_page)
+    return assignments
+
+
+def explicit_block_page(tag: Tag, block_assignments: dict[str, int]) -> int:
+    tag_id = str(tag.get("id") or "")
+    if tag_id and tag_id in block_assignments:
+        return block_assignments[tag_id]
+    for descendant in tag.find_all(True):
+        if not isinstance(descendant, Tag):
+            continue
+        descendant_id = str(descendant.get("id") or "")
+        if descendant_id and descendant_id in block_assignments:
+            return block_assignments[descendant_id]
+    return 0
+
+
+def infer_next_page_from_source_order(siblings: list[Tag], index: int, assignments: dict[str, int], block_assignments: dict[str, int]) -> int:
+    for sibling in siblings[index + 1 :]:
+        page = explicit_block_page(sibling, block_assignments)
+        if page:
+            return page
+        first_sentence = sibling.select_one(".paper-sentence[data-sentence-id]")
+        if first_sentence is not None:
+            sentence_id = str(first_sentence.get("data-sentence-id") or "")
+            page = assignments.get(sentence_id, 0)
+            if page:
+                return page
+    return 0
+
+
+def flow_block_page_assignments_from_pages(
+    soup: BeautifulSoup,
+    pages: list[str],
+    sentence_assignments: dict[str, int],
+    block_assignments: dict[str, int],
+) -> dict[int, int]:
+    if not pages:
+        return {}
+    body = soup.body or soup
+    element_children = [child for child in body.contents if isinstance(child, Tag)]
+    assignments: dict[int, int] = {}
+    search_page = 1
+    for idx, child in enumerate(element_children):
+        if child.get("id") == "paper-overview-annotations":
+            continue
+        prior_search_page = search_page
+        explicit_page = explicit_block_page(child, block_assignments)
+        page = explicit_page
+        if not page:
+            first_sentence = child.select_one(".paper-sentence[data-sentence-id]")
+            if first_sentence is not None:
+                sentence_id = str(first_sentence.get("data-sentence-id") or "")
+                page = sentence_assignments.get(sentence_id, 0)
+        if not page:
+            phrases = sentence_page_phrases(child)
+            page = best_matching_page(phrases, pages, start_page=search_page, max_lookahead=2)
+            if not page:
+                page = best_matching_page(phrases, pages, start_page=search_page, max_lookahead=None, min_score=64)
+        if page:
+            if not (explicit_page and is_float_container(child)):
+                search_page = max(search_page, page)
+        else:
+            page = search_page
+        is_reference_block = str(child.get("id") or "") == "refs" or has_class(child, "csl-bib-body")
+        is_list_block = child.name in {"ol", "ul"}
+        if is_reference_block:
+            parent_page = page
+            entry_search_page = prior_search_page
+            max_entry_page = page
+            entries = [entry for entry in child.find_all(class_="csl-entry", recursive=False) if isinstance(entry, Tag)]
+            for entry in entries:
+                if not isinstance(entry, Tag):
+                    continue
+                phrases = sentence_page_phrases(entry)
+                entry_page = best_matching_page(phrases, pages, start_page=entry_search_page, max_lookahead=2)
+                if not entry_page:
+                    entry_page = best_matching_page(phrases, pages, start_page=entry_search_page, max_lookahead=None, min_score=64)
+                if entry_page:
+                    entry_search_page = max(entry_search_page, entry_page)
+                    max_entry_page = max(max_entry_page, entry_page)
+                else:
+                    entry_page = entry_search_page
+                assignments[id(entry)] = entry_page
+            page = assignments.get(id(entries[0]), page) if entries else page
+            search_page = max(search_page, max_entry_page)
+            if parent_page > page:
+                search_page = max(search_page, parent_page)
+        elif is_list_block:
+            item_search_page = prior_search_page
+            max_item_page = page
+            for item in child.find_all("li", recursive=False):
+                if not isinstance(item, Tag):
+                    continue
+                item_page = 0
+                first_sentence = item.select_one(".paper-sentence[data-sentence-id]")
+                if first_sentence is not None:
+                    sentence_id = str(first_sentence.get("data-sentence-id") or "")
+                    item_page = sentence_assignments.get(sentence_id, 0)
+                if not item_page:
+                    phrases = sentence_page_phrases(item)
+                    item_page = best_matching_page(phrases, pages, start_page=item_search_page, max_lookahead=2)
+                    if not item_page:
+                        item_page = best_matching_page(phrases, pages, start_page=item_search_page, max_lookahead=None, min_score=64)
+                if item_page:
+                    item_search_page = max(item_search_page, item_page)
+                    max_item_page = max(max_item_page, item_page)
+                else:
+                    item_page = item_search_page
+                assignments[id(item)] = item_page
+            search_page = max(search_page, max_item_page)
+        next_page = infer_next_page_from_source_order(element_children, idx, sentence_assignments, block_assignments)
+        if next_page and page > next_page and not is_reference_block and not is_list_block:
+            page = next_page
+        assignments[id(child)] = page
+    for idx, child in enumerate(element_children):
+        if not child.name or child.name not in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            continue
+        if sentence_page_phrases(child):
+            continue
+        for sibling in element_children[idx + 1 :]:
+            page = assignments.get(id(sibling), 0)
+            if page:
+                assignments[id(child)] = page
+                break
+    return assignments
+
+
+def split_children_into_pages(
+    soup: BeautifulSoup,
+    assignments: dict[str, int],
+    block_assignments: dict[str, int] | None = None,
+    flow_block_assignments: dict[int, int] | None = None,
+    min_pages: int = 0,
+) -> tuple[list[Tag], int]:
+    block_assignments = block_assignments or {}
+    flow_block_assignments = flow_block_assignments or {}
+    body = soup.body or soup
+    children = list(body.contents)
+    for child in children:
+        child.extract()
+
+    page_external_children: list[Tag] = []
+    pages: list[Tag] = []
+    current_page = 1
+    current_container = soup.new_tag("div")
+    current_container["class"] = "paper-page"
+    current_container["data-page"] = str(current_page)
+    pages.append(current_container)
+
+    def ensure_page(page_num: int) -> Tag:
+        nonlocal current_page, current_container
+        page_num = max(1, page_num)
+        while current_page < page_num:
+            current_page += 1
+            current_container = soup.new_tag("div")
+            current_container["class"] = "paper-page"
+            current_container["data-page"] = str(current_page)
+            pages.append(current_container)
+        return pages[page_num - 1]
+
+    def first_sentence_page(tag: Tag) -> int:
+        first_sentence = tag.select_one(".paper-sentence[data-sentence-id]")
+        if first_sentence is not None:
+            sentence_id = str(first_sentence.get("data-sentence-id") or "")
+            return assignments.get(sentence_id, current_page)
+        return current_page
+
+    def block_page(tag: Tag) -> int:
+        return explicit_block_page(tag, block_assignments) or flow_block_assignments.get(id(tag), 0)
+
+    def continuation_fragment(tag_name: str, attrs: dict[str, object], source_id: str) -> Tag:
+        fragment = soup.new_tag(tag_name)
+        fragment.attrs = dict(attrs)
+        fragment.attrs.pop("id", None)
+        fragment.attrs.pop("data-paragraph-id", None)
+        fragment.attrs.pop("aria-describedby", None)
+        fragment.attrs.pop("onclick", None)
+        fragment.attrs.pop("onkeydown", None)
+        fragment.attrs.pop("role", None)
+        fragment.attrs.pop("tabindex", None)
+        fragment.attrs.pop("data-has-issue", None)
+        fragment.attrs.pop("data-severity", None)
+        fragment.attrs.pop("data-issue-type", None)
+        fragment.attrs.pop("data-issue-ids", None)
+        classes = [value for value in class_names(fragment) if value not in {"has-paragraph-annotation", "paper-paragraph"}]
+        fragment["class"] = classes
+        if source_id:
+            fragment["data-paragraph-fragment-of"] = source_id
+        return fragment
+
+    def reference_fragment(attrs: dict[str, object], source_id: str, *, first: bool) -> Tag:
+        fragment = soup.new_tag("div")
+        fragment.attrs = dict(attrs)
+        if not first:
+            fragment.attrs.pop("id", None)
+            if source_id:
+                fragment["data-block-fragment-of"] = source_id
+        return fragment
+
+    def append_sentence_container(child: Tag) -> None:
+        sentence_nodes = child.select(".paper-sentence[data-sentence-id]")
+        unique_pages = ordered_unique(
+            [
+                str(assignments.get(str(sentence.get("data-sentence-id") or ""), current_page))
+                for sentence in sentence_nodes
+            ]
+        )
+        if len(unique_pages) <= 1:
+            ensure_page(int(unique_pages[0]) if unique_pages else first_sentence_page(child)).append(child)
+            return
+
+        original_tag_name = child.name
+        original_attrs = dict(child.attrs)
+        source_paragraph_id = str(original_attrs.get("data-paragraph-id") or "")
+        active_page = int(unique_pages[0])
+        active = soup.new_tag(original_tag_name)
+        active.attrs = dict(original_attrs)
+        ensure_page(active_page).append(active)
+        for part in list(child.contents):
+            if isinstance(part, Tag) and has_class(part, "paper-sentence"):
+                sentence_id = str(part.get("data-sentence-id") or "")
+                part_page = assignments.get(sentence_id, active_page)
+                if part_page != active_page:
+                    active_page = part_page
+                    active = continuation_fragment(original_tag_name, original_attrs, source_paragraph_id)
+                    ensure_page(active_page).append(active)
+                active.append(part)
+            else:
+                active.append(part)
+
+    def append_reference_container(child: Tag) -> None:
+        entries = [entry for entry in child.find_all(class_="csl-entry", recursive=False) if isinstance(entry, Tag)]
+        if not entries:
+            ensure_page(block_page(child) or first_sentence_page(child)).append(child)
+            return
+        original_attrs = dict(child.attrs)
+        source_id = str(original_attrs.get("id") or "")
+        active_page = block_page(child) or flow_block_assignments.get(id(entries[0]), current_page)
+        active = reference_fragment(original_attrs, source_id, first=True)
+        ensure_page(active_page).append(active)
+        for part in list(child.contents):
+            if isinstance(part, Tag) and "csl-entry" in class_names(part):
+                part_page = flow_block_assignments.get(id(part), active_page)
+                if part_page != active_page:
+                    active_page = part_page
+                    active = reference_fragment(original_attrs, source_id, first=False)
+                    ensure_page(active_page).append(active)
+                active.append(part)
+            else:
+                active.append(part)
+
+    def list_fragment(tag_name: str, attrs: dict[str, object], source_id: str, *, first: bool) -> Tag:
+        fragment = soup.new_tag(tag_name)
+        fragment.attrs = dict(attrs)
+        if not first:
+            fragment.attrs.pop("id", None)
+            if source_id:
+                fragment["data-list-fragment-of"] = source_id
+        return fragment
+
+    def append_list_container(child: Tag) -> None:
+        items = [item for item in child.find_all("li", recursive=False) if isinstance(item, Tag)]
+        if not items:
+            ensure_page(block_page(child) or first_sentence_page(child)).append(child)
+            return
+        original_attrs = dict(child.attrs)
+        source_id = str(original_attrs.get("id") or "")
+        active_page = block_page(child) or flow_block_assignments.get(id(items[0]), current_page)
+        active = list_fragment(child.name, original_attrs, source_id, first=True)
+        ensure_page(active_page).append(active)
+        for part in list(child.contents):
+            if isinstance(part, Tag) and part.name == "li":
+                part_page = flow_block_assignments.get(id(part), active_page)
+                if part_page != active_page:
+                    active_page = part_page
+                    active = list_fragment(child.name, original_attrs, source_id, first=False)
+                    ensure_page(active_page).append(active)
+                active.append(part)
+            else:
+                active.append(part)
+
+    def append_child(child: object) -> None:
+        if isinstance(child, NavigableString):
+            if str(child).strip():
+                ensure_page(current_page).append(child)
+            return
+        if not isinstance(child, Tag):
+            ensure_page(current_page).append(child)
+            return
+        if child.get("id") == "paper-overview-annotations":
+            page_external_children.append(child)
+            return
+        if is_float_container(child):
+            target_page = block_page(child)
+            if target_page:
+                ensure_page(target_page).append(child)
+                return
+        if str(child.get("id") or "") == "refs" or has_class(child, "csl-bib-body"):
+            append_reference_container(child)
+            return
+        if child.name in {"ol", "ul"} and block_page(child):
+            append_list_container(child)
+            return
+        sentence_nodes = child.select(".paper-sentence[data-sentence-id]")
+        if not sentence_nodes:
+            ensure_page(block_page(child) or first_sentence_page(child)).append(child)
+            return
+        if child.name in SENTENCE_CONTAINER_TAGS:
+            append_sentence_container(child)
+            return
+        if (
+            child.name in {"div", "section", "article"}
+            and not child.get("id")
+            and not has_class(child, "paper-float")
+            and not has_class(child, "abstract")
+        ):
+            for part in list(child.contents):
+                part.extract()
+                append_child(part)
+            return
+        ensure_page(first_sentence_page(child)).append(child)
+
+    for child in children:
+        append_child(child)
+    if min_pages:
+        ensure_page(min_pages)
+
+    for child in page_external_children:
+        body.append(child)
+    for page in pages:
+        body.append(page)
+    return pages, len(assignments)
+
+
+def apply_paged_layout(soup: BeautifulSoup, tex_path: Path, page_map_path: Path | None = None) -> dict[str, object]:
+    pdf_path = tex_path.with_suffix(".pdf")
+    pdf_pages = pdf_text_pages(pdf_path)
+    assignments = sentence_page_assignments_from_pages(soup, pdf_pages)
+    if not assignments:
+        return {"enabled": False, "pages": 0, "sentences": 0, "page_map": {}}
+    block_assignments = block_page_assignments_from_pages(soup, pdf_pages)
+    flow_block_assignments = flow_block_page_assignments_from_pages(soup, pdf_pages, assignments, block_assignments)
+    pages, sentence_count = split_children_into_pages(
+        soup,
+        assignments,
+        block_assignments=block_assignments,
+        flow_block_assignments=flow_block_assignments,
+        min_pages=len(pdf_pages),
+    )
+    payload: dict[str, object] = {
+        "enabled": True,
+        "source_pdf": str(pdf_path),
+        "pdf_pages": len(pdf_pages),
+        "pages": len(pages),
+        "sentences": sentence_count,
+        "sentence_pages": assignments,
+        "block_pages": block_assignments,
+    }
+    if page_map_path is not None:
+        page_map_path.parent.mkdir(parents=True, exist_ok=True)
+        page_map_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
 
 
 def source_artifact_shell(title: str, source_html: str) -> str:
@@ -1572,6 +3019,19 @@ def is_source_artifact_shell(soup: BeautifulSoup) -> bool:
     return "Ariadne source paper HTML" in title.get_text(" ", strip=True)
 
 
+def unwrap_source_artifact_shell(soup: BeautifulSoup) -> BeautifulSoup:
+    if not is_source_artifact_shell(soup):
+        return soup
+    body = soup.body
+    if body is None:
+        return soup
+    unwrapped = BeautifulSoup("<html><body></body></html>", "lxml")
+    assert unwrapped.body is not None
+    for child in list(body.contents):
+        unwrapped.body.append(child.extract())
+    return unwrapped
+
+
 def prepare_source_soup(
     tex_path: Path,
     raw_html_path: Path,
@@ -1584,7 +3044,11 @@ def prepare_source_soup(
     if reuse_raw_html:
         if not raw_html_path.exists():
             raise SystemExit(f"--reuse-raw-html requires an existing --raw-html file: {raw_html_path}")
-        soup = BeautifulSoup(raw_html_path.read_text(encoding="utf-8"), "lxml")
+        soup = unwrap_source_artifact_shell(BeautifulSoup(raw_html_path.read_text(encoding="utf-8"), "lxml"))
+        normalize_front_matter(soup, tex_path)
+        restore_mathml_labels(soup)
+        ensure_references_heading(soup)
+        restore_bibliography_position(soup, tex_path)
         title = extract_title(soup, tex_path)
         sentence_count = len(soup.select(".paper-sentence[data-sentence-id]"))
         if sentence_count == 0:
@@ -1596,12 +3060,15 @@ def prepare_source_soup(
             else:
                 sentence_count = wrap_sentences(soup)
                 title = extract_title(soup, tex_path)
-                raw_html_path.write_text(source_artifact_shell(title, body_inner_html(soup)), encoding="utf-8")
+        ensure_display_section_numbers(soup, tex_path)
+        sync_section_reference_numbers(soup)
         return soup, title, sentence_count
 
     run_pandoc(tex_path, raw_html_path)
     soup = BeautifulSoup(raw_html_path.read_text(encoding="utf-8"), "lxml")
     cleanup_pandoc_artifacts(soup)
+    normalize_front_matter(soup, tex_path)
+    restore_mathml_labels(soup)
     rasterize_pdf_assets(
         soup,
         tex_path.parent,
@@ -1611,9 +3078,17 @@ def prepare_source_soup(
         absolute_asset_paths=output_path.parent != raw_html_path.parent,
     )
     restore_latex_labels(soup, tex_path)
+    mark_latex_float_widths(soup, tex_path)
+    replace_broken_latex_tables(soup, tex_path)
+    add_float_caption_numbers(soup, tex_path)
+    mark_latex_paragraph_headings(soup, tex_path)
     ensure_references_heading(soup)
+    restore_bibliography_position(soup, tex_path)
     title = extract_title(soup, tex_path)
     sentence_count = wrap_sentences(soup)
+    ensure_display_section_numbers(soup, tex_path)
+    sync_section_reference_numbers(soup)
+    sync_section_reference_numbers(soup)
     raw_html_path.write_text(source_artifact_shell(title, body_inner_html(soup)), encoding="utf-8")
     return soup, title, sentence_count
 
@@ -1685,6 +3160,7 @@ def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
         '<p class="annotation-empty-state" data-annotation-empty>点击左侧带下划线的句子，这里会显示对应批注意见。</p>'
     ]
     unanchored_cards: list[str] = []
+    page_level_cards: list[str] = []
     for idx, item in enumerate(annotations, 1):
         severity = item.get("severity", "major")
         badge = SEVERITY_LABELS.get(severity, severity.title())
@@ -1694,9 +3170,10 @@ def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
         target_id_raw = annotation_target_id(item)
         sentence_id = html.escape(item.get("sentence_id", ""))
         target_id = html.escape(target_id_raw)
-        level_label = ANCHOR_LEVEL_LABELS.get(target_level, target_level)
         issue_id = html.escape(item.get("issue_id", f"A{idx}"))
-        issue_type = html.escape(item.get("issue_type", "prose"))
+        issue_type_raw = item.get("issue_type", "prose")
+        issue_type = html.escape(issue_type_raw)
+        level_label = annotation_pointer_label(target_level, target_id_raw, issue_type_raw)
         title = html.escape(item.get("title", "句子问题"))
         problem = html.escape(item.get("problem", item.get("what", "")))
         why = html.escape(item.get("why", ""))
@@ -1716,7 +3193,9 @@ def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
         delta = html.escape(item.get("delta", ""))
         aggregation_caveat = html.escape(item.get("aggregation_caveat", ""))
         source_section_label = html.escape(item.get("source_section_label", ""))
+        page_anchor = html.escape(item.get("page_anchor", ""))
         unanchored = item.get("unanchored") == "true" or not target_id_raw
+        page_level = target_level == "paper" and bool(item.get("page_anchor"))
         card_attrs = [
             f'id="{card_id}"',
             f'class="annotation-card{" is-unanchored" if unanchored else ""}"',
@@ -1737,8 +3216,10 @@ def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
         pointer = (
             f'<p class="annotation-pointer"><a href="#{href_target}" data-scroll-level="{target_level}" data-scroll-target="{target_id}" aria-label="回到被批注的{level_label}">指向{level_label}</a></p>'
             if not unanchored
-            else '<p class="annotation-pointer annotation-unanchored">未定位到唯一原句，保留为全局/版式批注</p>'
+            else '<p class="annotation-pointer annotation-unanchored">未定位到唯一原句，保留为全局批注</p>'
         )
+        if page_level:
+            pointer = f'<p class="annotation-pointer annotation-page-level">页级/版式批注：{page_anchor}</p>'
         numeric_details = ""
         if reported_value or visible_computed_value or delta or aggregation_caveat:
             numeric_details = f"""
@@ -1771,7 +3252,9 @@ def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
           </dl>
         </article>"""
         )
-        if unanchored:
+        if page_level:
+            page_level_cards.append(rendered_card)
+        elif unanchored:
             unanchored_cards.append(rendered_card)
         else:
             cards.append(rendered_card)
@@ -1786,8 +3269,16 @@ def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
         cards.append(
             f"""
         <details class="unanchored-drawer">
-          <summary>未定位到具体句子的批注（{len(unanchored_cards)}）</summary>
+          <summary>未定位到唯一原句的批注（{len(unanchored_cards)}）</summary>
           {''.join(unanchored_cards)}
+        </details>"""
+        )
+    if page_level_cards:
+        cards.append(
+            f"""
+        <details class="page-level-drawer">
+          <summary>页级/版式批注（{len(page_level_cards)}）</summary>
+          {''.join(page_level_cards)}
         </details>"""
         )
     return "\n".join(cards)
@@ -1816,6 +3307,15 @@ def finding_id_link(finding_id: object) -> str:
     if not text:
         return ""
     return f'<a class="finding-link" href="#{html.escape(text)}">{html.escape(text)}</a>'
+
+
+def annotation_pointer_label(target_level: str, target_id: str, issue_type: str) -> str:
+    if target_level == "section":
+        target_key = target_id.strip().lower()
+        issue_key = issue_type.strip().lower()
+        if target_key.startswith(("fig:", "tab:")) or "caption" in issue_key or issue_key.startswith(("figure", "table")):
+            return "图表/Caption"
+    return ANCHOR_LEVEL_LABELS.get(target_level, target_level)
 
 
 def display_text(value: object, *, fallback: str = "", max_chars: int = 480) -> str:
@@ -1962,7 +3462,7 @@ def render_global_report_sections(
 
 
 def extract_title(soup: BeautifulSoup, tex_path: Path) -> str:
-    title = soup.find("title")
+    title = None if is_source_artifact_shell(soup) else soup.find("title")
     if title and title.get_text(strip=True):
         return title.get_text(" ", strip=True)
     heading = soup.find("h1")
@@ -1983,6 +3483,8 @@ def report_shell(
     findings: list[dict[str, object]] | None = None,
     coverage: object = None,
     full_report: bool = False,
+    paper_layout: str = "single",
+    page_map: dict[str, object] | None = None,
 ) -> str:
     source_artifact = html.escape(str(raw_html_path))
     tex_display = html.escape(str(tex_path))
@@ -1994,6 +3496,23 @@ def report_shell(
     finding_anchor_index = render_finding_anchor_index(annotations)
     report_kind = "paper-reader-with-global-findings" if full_report else "paper-reader-only"
     header_title = "Ariadne Paper Reader Review" if full_report else "Ariadne Paper Reader Preview"
+    page_map = page_map or {}
+    page_count = int(page_map.get("pages") or 0)
+    paper_layout = paper_layout if paper_layout in {"single", "two-column", "paged", "paged-two-column"} else "single"
+    paper_layout_label = (
+        f"paged two-column · {page_count} pages"
+        if paper_layout == "paged-two-column" and page_count
+        else "paged two-column"
+        if paper_layout == "paged-two-column"
+        else f"paged single-column · {page_count} pages"
+        if paper_layout == "paged" and page_count
+        else "paged single-column"
+        if paper_layout == "paged"
+        else "two-column"
+        if paper_layout == "two-column"
+        else "single"
+    )
+    paper_pane_class = f"paper-pane paper-layout-{paper_layout}"
     global_nav = (
         """
     <a href="#global-findings">全局重要问题</a>"""
@@ -2051,6 +3570,8 @@ def report_shell(
     .paper-pane > p, .paper-pane > ul, .paper-pane > ol, .paper-pane > blockquote, .paper-pane > h1, .paper-pane > h2, .paper-pane > h3, .paper-pane > h4, .paper-pane > h5, .paper-pane > h6, .paper-pane > .abstract, .paper-pane > #refs {{ max-width:760px; }}
     .paper-pane p {{ margin:1em 0; }}
     .paper-pane h1 {{ font-size:28px; }}
+    .paper-pane .paper-title {{ font-size:28px; text-align:center; margin:0 auto 24px; max-width:820px; }}
+    .paper-pane .paper-author {{ text-align:center; font-weight:700; margin:0 auto 32px; max-width:720px; }}
     .paper-pane h2 {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:22px; margin:24px 0 12px; }}
     .paper-pane h3 {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:18px; margin:20px 0 10px; }}
     .paper-pane h4 {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:17px; margin:18px 0 8px; }}
@@ -2062,7 +3583,7 @@ def report_shell(
     .paper-pane blockquote {{ margin:1em 0 1em 1.7em; padding-left:1em; border-left:2px solid #e6e6e6; color:#606060; }}
     .paper-pane .abstract {{ margin:2em 2em; text-align:left; font-size:85%; }}
     .paper-pane .abstract-title {{ font-weight:700; text-align:center; margin-bottom:.5em; }}
-    .paper-pane table {{ width:100%; border-collapse:collapse; display:block; overflow-x:auto; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:14px; }}
+    .paper-pane table {{ width:auto; max-width:100%; margin-left:auto; margin-right:auto; border-collapse:collapse; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:14px; }}
     .paper-pane th, .paper-pane td {{ border:1px solid var(--line); padding:6px; vertical-align:top; }}
     .paper-pane img, .paper-pane svg {{ max-width:100%; height:auto; }}
     .paper-pane embed {{ display:block; width:100%; max-width:100%; min-height:240px; margin:10px auto; border:1px solid var(--line); }}
@@ -2071,10 +3592,17 @@ def report_shell(
     .paper-pane .wrapfigure, .paper-pane .wraptable {{ max-width:46%; float:right; margin:2px 0 14px 22px; }}
     .paper-pane .wrapfigure img, .paper-pane .wraptable img {{ width:100%; }}
     .paper-pane .wraptable table {{ min-width:0; }}
+    .paper-pane .paper-table {{ max-width:100%; overflow-x:auto; }}
+    .paper-pane .paper-table > table {{ margin-left:auto; margin-right:auto; }}
     .paper-pane .table\\*, .paper-pane .figure\\* {{ clear:both; margin:24px 0; }}
     .paper-pane figure {{ margin:22px 0; max-width:920px; }}
     .paper-pane .prompt-figure {{ border:1px solid var(--line); border-radius:8px; background:#fbfcfe; padding:12px; }}
     .paper-pane figcaption, .paper-pane caption {{ color:var(--muted); font-size:14px; line-height:1.5; }}
+    .paper-pane caption {{ caption-side:top; text-align:left; margin:0 0 8px; }}
+    .paper-pane .paper-run-in-heading {{ display:inline; font-family:Georgia,"Times New Roman","Noto Serif",serif; font-size:1em; margin:0; font-weight:700; }}
+    .paper-pane .paper-run-in-heading::after {{ content:". "; }}
+    .paper-pane .paper-run-in-heading + p {{ display:inline; }}
+    .paper-pane .paper-run-in-heading + p::after {{ content:""; display:block; margin-bottom:1em; }}
     .paper-pane .tcolorbox, .paper-pane .sourceCode {{ border:1px solid var(--line); border-radius:8px; background:#f8fafc; margin:12px 0; max-width:100%; }}
     .paper-pane .tcolorbox {{ padding:0; overflow:hidden; }}
     .paper-pane pre {{ margin:0; padding:12px 14px; overflow:auto; white-space:pre-wrap; overflow-wrap:break-word; font-family:Menlo,Monaco,Consolas,"SFMono-Regular",monospace; font-size:12px; line-height:1.5; }}
@@ -2095,56 +3623,148 @@ def report_shell(
     .paper-pane #neurips-paper-checklist ~ ol ol {{ margin-top:.35em; }}
     .paper-pane #neurips-paper-checklist ~ ol li {{ margin:.25em 0; }}
     .paper-pane #neurips-paper-checklist ~ ol li > p {{ margin:.2em 0 .45em; }}
+    .paper-pane.paper-layout-two-column, .paper-pane.paper-layout-paged-two-column {{ max-width:1120px; }}
+    .paper-pane.paper-layout-paged {{ max-width:900px; }}
+    .paper-page {{ margin:0 0 28px; padding:26px 34px 30px; box-sizing:border-box; min-height:1120px; border:1px solid #e3e8f0; border-radius:6px; background:#fff; box-shadow:0 1px 2px rgba(15,23,42,.05); position:relative; overflow:hidden; }}
+    .paper-page::before {{ content:"page " attr(data-page); position:absolute; right:14px; top:8px; color:#9aa5b1; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:11px; font-weight:700; letter-spacing:0; }}
+    .paper-page > :first-child {{ margin-top:0; }}
+    .paper-page > :last-child {{ margin-bottom:0; }}
+    @media (min-width: 921px) {{
+      .paper-pane.paper-layout-two-column {{ font-size:14px; line-height:1.42; column-count:2; column-gap:30px; column-rule:0; }}
+      .paper-pane.paper-layout-paged {{ font-size:15px; line-height:1.55; padding:22px 28px; background:#f8fafc; }}
+      .paper-pane.paper-layout-paged-two-column {{ font-size:14px; line-height:1.42; padding:22px 28px; background:#f8fafc; }}
+      .paper-pane.paper-layout-paged-two-column > .paper-page {{ column-count:2; column-fill:balance; column-gap:30px; column-rule:0; }}
+      .paper-pane.paper-layout-two-column > header,
+      .paper-pane.paper-layout-two-column > .paper-title,
+      .paper-pane.paper-layout-two-column > .paper-author,
+      .paper-pane.paper-layout-two-column > .paper-abstract-wide,
+      .paper-pane.paper-layout-two-column > .paper-overview-annotations,
+      .paper-pane.paper-layout-two-column > .paper-float-wide,
+      .paper-pane.paper-layout-two-column > .figure\\*,
+      .paper-pane.paper-layout-two-column > .table\\* {{
+        column-span:all;
+      }}
+      .paper-pane.paper-layout-paged-two-column > .paper-page > header,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > .paper-title,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > .paper-author,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > .paper-abstract-wide,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > .paper-overview-annotations,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > .paper-float-wide,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > .figure\\*,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > .table\\* {{
+        column-span:all;
+      }}
+      .paper-pane.paper-layout-two-column > p,
+      .paper-pane.paper-layout-two-column > ul,
+      .paper-pane.paper-layout-two-column > ol,
+      .paper-pane.paper-layout-two-column > blockquote,
+      .paper-pane.paper-layout-two-column > h1,
+      .paper-pane.paper-layout-two-column > h2,
+      .paper-pane.paper-layout-two-column > h3,
+      .paper-pane.paper-layout-two-column > h4,
+      .paper-pane.paper-layout-two-column > h5,
+      .paper-pane.paper-layout-two-column > h6,
+      .paper-pane.paper-layout-two-column > .abstract,
+      .paper-pane.paper-layout-two-column > #refs {{ max-width:none; }}
+      .paper-pane.paper-layout-paged-two-column > .paper-page > p,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > ul,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > ol,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > blockquote,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > h1,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > h2,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > h3,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > h4,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > h5,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > h6,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > .abstract,
+      .paper-pane.paper-layout-paged-two-column > .paper-page > #refs {{ max-width:none; }}
+      .paper-pane.paper-layout-two-column h1:not(.paper-title) {{ font-size:20px; break-after:avoid; }}
+      .paper-pane.paper-layout-paged h1:not(.paper-title) {{ font-size:22px; break-after:avoid; }}
+      .paper-pane.paper-layout-paged-two-column h1:not(.paper-title) {{ font-size:20px; break-after:avoid; }}
+      .paper-pane.paper-layout-two-column h2 {{ font-size:16px; margin:18px 0 8px; break-after:avoid; }}
+      .paper-pane.paper-layout-paged h2 {{ font-size:18px; margin:20px 0 9px; break-after:avoid; }}
+      .paper-pane.paper-layout-paged-two-column h2 {{ font-size:16px; margin:18px 0 8px; break-after:avoid; }}
+      .paper-pane.paper-layout-two-column h3 {{ font-size:15px; margin:14px 0 7px; break-after:avoid; }}
+      .paper-pane.paper-layout-paged h3 {{ font-size:16px; margin:16px 0 8px; break-after:avoid; }}
+      .paper-pane.paper-layout-paged-two-column h3 {{ font-size:15px; margin:14px 0 7px; break-after:avoid; }}
+      .paper-pane.paper-layout-two-column .paper-title {{ font-size:24px; line-height:1.18; }}
+      .paper-pane.paper-layout-paged .paper-title {{ font-size:26px; line-height:1.2; }}
+      .paper-pane.paper-layout-paged-two-column .paper-title {{ font-size:24px; line-height:1.18; }}
+      .paper-pane.paper-layout-two-column .paper-author {{ font-size:16px; }}
+      .paper-pane.paper-layout-paged .paper-author {{ font-size:16px; }}
+      .paper-pane.paper-layout-paged-two-column .paper-author {{ font-size:16px; }}
+      .paper-pane.paper-layout-two-column .abstract {{ margin:1.5em 0; }}
+      .paper-pane.paper-layout-paged .abstract {{ margin:1.5em 0; }}
+      .paper-pane.paper-layout-paged-two-column .abstract {{ margin:1.5em 0; }}
+      .paper-pane.paper-layout-two-column .paper-overview-annotations {{ max-width:none; break-inside:avoid; }}
+      .paper-pane.paper-layout-paged .paper-overview-annotations {{ max-width:none; break-inside:avoid; }}
+      .paper-pane.paper-layout-paged-two-column .paper-overview-annotations {{ max-width:none; break-inside:avoid; }}
+      .paper-pane.paper-layout-two-column figure,
+      .paper-pane.paper-layout-two-column table,
+      .paper-pane.paper-layout-two-column pre,
+      .paper-pane.paper-layout-two-column .paper-float {{ break-inside:avoid; }}
+      .paper-pane.paper-layout-paged figure,
+      .paper-pane.paper-layout-paged table,
+      .paper-pane.paper-layout-paged pre,
+      .paper-pane.paper-layout-paged .paper-float {{ break-inside:avoid; }}
+      .paper-pane.paper-layout-paged-two-column figure,
+      .paper-pane.paper-layout-paged-two-column table,
+      .paper-pane.paper-layout-paged-two-column pre,
+      .paper-pane.paper-layout-paged-two-column .paper-float {{ break-inside:avoid; }}
+    }}
     .paper-overview-annotations {{ max-width:760px; margin:0 0 22px; padding:10px 12px; border-left:3px solid var(--accent); background:#f8fafc; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:13px; line-height:1.45; }}
     .paper-overview-annotations strong {{ display:block; margin-bottom:8px; color:#111827; }}
-    .paper-pane h1.has-section-annotation, .paper-pane h2.has-section-annotation, .paper-pane h3.has-section-annotation, .paper-pane h4.has-section-annotation {{ position:relative; }}
+    .paper-pane .has-section-annotation {{ position:relative; scroll-margin-top:92px; }}
     .paper-pane .has-paragraph-annotation {{ position:relative; padding-left:26px; }}
     .annotation-bubble {{ border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--accent); cursor:pointer; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:11px; font-weight:800; line-height:1.25; padding:2px 7px; vertical-align:middle; box-shadow:0 1px 2px rgba(15,23,42,.08); }}
     .annotation-bubble:hover, .annotation-bubble:focus-visible {{ outline:2px solid rgba(36,73,167,.25); outline-offset:2px; }}
     .annotation-bubble.paragraph {{ position:absolute; left:0; top:.35em; width:18px; height:18px; padding:0; overflow:hidden; text-indent:24px; white-space:nowrap; border-color:#b6c4dd; background:#eef4ff; }}
     .annotation-bubble.paragraph::before {{ content:"¶"; position:absolute; left:0; top:0; width:100%; height:100%; text-indent:0; display:flex; align-items:center; justify-content:center; color:var(--accent); }}
-    .annotation-bubble.section {{ margin-left:8px; }}
+    .annotation-bubble.section {{ display:inline-flex; align-items:center; justify-content:center; min-width:22px; max-width:96px; min-height:20px; margin-left:8px; padding:2px 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }}
     .annotation-bubble.paper {{ margin:0 6px 6px 0; }}
     .paper-sentence {{ border-radius:4px; padding:1px 2px; scroll-margin-top:92px; }}
     .paper-sentence.has-annotation {{ position:relative; cursor:pointer; text-decoration-line:underline; text-decoration-thickness:2px; text-underline-offset:4px; transition:background-color .12s ease, outline-color .12s ease; }}
-    .paper-sentence.has-annotation::after {{ content:attr(data-inline-label); display:inline-flex; align-items:center; max-width:160px; margin-left:6px; padding:1px 6px; border-radius:999px; border:1px solid currentColor; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:11px; font-weight:700; line-height:1.35; vertical-align:baseline; white-space:nowrap; pointer-events:none; }}
+    .paper-sentence.has-annotation::after {{ content:attr(data-inline-label); display:inline-flex; align-items:center; max-width:min(160px, 100%); margin-left:6px; padding:1px 6px; border-radius:999px; border:1px solid currentColor; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:11px; font-weight:700; line-height:1.35; vertical-align:baseline; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }}
     .paper-overview-annotations .annotation-bubble.paper {{ max-width:100%; overflow-wrap:anywhere; text-align:left; border-radius:6px; white-space:normal; }}
     .paper-sentence[data-severity="blocker"] {{ background:var(--blocker-bg); text-decoration-color:var(--blocker); }}
     .paper-sentence[data-severity="major"] {{ background:var(--major-bg); text-decoration-color:var(--major); }}
     .paper-sentence[data-severity="minor"] {{ background:var(--minor-bg); text-decoration-color:var(--minor); }}
     .paper-sentence[data-severity="polish"] {{ background:var(--polish-bg); text-decoration-color:var(--polish); }}
     .paper-sentence.is-active {{ outline:2px solid var(--accent); outline-offset:2px; box-shadow:0 0 0 4px rgba(36,73,167,.10); }}
-    .annotation-panel {{ position:sticky; top:70px; max-height:calc(100vh - 86px); overflow:auto; padding:18px; background:#fbfcfe; }}
+    .paper-pane .has-section-annotation.is-active, .paper-pane .has-paragraph-annotation.is-active {{ outline:2px solid var(--accent); outline-offset:4px; box-shadow:0 0 0 4px rgba(36,73,167,.10); }}
+    .annotation-panel {{ position:sticky; top:70px; max-height:calc(100vh - 86px); overflow:auto; padding:18px; background:#fbfcfe; min-width:0; }}
     .annotation-panel[data-empty="true"] {{ color:var(--muted); }}
     .annotation-empty-state {{ border:1px dashed var(--line); border-radius:8px; padding:14px; margin:0 0 12px; background:#fff; color:var(--muted); }}
-    .annotation-card {{ position:relative; display:block; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:12px; background:#fff; }}
+    .annotation-card {{ position:relative; display:block; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:12px; background:#fff; min-width:0; overflow-wrap:anywhere; word-break:break-word; }}
     .annotation-card[hidden] {{ display:none; }}
     .annotation-card::before {{ content:""; position:absolute; left:-9px; top:24px; border-top:9px solid transparent; border-bottom:9px solid transparent; border-right:9px solid var(--line); }}
     .annotation-card::after {{ content:""; position:absolute; left:-7px; top:25px; border-top:8px solid transparent; border-bottom:8px solid transparent; border-right:8px solid #fff; }}
     .annotation-card.is-active {{ border-color:var(--accent); box-shadow:0 0 0 2px rgba(36,73,167,.12); }}
     .annotation-meta {{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:0 0 8px; color:var(--muted); font-size:12px; }}
-    .annotation-card h3 {{ margin:0 0 10px; font-size:18px; }}
+    .annotation-card h3 {{ margin:0 0 10px; font-size:16px; line-height:1.32; overflow-wrap:anywhere; }}
     .annotation-card dl {{ margin:0; }}
     .annotation-card dt {{ margin-top:10px; color:var(--muted); font-size:12px; font-weight:700; }}
-    .annotation-card dd {{ margin:2px 0 0; }}
+    .annotation-card dd {{ margin:2px 0 0; overflow-wrap:anywhere; }}
     .annotation-pointer {{ margin:0 0 10px; }}
     .annotation-pointer a {{ display:inline-flex; align-items:center; gap:6px; color:var(--accent); font-size:13px; font-weight:700; text-decoration:none; }}
     .annotation-pointer a::before {{ content:"←"; font-size:16px; line-height:1; }}
     .annotation-unanchored {{ color:var(--muted); font-size:13px; font-weight:700; }}
+    .annotation-page-level {{ color:var(--muted); font-size:13px; font-weight:700; }}
     .annotation-sublist {{ margin:0; padding-left:18px; }}
     .annotation-nav {{ display:flex; gap:8px; }}
     .annotation-nav button {{ border:1px solid var(--line); border-radius:6px; background:#fff; padding:7px 10px; cursor:pointer; }}
     .unanchored-drawer {{ margin-top:16px; border-top:1px solid var(--line); padding-top:14px; }}
-    .unanchored-drawer summary {{ cursor:pointer; font-weight:800; color:var(--accent); }}
-    .unanchored-drawer .annotation-card {{ margin-top:10px; }}
+    .page-level-drawer {{ margin-top:16px; border-top:1px solid var(--line); padding-top:14px; }}
+    .unanchored-drawer summary, .page-level-drawer summary {{ cursor:pointer; font-weight:800; color:var(--accent); }}
+    .unanchored-drawer .annotation-card, .page-level-drawer .annotation-card {{ margin-top:10px; }}
     .empty-state {{ color:var(--muted); font-style:italic; }}
     .table-wrap {{ overflow-x:auto; margin-top:10px; }}
     table.report-table {{ width:100%; border-collapse:collapse; min-width:760px; }}
     .report-table th, .report-table td {{ border:1px solid var(--line); padding:9px; vertical-align:top; text-align:left; }}
     .report-table th {{ background:var(--soft); }}
     .report-table caption {{ text-align:left; font-weight:700; margin:0 0 8px; }}
-    @media (max-width: 920px) {{ .review-report {{ padding:12px; }} .summary-band {{ grid-template-columns:1fr 1fr; }} .reader-shell {{ grid-template-columns:1fr; }} .paper-pane {{ border-right:0; border-bottom:1px solid var(--line); padding:24px 18px; }} .paper-pane .wrapfigure, .paper-pane .wraptable {{ float:none; max-width:100%; margin:18px 0; }} .annotation-panel {{ position:static; max-height:none; }} }}
-    @media print {{ nav, .reader-toolbar {{ display:none !important; }} .annotation-card {{ display:block; }} }}
+    @media (max-width: 920px) {{ .review-report {{ padding:12px; }} .summary-band {{ grid-template-columns:1fr 1fr; }} .reader-shell {{ grid-template-columns:1fr; }} .paper-pane {{ border-right:0; border-bottom:1px solid var(--line); padding:24px 18px; }} .paper-page {{ height:auto; min-height:auto; padding:18px 14px; border-left:0; border-right:0; border-radius:0; }} .paper-pane .wrapfigure, .paper-pane .wraptable {{ float:none; max-width:100%; margin:18px 0; }} .annotation-panel {{ position:static; max-height:none; }} }}
+    @media print {{ nav, .reader-toolbar {{ display:none !important; }} .annotation-card {{ display:block; }} .paper-page {{ break-after:page; box-shadow:none; }} }}
   </style>
 </head>
 <body>
@@ -2180,10 +3800,11 @@ def report_shell(
         <span class="badge major">▲ Major</span>
         <span class="badge minor">● Minor</span>
         <span class="badge polish">◆ Polish</span>
+        <span class="badge minor">Layout · {paper_layout_label}</span>
       </div>
     </div>
     <div class="reader-shell">
-      <article class="paper-pane" data-paper-html-source="{PANDOC_SOURCE}" data-source-fidelity="deterministic" data-source-artifact="{source_artifact}" data-source-hash="{raw_hash_attr}" data-sentence-id-scheme="{SENTENCE_ID_SCHEME}" data-annotation-mode="overlay-only">
+      <article class="{paper_pane_class}" data-paper-html-source="{PANDOC_SOURCE}" data-source-fidelity="deterministic" data-source-artifact="{source_artifact}" data-source-hash="{raw_hash_attr}" data-sentence-id-scheme="{SENTENCE_ID_SCHEME}" data-annotation-mode="overlay-only" data-paper-layout="{paper_layout}">
 {source_html}
       </article>
       <aside id="annotation-panel" class="annotation-panel" aria-label="批注详情" aria-live="polite"{annotation_panel_state}>
@@ -2227,7 +3848,7 @@ def report_shell(
       card.hidden = !isActive;
       if (isActive) activeCard = card;
     }});
-    document.querySelectorAll(".paper-sentence, [data-paragraph-id], .paper-pane h1, .paper-pane h2, .paper-pane h3, .paper-pane h4, #paper-overview-annotations").forEach((node) => {{
+    document.querySelectorAll(".paper-sentence, [data-paragraph-id], .has-section-annotation, #paper-overview-annotations").forEach((node) => {{
       const nodeLevel = node.id === "paper-overview-annotations" ? "paper" : AriadnePaperReaderAnchorLevel(node);
       const nodeId = node.id === "paper-overview-annotations" ? "paper" : AriadnePaperReaderAnchorId(node);
       node.classList.toggle("is-active", nodeLevel === level && nodeId === targetId);
@@ -2325,6 +3946,7 @@ def render(
     reuse_raw_html: bool = False,
     coverage_path: Path | None = None,
     full_report: bool = False,
+    paper_layout: str = "source",
 ) -> tuple[Path, Path, int]:
     tex_path = tex_path.resolve()
     output_path = (output_path or tex_path.with_name(f"ariadne_paper_reader_{tex_path.stem}.html")).resolve()
@@ -2340,16 +3962,25 @@ def render(
         inline_images=inline_images,
         reuse_raw_html=reuse_raw_html,
     )
-    ensure_display_section_numbers(soup)
+    ensure_display_section_numbers(soup, tex_path)
     raw_hash = sha256_path(raw_html_path)
     imported_annotations = load_review_html_annotations(review_html_path)
     explicit_annotations = load_annotations(annotations_path)
-    issue_annotations = load_issue_artifact_annotations(issues_dir)
     findings_by_id = load_findings(findings_path)
+    issue_annotations = filter_compiled_issue_artifact_annotations(
+        load_issue_artifact_annotations(issues_dir),
+        findings_by_id,
+    )
     merged_annotations = merge_annotation_findings(imported_annotations + explicit_annotations + issue_annotations, findings_by_id)
     annotations = apply_annotations(soup, assign_sentence_targets(soup, merged_annotations))
     finding_rows = load_findings_rows(findings_path)
     coverage_payload = load_optional_json(coverage_path)
+    resolved_layout = resolve_paper_layout(tex_path, paper_layout)
+    page_map: dict[str, object] = {}
+    if resolved_layout in {"paged", "paged-two-column"}:
+        page_map = apply_paged_layout(soup, tex_path, output_path.with_suffix(".page_map.json"))
+        if not page_map.get("enabled"):
+            resolved_layout = "two-column" if resolved_layout == "paged-two-column" else "single"
     source_html = body_inner_html(soup)
     output_path.write_text(
         report_shell(
@@ -2363,6 +3994,8 @@ def render(
             findings=finding_rows,
             coverage=coverage_payload,
             full_report=full_report,
+            paper_layout=resolved_layout,
+            page_map=page_map,
         ),
         encoding="utf-8",
     )
@@ -2395,6 +4028,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Render global Major/Blocker paper-level findings after the paper-reader overlay",
     )
+    parser.add_argument(
+        "--paper-layout",
+        choices=("source", "single", "two-column", "paged", "paged-two-column"),
+        default="source",
+        help="Paper pane layout; `source` infers single/two-column from generic LaTeX/PDF signals and uses PDF page wrappers when available",
+    )
     args = parser.parse_args(argv)
     output, raw, count = render(
         args.tex,
@@ -2409,6 +4048,7 @@ def main(argv: list[str] | None = None) -> int:
         args.reuse_raw_html,
         args.coverage,
         args.full_report,
+        args.paper_layout,
     )
     print(f"HTML report: {output}")
     print(f"Source HTML: {raw}")

@@ -35,6 +35,8 @@ PASS_KEYS = {
     "pass_6_output_calibration": "Pass 6",
 }
 
+PROSE_DOMAINS = {"prose", "whole_paper"}
+
 
 def sha256_path(path: Path) -> str:
     digest = hashlib.sha256()
@@ -72,6 +74,15 @@ def compact_text(value: Any, *, max_chars: int = 220) -> str:
 
 def severity_counts(findings: list[dict[str, Any]]) -> Counter[str]:
     return Counter(compact_text(item.get("severity")) for item in findings if compact_text(item.get("severity")))
+
+
+def is_artifact_only(item: dict[str, Any]) -> bool:
+    return compact_text(
+        item.get("render_visibility")
+        or item.get("visibility")
+        or item.get("student_visibility"),
+        max_chars=80,
+    ).lower() in {"artifact_only", "audit_only", "hidden"}
 
 
 def annotation_counts(annotations: list[dict[str, Any]]) -> Counter[str]:
@@ -139,21 +150,108 @@ def unit_row(unit: str, total: int, reviewed: int, with_issues: int, *, pending_
     return row
 
 
+def issue_count_by_domain(issue_artifacts: list[dict[str, Any]]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for artifact in issue_artifacts:
+        domain = compact_text(artifact.get("domain"))
+        issues = artifact.get("issues") if isinstance(artifact.get("issues"), list) else []
+        counts[domain] += len([issue for issue in issues if isinstance(issue, dict)])
+    return counts
+
+
+def has_completed_specialist_artifact(issue_artifacts: list[dict[str, Any]]) -> bool:
+    for artifact in issue_artifacts:
+        domain = compact_text(artifact.get("domain"))
+        if not domain or domain in PROSE_DOMAINS:
+            continue
+        status = compact_text(artifact.get("status")).lower()
+        coverage = artifact.get("coverage") if isinstance(artifact.get("coverage"), dict) else {}
+        checked = int(coverage.get("checked", 0) or 0)
+        if status in {"completed", "partial"} or checked > 0:
+            return True
+    return False
+
+
+def phase_a_coverage(phase_a_status: dict[str, Any] | None) -> dict[str, Any]:
+    coverage = phase_a_status.get("coverage") if isinstance(phase_a_status, dict) else {}
+    return coverage if isinstance(coverage, dict) else {}
+
+
+def build_reader_journey_passes(
+    *,
+    phase_a_status: dict[str, Any] | None,
+    phase_b_context: dict[str, Any] | None,
+    findings: list[dict[str, Any]],
+    issue_artifacts: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    coverage = phase_a_coverage(phase_a_status)
+    phase_b_coverage = phase_b_context.get("coverage") if isinstance(phase_b_context, dict) else {}
+    if not isinstance(phase_b_coverage, dict):
+        phase_b_coverage = {}
+    source_domains = set()
+    for finding in findings:
+        source_ids = finding.get("source_issue_ids")
+        if isinstance(source_ids, list):
+            for source_id in source_ids:
+                text = compact_text(source_id)
+                if ":" in text:
+                    source_domains.add(text.split(":", 1)[0])
+    pass_statuses = {
+        "Pass 0": "done",
+        "Pass 1": "done" if coverage.get("cold_skim_present") else "pending",
+        "Pass 2": "done" if coverage.get("sentence_review_receipt_complete") else "pending",
+        "Pass 3": "done" if int(coverage.get("sections_pending", 0) or 0) == 0 and int(coverage.get("sections_total", 0) or 0) > 0 else "pending",
+        "Pass 4": "done"
+        if phase_b_coverage.get("sections_summarized") or "whole_paper" in source_domains
+        else "pending",
+        "Pass 5": "done" if has_completed_specialist_artifact(issue_artifacts) else "skipped",
+        "Pass 6": "pending",
+    }
+    return [{"pass": pass_name, "status": pass_statuses[pass_name]} for pass_name in PASS_KEYS.values()]
+
+
 def build_coverage(
     *,
     findings: list[dict[str, Any]],
     annotations: list[dict[str, Any]],
     issue_artifacts: list[dict[str, Any]],
     layout_audit: dict[str, Any] | None,
+    phase_a_status: dict[str, Any] | None,
+    phase_b_context: dict[str, Any] | None,
     requested_scope: str,
 ) -> dict[str, Any]:
     counts = annotation_counts(annotations)
+    phase_a = phase_a_coverage(phase_a_status)
+    domain_counts = issue_count_by_domain(issue_artifacts)
+    sentence_total = int(phase_a.get("sentences_total", 0) or 0)
+    sentence_reviewed = int(phase_a.get("sentences_reviewed", 0) or 0)
+    paragraph_total = int(phase_a.get("paragraphs_total", 0) or 0)
+    paragraph_reviewed = int(phase_a.get("paragraphs_reviewed", 0) or 0)
+    section_total = int(phase_a.get("sections_total", 0) or 0)
+    section_reviewed = int(phase_a.get("sections_completed", 0) or 0)
     units = [
-        unit_row("Reader-Journey passes", 7, 7, 0),
         unit_row("Findings", len(findings), len(findings), len(findings)),
-        unit_row("Sentence notes", counts.get("sentence", 0), counts.get("sentence", 0), counts.get("sentence", 0)),
-        unit_row("Paragraph rows", counts.get("paragraph", 0), counts.get("paragraph", 0), counts.get("paragraph", 0)),
-        unit_row("Section reflection rows", counts.get("section", 0), counts.get("section", 0), counts.get("section", 0)),
+        unit_row(
+            "Sentences",
+            sentence_total or counts.get("sentence", 0),
+            sentence_reviewed or counts.get("sentence", 0),
+            domain_counts.get("prose", counts.get("sentence", 0)),
+            pending_in="phase_a_resume_status.json",
+        ),
+        unit_row(
+            "Paragraphs",
+            paragraph_total or counts.get("paragraph", 0),
+            paragraph_reviewed or counts.get("paragraph", 0),
+            counts.get("paragraph", 0),
+            pending_in="phase_a_resume_status.json",
+        ),
+        unit_row(
+            "Sections/headings",
+            section_total or counts.get("section", 0),
+            section_reviewed or counts.get("section", 0),
+            counts.get("section", 0),
+            pending_in="phase_a_resume_status.json",
+        ),
         unit_row("Paper-level notes", counts.get("paper", 0), counts.get("paper", 0), counts.get("paper", 0)),
     ]
     issue_rows = issue_artifact_summary(issue_artifacts)
@@ -167,11 +265,20 @@ def build_coverage(
         "schema_version": 1,
         "requested_scope": requested_scope,
         "units": units,
-        "reader_journey_passes": [{"pass": pass_name, "status": "done"} for pass_name in PASS_KEYS.values()],
+        "reader_journey_passes": build_reader_journey_passes(
+            phase_a_status=phase_a_status,
+            phase_b_context=phase_b_context,
+            findings=findings,
+            issue_artifacts=issue_artifacts,
+        ),
         "issue_artifact_coverage": issue_rows,
         "severity_counts": dict(severity_counts(findings)),
         "known_blind_spots": [],
     }
+    if not phase_a:
+        payload["known_blind_spots"].append("No phase_a_resume_status.json was provided; prose sentence/paragraph clean coverage is not certified.")
+    if not phase_b_context:
+        payload["known_blind_spots"].append("No phase_b_context.json was provided; whole-paper synthesis coverage is not certified.")
     if layout_audit:
         pages_total = layout_audit.get("pages_total") if isinstance(layout_audit.get("pages_total"), int) else 0
         pages_checked = layout_audit.get("pages_checked") if isinstance(layout_audit.get("pages_checked"), list) else []
@@ -311,19 +418,27 @@ def build_all(
     visible_scope: str,
     source_integrity_check: str = "skipped",
     render_mode: str = "paper-reader-with-global-findings",
+    phase_a_status_path: Path | None = None,
+    phase_b_context_path: Path | None = None,
 ) -> dict[str, Any]:
     findings_payload = load_json(findings_path)
     annotations_payload = load_json(annotations_path)
     layout_audit = load_json(layout_audit_path)
+    phase_a_status = load_json(phase_a_status_path)
+    phase_b_context = load_json(phase_b_context_path)
     findings = as_list_payload(findings_payload, "findings")
+    student_visible_findings = [finding for finding in findings if not is_artifact_only(finding)]
+    artifact_only_finding_ids = [compact_text(finding.get("id"), max_chars=80) for finding in findings if is_artifact_only(finding)]
     annotations = as_list_payload(annotations_payload, "annotations")
     artifacts = load_issue_artifacts(issues_dir)
     rendered_sections = RENDER_MODES[render_mode]
     coverage = build_coverage(
-        findings=findings,
+        findings=student_visible_findings,
         annotations=annotations,
         issue_artifacts=artifacts,
         layout_audit=layout_audit if isinstance(layout_audit, dict) else None,
+        phase_a_status=phase_a_status if isinstance(phase_a_status, dict) else None,
+        phase_b_context=phase_b_context if isinstance(phase_b_context, dict) else None,
         requested_scope=requested_scope,
     )
     manifest = build_render_manifest(
@@ -334,10 +449,10 @@ def build_all(
         html_source=html_source,
         visible_scope=visible_scope,
         source_integrity_check=source_integrity_check,
-        deferred_findings=[],
+        deferred_findings=[finding_id for finding_id in artifact_only_finding_ids if finding_id],
         rendered_sections=rendered_sections,
     )
-    pass_observations = build_pass_observations(findings=findings, issue_artifacts=artifacts, requested_scope=requested_scope)
+    pass_observations = build_pass_observations(findings=student_visible_findings, issue_artifacts=artifacts, requested_scope=requested_scope)
     return {"coverage": coverage, "render_manifest": manifest, "pass_observations": pass_observations}
 
 
@@ -347,6 +462,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--annotations", type=Path)
     parser.add_argument("--issues-dir", type=Path)
     parser.add_argument("--layout-audit", type=Path)
+    parser.add_argument("--phase-a-status", type=Path)
+    parser.add_argument("--phase-b-context", type=Path)
     parser.add_argument("--source-artifact", type=Path)
     parser.add_argument("--source-hash", default="")
     parser.add_argument("--requested-scope", default="compiled Ariadne review")
@@ -371,6 +488,8 @@ def main(argv: list[str] | None = None) -> int:
         annotations_path=args.annotations,
         issues_dir=args.issues_dir,
         layout_audit_path=args.layout_audit,
+        phase_a_status_path=args.phase_a_status,
+        phase_b_context_path=args.phase_b_context,
         source_artifact=args.source_artifact,
         source_hash=args.source_hash,
         requested_scope=args.requested_scope,

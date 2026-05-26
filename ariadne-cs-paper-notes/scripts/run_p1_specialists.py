@@ -189,7 +189,7 @@ def run_reference(tex: Path | None, bundle: Path, issues_dir: Path, *, force: bo
     return run_builder("reference", raw, out)
 
 
-def run_source_hygiene(tex: Path | None, bundle: Path, issues_dir: Path, *, force: bool) -> dict[str, Any]:
+def run_source_hygiene(tex: Path | None, pdf: Path | None, bundle: Path, issues_dir: Path, *, force: bool) -> dict[str, Any]:
     out = issues_dir / "source_hygiene_issues.json"
     raw = bundle / "source_hygiene_audit.json"
     if raw.exists() and not force:
@@ -199,6 +199,8 @@ def run_source_hygiene(tex: Path | None, bundle: Path, issues_dir: Path, *, forc
         return {"domain": "source_hygiene", "status": "skipped", "issues": str(out), "skip_reason": "no TeX source provided"}
     if not raw.exists() or force:
         cmd = [sys.executable, script("check_source_hygiene.py"), str(tex), "--out", str(raw)]
+        if pdf is not None:
+            cmd.extend(["--pdf", str(pdf)])
         result = run_command(cmd, timeout=180)
         if result.returncode != 0:
             write_json(out, skipped_stub("source_hygiene", "source hygiene raw audit failed"))
@@ -342,7 +344,7 @@ def run_specialists(
     if "reference" in domains:
         results.append(run_reference(tex, bundle, issues_dir, force=force, aux=aux, bbl=bbl))
     if "source_hygiene" in domains:
-        results.append(run_source_hygiene(tex, bundle, issues_dir, force=force))
+        results.append(run_source_hygiene(tex, pdf, bundle, issues_dir, force=force))
     if "polish" in domains:
         results.append(run_polish(tex, bundle, issues_dir, force=force))
     if "symbol" in domains:

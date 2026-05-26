@@ -79,6 +79,8 @@ def section_sequence(review_units_path: Path) -> list[dict[str, Any]]:
                         "title": compact_text(row.get("text") or row.get("title") or section_id),
                         "paragraphs": 0,
                         "sentences": 0,
+                        "paragraph_ids": [],
+                        "sentence_ids_by_paragraph": {},
                     }
                 )
                 seen.add(section_id)
@@ -92,13 +94,27 @@ def section_sequence(review_units_path: Path) -> list[dict[str, Any]]:
                         "title": compact_text(row.get("section_title") or section_id),
                         "paragraphs": 0,
                         "sentences": 0,
+                        "paragraph_ids": [],
+                        "sentence_ids_by_paragraph": {},
                     }
                 )
                 seen.add(section_id)
             target = next(item for item in sections if item["section_id"] == section_id)
+            paragraph_id = compact_text(row.get("paragraph_id") or row.get("id") or f"{section_id}:paragraph-{target['paragraphs'] + 1}")
             target["paragraphs"] += 1
             sentences = row.get("sentences")
-            target["sentences"] += len(sentences) if isinstance(sentences, list) else 0
+            sentence_ids: list[str] = []
+            if isinstance(sentences, list):
+                for sentence in sentences:
+                    if isinstance(sentence, dict):
+                        sentence_id = compact_text(sentence.get("sentence_id") or sentence.get("id"), max_chars=160)
+                    else:
+                        sentence_id = compact_text(sentence, max_chars=160)
+                    if sentence_id:
+                        sentence_ids.append(sentence_id)
+                target["sentences"] += len(sentence_ids)
+            target["paragraph_ids"].append(paragraph_id)
+            target["sentence_ids_by_paragraph"][paragraph_id] = sentence_ids
     return sections
 
 
@@ -110,6 +126,89 @@ def section_ids_from_rows(rows: list[dict[str, Any]]) -> set[str]:
             if value:
                 ids.add(value)
     return ids
+
+
+def paragraph_review_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    by_paragraph: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        paragraph_id = compact_text(row.get("paragraph_id") or row.get("id"), max_chars=160)
+        if paragraph_id:
+            by_paragraph.setdefault(paragraph_id, []).append(row)
+    return by_paragraph
+
+
+def truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return compact_text(value).lower() in {"1", "true", "yes", "y", "reviewed", "complete", "completed", "all"}
+
+
+def reviewed_sentence_ids(row: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    for key in ("reviewed_sentence_ids", "checked_sentence_ids", "covered_sentence_ids", "sentence_ids"):
+        value = row.get(key)
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if isinstance(item, dict):
+                text = compact_text(item.get("sentence_id") or item.get("id"), max_chars=160)
+            else:
+                text = compact_text(item, max_chars=160)
+            if text:
+                ids.add(text)
+    return ids
+
+
+def numeric_sentence_checks(row: dict[str, Any]) -> int | None:
+    for key in ("sentence_checks", "sentences_checked", "reviewed_sentence_count", "sentence_count_reviewed"):
+        value = row.get(key)
+        if isinstance(value, bool):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def paragraph_has_sentence_receipt(rows: list[dict[str, Any]], expected_sentence_ids: list[str]) -> bool:
+    if not expected_sentence_ids:
+        return True
+    expected = set(expected_sentence_ids)
+    for row in rows:
+        if truthy(row.get("all_sentences_reviewed")) or truthy(row.get("sentence_review_complete")):
+            return True
+        count = numeric_sentence_checks(row)
+        if count is not None and count >= len(expected_sentence_ids):
+            return True
+        if expected <= reviewed_sentence_ids(row):
+            return True
+    return False
+
+
+def section_paragraph_receipt(section: dict[str, Any], paragraph_rows: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    paragraph_ids = [str(item) for item in section.get("paragraph_ids", []) if str(item)]
+    sentence_map = section.get("sentence_ids_by_paragraph") if isinstance(section.get("sentence_ids_by_paragraph"), dict) else {}
+    missing_paragraphs: list[str] = []
+    paragraphs_without_sentence_receipt: list[str] = []
+    sentences_reviewed = 0
+    for paragraph_id in paragraph_ids:
+        rows = paragraph_rows.get(paragraph_id, [])
+        if not rows:
+            missing_paragraphs.append(paragraph_id)
+            continue
+        expected_sentence_ids = [str(item) for item in sentence_map.get(paragraph_id, []) if str(item)]
+        if paragraph_has_sentence_receipt(rows, expected_sentence_ids):
+            sentences_reviewed += len(expected_sentence_ids)
+        else:
+            paragraphs_without_sentence_receipt.append(paragraph_id)
+    return {
+        "has_paragraph_decisions": not missing_paragraphs,
+        "has_sentence_review_receipt": not paragraphs_without_sentence_receipt and not missing_paragraphs,
+        "paragraphs_reviewed": max(len(paragraph_ids) - len(missing_paragraphs), 0),
+        "sentences_reviewed": sentences_reviewed,
+        "missing_paragraph_decisions": len(missing_paragraphs),
+        "paragraphs_without_sentence_receipt": len(paragraphs_without_sentence_receipt),
+    }
 
 
 def section_reflection_ids(payload: Any) -> set[str]:
@@ -139,41 +238,45 @@ def build_status(
     claim_candidates: Path | None = None,
 ) -> dict[str, Any]:
     sections = section_sequence(review_units)
-    front_matter_sections = [section for section in sections if section.get("section_id") in {"front-matter", "front_matter"}]
-    review_sections = [section for section in sections if section not in front_matter_sections]
+    front_matter_ids = {"front-matter", "front_matter"}
+    review_sections = sections
     issue_ids = section_ids_from_rows(read_jsonl(prose_issues))
-    paragraph_ids = section_ids_from_rows(read_jsonl(paragraph_decisions))
+    paragraph_rows = read_jsonl(paragraph_decisions)
+    paragraph_section_ids = section_ids_from_rows(paragraph_rows)
+    paragraphs_by_id = paragraph_review_rows(paragraph_rows)
     reflection_ids = section_reflection_ids(load_json(section_reflections))
     completed: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     partial: list[dict[str, Any]] = []
     front_matter: list[dict[str, Any]] = []
-    for index, section in enumerate(front_matter_sections, 1):
-        section_id = section["section_id"]
-        row = {
-            **section,
-            "order": index,
-            "has_prose_issues": section_id in issue_ids or section["sentences"] == 0,
-            "has_paragraph_decisions": section_id in paragraph_ids or section["paragraphs"] == 0,
-            "has_section_reflection": section_id in reflection_ids,
-            "status": "front_matter",
-        }
-        front_matter.append(row)
     for index, section in enumerate(review_sections, 1):
         section_id = section["section_id"]
         has_reflection = section_id in reflection_ids
-        has_paragraphs = section_id in paragraph_ids or section["paragraphs"] == 0
+        receipt = section_paragraph_receipt(section, paragraphs_by_id)
+        has_paragraphs = receipt["has_paragraph_decisions"] or section["paragraphs"] == 0
+        has_sentence_receipt = receipt["has_sentence_review_receipt"] or section["sentences"] == 0
         has_issues = section_id in issue_ids or section["sentences"] == 0
         row = {
-            **section,
+            "section_id": section_id,
+            "title": section["title"],
+            "paragraphs": section["paragraphs"],
+            "sentences": section["sentences"],
             "order": index,
+            "is_front_matter": section_id in front_matter_ids,
             "has_prose_issues": has_issues,
             "has_paragraph_decisions": has_paragraphs,
+            "has_sentence_review_receipt": has_sentence_receipt,
             "has_section_reflection": has_reflection,
+            "paragraphs_reviewed": receipt["paragraphs_reviewed"],
+            "sentences_reviewed": receipt["sentences_reviewed"],
+            "missing_paragraph_decisions": receipt["missing_paragraph_decisions"],
+            "paragraphs_without_sentence_receipt": receipt["paragraphs_without_sentence_receipt"],
         }
-        if has_reflection and has_paragraphs:
+        if row["is_front_matter"]:
+            front_matter.append(row)
+        if has_reflection and has_paragraphs and has_sentence_receipt:
             completed.append(row)
-        elif has_reflection or has_paragraphs or has_issues:
+        elif has_reflection or has_paragraphs or has_issues or has_sentence_receipt or section_id in paragraph_section_ids:
             partial.append(row)
             pending.append(row)
         else:
@@ -203,8 +306,20 @@ def build_status(
             "front_matter_sections": len(front_matter),
             "front_matter_paragraphs": sum(int(item.get("paragraphs", 0) or 0) for item in front_matter),
             "front_matter_sentences": sum(int(item.get("sentences", 0) or 0) for item in front_matter),
+            "paragraphs_total": sum(int(item.get("paragraphs", 0) or 0) for item in review_sections),
+            "paragraphs_reviewed": sum(int(item.get("paragraphs_reviewed", 0) or 0) for item in completed + partial),
+            "sentences_total": sum(int(item.get("sentences", 0) or 0) for item in review_sections),
+            "sentences_reviewed": sum(int(item.get("sentences_reviewed", 0) or 0) for item in completed + partial),
+            "sentence_review_receipt_complete": all(bool(item.get("has_sentence_review_receipt")) for item in review_sections) if review_sections else True,
             "cold_skim_present": bool(cold_skim and cold_skim.exists()),
             "claim_candidates_present": bool(claim_candidates and claim_candidates.exists()),
+            "phase_a_complete": bool(
+                not pending
+                and cold_skim
+                and cold_skim.exists()
+                and claim_candidates
+                and claim_candidates.exists()
+            ),
         },
         "front_matter": front_matter,
         "completed_sections": completed,
@@ -242,6 +357,7 @@ def build_next_step(
                 "paragraphs": row.get("paragraphs"),
                 "sentences": row.get("sentences"),
                 "has_paragraph_decisions": row.get("has_paragraph_decisions"),
+                "has_sentence_review_receipt": row.get("has_sentence_review_receipt"),
                 "has_section_reflection": row.get("has_section_reflection"),
             }
         )
@@ -258,7 +374,7 @@ def build_next_step(
         "context_policy": "model_readable_resume_status_only",
         "generated_by": "scripts/phase_a_resume_status.py",
         "phase": "prose_phase_a",
-        "phase_a_complete": next_section is None,
+        "phase_a_complete": bool((status_payload.get("coverage") or {}).get("phase_a_complete")) if isinstance(status_payload.get("coverage"), dict) else next_section is None,
         "next_section": next_section,
         "pending_sections_compact": compact_pending,
         "pending_sections_omitted": max(0, len(pending_sections) - len(compact_pending)),

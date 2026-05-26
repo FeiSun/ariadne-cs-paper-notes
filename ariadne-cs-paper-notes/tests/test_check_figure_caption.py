@@ -51,6 +51,13 @@ def test_figure_caption_audit_emits_source_level_signals() -> None:
                     r"\caption{Short}",
                     r"\label{tab:short}",
                     r"\end{table}",
+                    r"\begin{wraptable}{r}{0.45\textwidth}",
+                    r"\caption{Statistics of dataset.}",
+                    r"\label{tab:data_split}",
+                    r"\begin{tabular}{lr}",
+                    r"A & 1 \\",
+                    r"\end{tabular}",
+                    r"\end{wraptable}",
                     r"\end{document}",
                 ]
             ),
@@ -69,6 +76,24 @@ def test_figure_caption_audit_emits_source_level_signals() -> None:
     }
     if not expected <= issue_types:
         raise AssertionError(f"Missing figure/caption issue types {expected - issue_types}; got {issue_types}")
+
+
+def test_unresolved_float_references_are_skipped_when_inputs_missing() -> None:
+    module = load_module()
+    raw = "\n".join(
+        [
+            r"\documentclass{article}",
+            r"\begin{document}",
+            r"See Figure~\ref{fig:external}.",
+            r"\end{document}",
+        ]
+    )
+    observations, coverage = module.audit_figure_captions(raw, Path.cwd(), source_complete=False)
+    issue_types = {item["issue_type"] for item in observations}
+    if "unresolved_float_reference" in issue_types:
+        raise AssertionError(f"Missing source inputs should not produce unresolved-float false positives: {observations}")
+    if coverage.get("unresolved_reference_checks_skipped") != 1:
+        raise AssertionError(f"Expected skipped unresolved-reference coverage flag, got {coverage}")
 
 
 def test_rendered_caption_geometry_flags_edge_and_label_only_lines() -> None:
@@ -105,6 +130,100 @@ def test_rendered_caption_geometry_flags_edge_and_label_only_lines() -> None:
         raise AssertionError(f"Missing rendered caption issue types {expected - issue_types}; got {issue_types}")
     if coverage["rendered_pages_checked"] != 1 or coverage["rendered_captions_detected"] != 1:
         raise AssertionError(f"Unexpected rendered coverage: {coverage}")
+
+
+def test_rendered_caption_observation_resolves_source_label() -> None:
+    module = load_module()
+    raw = "\n".join(
+        [
+            r"\begin{wraptable}{r}{0.45\textwidth}",
+            r"\caption{Statistics of dataset.}",
+            r"\label{tab:data_split}",
+            r"\begin{tabular}{lr}",
+            r"A & 1 \\",
+            r"\end{tabular}",
+            r"\end{wraptable}",
+        ]
+    )
+    parsed_pages = [
+        (
+            16,
+            {
+                "width": 612.0,
+                "height": 792.0,
+                "lines": [
+                    {
+                        "xMin": 200.0,
+                        "yMin": 700.0,
+                        "xMax": 380.0,
+                        "yMax": 716.0,
+                        "words": [
+                            {"text": "Table", "xMin": 200.0, "yMin": 700.0, "xMax": 235.0, "yMax": 716.0},
+                            {"text": "5:", "xMin": 240.0, "yMin": 700.0, "xMax": 255.0, "yMax": 716.0},
+                            {"text": "Statistics", "xMin": 260.0, "yMin": 700.0, "xMax": 315.0, "yMax": 716.0},
+                            {"text": "of", "xMin": 320.0, "yMin": 700.0, "xMax": 332.0, "yMax": 716.0},
+                            {"text": "dataset.", "xMin": 336.0, "yMin": 700.0, "xMax": 380.0, "yMax": 716.0},
+                        ],
+                    }
+                ],
+            },
+        )
+    ]
+    observations, coverage = module.analyze_rendered_caption_pages(
+        parsed_pages,
+        source_caption_count=1,
+        pages_all=True,
+        caption_targets=module.source_caption_targets(raw),
+    )
+    issue = next((item for item in observations if item["issue_type"] == "rendered_caption_label_only"), None)
+    if issue is None:
+        raise AssertionError(f"Expected label-only rendered caption issue, got {observations}")
+    if issue.get("details", {}).get("target_label") != "tab:data_split":
+        raise AssertionError(f"Rendered caption should resolve source target label: {issue}")
+    if coverage.get("rendered_caption_targets_resolved") != 1:
+        raise AssertionError(f"Expected target resolution coverage, got {coverage}")
+
+
+def test_root_relative_input_from_section_resolves_for_caption_audit() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        section_dir = root / "Section"
+        table_dir = root / "Tables"
+        section_dir.mkdir()
+        table_dir.mkdir()
+        tex = root / "main.tex"
+        section = section_dir / "appendix.tex"
+        table = table_dir / "one.tex"
+        tex.write_text(
+            "\n".join(
+                [
+                    r"\documentclass{article}",
+                    r"\begin{document}",
+                    r"\input{Section/appendix}",
+                    r"\end{document}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        section.write_text(r"\input{Tables/one}", encoding="utf-8")
+        table.write_text(
+            "\n".join(
+                [
+                    r"\begin{table}",
+                    r"\caption{Statistics of dataset.}",
+                    r"\label{tab:data_split}",
+                    r"\end{table}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        raw, _, _, warnings = module.load_source(tex)
+
+    if "tab:data_split" not in raw:
+        raise AssertionError(f"Root-relative table input was not expanded: {raw}")
+    if any("Missing input file" in warning for warning in warnings):
+        raise AssertionError(f"Root-relative fallback should avoid missing-input warnings: {warnings}")
 
 
 def test_raster_asset_quality_flags_low_resolution_and_blank_assets() -> None:
@@ -223,7 +342,10 @@ def test_figure_caption_cli_writes_json() -> None:
 
 if __name__ == "__main__":
     test_figure_caption_audit_emits_source_level_signals()
+    test_unresolved_float_references_are_skipped_when_inputs_missing()
     test_rendered_caption_geometry_flags_edge_and_label_only_lines()
+    test_rendered_caption_observation_resolves_source_label()
+    test_root_relative_input_from_section_resolves_for_caption_audit()
     test_raster_asset_quality_flags_low_resolution_and_blank_assets()
     test_pdf_asset_quality_flags_blank_preview_when_pdftoppm_available()
     test_combined_source_and_rendered_observations_have_unique_ids()

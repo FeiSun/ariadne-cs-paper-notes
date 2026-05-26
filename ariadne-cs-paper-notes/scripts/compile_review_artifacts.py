@@ -17,6 +17,7 @@ SCHEMA_VERSION = 1
 ISSUE_ARTIFACT_TYPE = "ariadne_issue_artifact"
 COMPILED_INDEX_TYPE = "ariadne_compiled_issue_index"
 SEVERITY_ORDER = {"Polish": 0, "Minor": 1, "Major": 2, "Blocker": 3}
+DEFAULT_STUDENT_VISIBLE_DOMAINS = {"prose", "whole_paper", "layout", "numeric", "figure_caption"}
 JSONL_DOMAINS = {
     "prose_issues": "prose",
     "whole_paper_findings": "whole_paper",
@@ -101,6 +102,50 @@ def compact_text(value: Any, *, max_chars: int = 1200) -> str:
     return text[: max_chars - 1].rstrip() + "..."
 
 
+def normalized_match_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+def source_only_identity_false_positive(row: dict[str, Any]) -> bool:
+    if compact_text(row.get("visibility_basis"), max_chars=80).lower() == "compiled_pdf":
+        return False
+    joined = normalized_match_text(
+        " ".join(
+            first_nonempty(row, key, max_chars=1000)
+            for key in (
+                "title",
+                "short",
+                "diagnosis",
+                "problem",
+                "reader_friction",
+                "self_check",
+                "severity_rationale",
+            )
+        )
+    )
+    if not joined:
+        return False
+    front_matter_visible_claim = any(
+        token in joined
+        for token in (
+            "暴露作者身份",
+            "首页身份",
+            "首页作者",
+            "首页作者姓名",
+            "作者姓名已经可见",
+            "首页显示作者",
+            "review 模式首页显示作者",
+            "front matter exposes identity",
+            "author identity",
+        )
+    )
+    anonymous_context = any(
+        token in joined
+        for token in ("匿名评审", "acl review", "review 模式", "double-blind", "双盲", "anonymous review")
+    )
+    return front_matter_visible_claim and (anonymous_context or "首页" in joined)
+
+
 def first_nonempty(mapping: dict[str, Any], *keys: str, max_chars: int = 1200) -> str:
     for key in keys:
         value = mapping.get(key)
@@ -122,6 +167,31 @@ def as_list(value: Any) -> list[Any]:
     if isinstance(value, tuple):
         return list(value)
     return [value]
+
+
+def truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return compact_text(value).lower() in {"1", "true", "yes", "y", "student_visible", "visible", "render"}
+
+
+def visibility_for_group(group: list[SourceIssue]) -> str:
+    if any(source_only_identity_false_positive(issue.row) for issue in group):
+        return "artifact_only"
+    for issue in group:
+        explicit = compact_text(
+            issue.row.get("render_visibility")
+            or issue.row.get("visibility")
+            or issue.row.get("student_visibility"),
+            max_chars=80,
+        ).lower()
+        if explicit in {"student_visible", "visible", "render"}:
+            return "student_visible"
+        if explicit in {"artifact_only", "audit_only", "hidden"}:
+            return "artifact_only"
+        if truthy(issue.row.get("student_visible")) or truthy(issue.row.get("render_in_html")):
+            return "student_visible"
+    return "student_visible" if group[0].domain in DEFAULT_STUDENT_VISIBLE_DOMAINS else "artifact_only"
 
 
 def canonical_json(value: Any) -> str:
@@ -371,8 +441,11 @@ def compile_finding(group: list[SourceIssue], final_id: str) -> dict[str, Any]:
         or "Downgrade after the next compiled artifacts no longer contain this source issue."
     )
     source_issue_ids = [issue.source_id for issue in group]
+    render_visibility = visibility_for_group(group)
     finding: dict[str, Any] = {
         "id": final_id,
+        "domain": domain,
+        "render_visibility": render_visibility,
         "severity": severity,
         "issue_type": issue_type,
         "location": location,
@@ -427,6 +500,7 @@ def annotation_for_finding(finding: dict[str, Any], *, source_artifact: str = ""
     annotation: dict[str, Any] = {
         "issue_id": finding["id"],
         "target_level": level,
+        "render_visibility": finding.get("render_visibility") or "student_visible",
         "short": finding.get("title") or finding.get("diagnosis") or finding["id"],
         "title": finding.get("title") or finding["id"],
     }
@@ -485,6 +559,7 @@ def compile_artifacts(
     annotations = [
         annotation_for_finding(finding, source_artifact=source_artifact, source_hash=source_hash)
         for finding in findings
+        if compact_text(finding.get("render_visibility")) != "artifact_only"
     ]
     findings_payload = {
         "schema_version": SCHEMA_VERSION,
@@ -506,6 +581,9 @@ def compile_artifacts(
         "source_issue_count": len(source_issues),
         "finding_count": len(findings),
         "annotation_count": len(annotations),
+        "artifact_only_finding_ids": [
+            finding["id"] for finding in findings if compact_text(finding.get("render_visibility")) == "artifact_only"
+        ],
         "source_to_finding_id": source_to_finding,
         "dedup_groups": dedup_groups,
     }

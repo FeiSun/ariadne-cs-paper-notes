@@ -119,6 +119,13 @@ def test_compile_jsonl_and_specialist_artifacts() -> None:
         source_ids = [item["source_issue_ids"][0] for item in findings["findings"]]
         if source_ids != ["prose:P1", "whole_paper:W1", "reference:R1"]:
             raise AssertionError(f"Unexpected source issue ids: {source_ids}")
+        visibility = [item["render_visibility"] for item in findings["findings"]]
+        if visibility != ["student_visible", "student_visible", "artifact_only"]:
+            raise AssertionError(f"Unexpected visibility classification: {visibility}")
+        if [item["issue_id"] for item in annotations["annotations"]] != ["F1", "F2"]:
+            raise AssertionError(f"Artifact-only reference finding should not create overlay annotation: {annotations}")
+        if index["artifact_only_finding_ids"] != ["F3"]:
+            raise AssertionError(f"Compiled index should record artifact-only findings: {index}")
 
         errors, warnings, _ids = audit.audit_findings(findings)
         if errors or warnings:
@@ -150,7 +157,105 @@ def test_compiler_deduplicates_matching_evidence_refs() -> None:
             raise AssertionError(f"Expected merged source ids, got {source_ids}")
 
 
+def test_compiler_allows_explicit_student_visible_specialist_issue() -> None:
+    module = load_module(SCRIPT, "compile_review_artifacts")
+    with tempfile.TemporaryDirectory() as tempdir:
+        issues = Path(tempdir) / "issue_artifacts"
+        issues.mkdir()
+        payload = specialist_artifact("source_hygiene")
+        payload["issues"][0]["render_visibility"] = "student_visible"  # type: ignore[index]
+        write_json(issues / "source_hygiene_issues.json", payload)
+
+        findings, annotations, index = module.compile_artifacts(issues_dir=issues)
+
+        if findings["findings"][0]["render_visibility"] != "student_visible":
+            raise AssertionError(f"Explicit visibility should be preserved: {findings}")
+        if len(annotations["annotations"]) != 1:
+            raise AssertionError(f"Student-visible specialist issue should create annotation: {annotations}")
+        if index["artifact_only_finding_ids"]:
+            raise AssertionError(f"No artifact-only ids expected: {index}")
+
+
+def test_compiler_hides_source_only_anonymous_front_matter_false_positive() -> None:
+    module = load_module(SCRIPT, "compile_review_artifacts")
+    with tempfile.TemporaryDirectory() as tempdir:
+        issues = Path(tempdir) / "issue_artifacts"
+        issues.mkdir()
+        (issues / "prose_issues.jsonl").write_text(
+            json.dumps(
+                {
+                    "local_id": "P1",
+                    "domain": "prose",
+                    "severity": "Major",
+                    "issue_type": "submission",
+                    "title": "匿名评审模式下首页仍暴露作者身份",
+                    "diagnosis": "正文入口处直接显示作者姓名、单位占位和邮箱占位；若这是 ACL review 版，匿名性在第一页已经破坏。",
+                    "target_anchors": ["s-front-p001-s001"],
+                    "render_visibility": "student_visible",
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "local_id": "P2",
+                    "domain": "prose",
+                    "severity": "Major",
+                    "issue_type": "submission",
+                    "title": "匿名代码链接与首页身份风险叠加",
+                    "diagnosis": "摘要末尾给出 anonymous.4open.science 链接，但首页作者姓名已经可见，且链接 slug 可能形成可追踪信号。",
+                    "target_anchors": ["s-front-p001-s002"],
+                    "render_visibility": "student_visible",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        findings, annotations, index = module.compile_artifacts(issues_dir=issues)
+
+        if [item["render_visibility"] for item in findings["findings"]] != ["artifact_only", "artifact_only"]:
+            raise AssertionError(f"Source-only identity false positives should be audit-only: {findings}")
+        if annotations["annotations"]:
+            raise AssertionError(f"Audit-only identity false positives should not create annotations: {annotations}")
+        if index["artifact_only_finding_ids"] != ["F1", "F2"]:
+            raise AssertionError(f"Expected artifact-only ids for hidden false positives: {index}")
+
+
+def test_compiler_keeps_compiled_pdf_identity_issue_visible() -> None:
+    module = load_module(SCRIPT, "compile_review_artifacts")
+    with tempfile.TemporaryDirectory() as tempdir:
+        issues = Path(tempdir) / "issue_artifacts"
+        issues.mkdir()
+        payload = specialist_artifact("source_hygiene")
+        payload["issues"][0].update(  # type: ignore[index]
+            {
+                "local_id": "S1",
+                "severity": "Major",
+                "issue_type": "anonymity",
+                "title": "Compiled submission still exposes identity/anonymity signals",
+                "diagnosis": "compiled front matter: Jane Doe",
+                "render_visibility": "student_visible",
+                "visibility_basis": "compiled_pdf",
+            }
+        )
+        write_json(issues / "source_hygiene_issues.json", payload)
+
+        findings, annotations, index = module.compile_artifacts(issues_dir=issues)
+
+        if findings["findings"][0]["render_visibility"] != "student_visible":
+            raise AssertionError(f"Compiled PDF identity issue should stay visible: {findings}")
+        if len(annotations["annotations"]) != 1:
+            raise AssertionError(f"Compiled PDF identity issue should create annotation: {annotations}")
+        if index["artifact_only_finding_ids"]:
+            raise AssertionError(f"No artifact-only ids expected for compiled PDF identity issue: {index}")
+
+
 if __name__ == "__main__":
     test_compile_jsonl_and_specialist_artifacts()
     test_compiler_deduplicates_matching_evidence_refs()
+    test_compiler_allows_explicit_student_visible_specialist_issue()
+    test_compiler_hides_source_only_anonymous_front_matter_false_positive()
+    test_compiler_keeps_compiled_pdf_identity_issue_visible()
     print("compile_review_artifacts regression tests passed")

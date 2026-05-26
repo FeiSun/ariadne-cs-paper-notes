@@ -130,6 +130,64 @@ def test_source_hygiene_audit_reduces_to_issue_artifact() -> None:
     assert_issue_artifact_audits(payload, "source_hygiene_issues.json")
 
 
+def test_source_hygiene_marks_compiled_pdf_visibility_basis() -> None:
+    module = load_module(SCRIPT, "build_specialist_issues")
+    with tempfile.TemporaryDirectory() as tempdir:
+        raw = Path(tempdir) / "source_hygiene_audit.json"
+        write_json(
+            raw,
+            {
+                "coverage": {"compiled_visibility_checked": 1, "compiled_front_matter_identity_items": 1},
+                "observations": [
+                    {
+                        "observation_id": "source-001",
+                        "issue_type": "anonymity",
+                        "severity": "high",
+                        "title": "Compiled submission still exposes identity/anonymity signals",
+                        "evidence": "compiled front matter: Jane Doe",
+                        "recommendation": "Remove identity from compiled PDF.",
+                        "confidence": 0.92,
+                        "visibility_basis": "compiled_pdf",
+                    }
+                ],
+            },
+        )
+        payload = module.build_source_hygiene(raw)
+    issue = payload["issues"][0]
+    if issue.get("visibility_basis") != "compiled_pdf":
+        raise AssertionError(f"Expected compiled PDF visibility basis, got {issue}")
+    assert_issue_artifact_audits(payload, "source_hygiene_issues.json")
+
+
+def test_source_hygiene_does_not_mark_nonvisible_source_issue_as_compiled_pdf() -> None:
+    module = load_module(SCRIPT, "build_specialist_issues")
+    with tempfile.TemporaryDirectory() as tempdir:
+        raw = Path(tempdir) / "source_hygiene_audit.json"
+        write_json(
+            raw,
+            {
+                "coverage": {"compiled_visibility_checked": 1, "compiled_front_matter_identity_items": 0},
+                "observations": [
+                    {
+                        "observation_id": "source-001",
+                        "issue_type": "anonymity",
+                        "severity": "high",
+                        "title": "Review-mode source still contains non-front-matter identity signals",
+                        "evidence": "github: https://github.com/example/project",
+                        "recommendation": "Check repository anonymity.",
+                        "confidence": 0.82,
+                        "visibility_basis": "source_only",
+                    }
+                ],
+            },
+        )
+        payload = module.build_source_hygiene(raw)
+    issue = payload["issues"][0]
+    if issue.get("visibility_basis") != "source_only":
+        raise AssertionError(f"Non-visible source issue should stay source-only, got {issue}")
+    assert_issue_artifact_audits(payload, "source_hygiene_issues.json")
+
+
 def test_polish_audit_reduces_to_issue_artifact() -> None:
     module = load_module(SCRIPT, "build_specialist_issues")
     with tempfile.TemporaryDirectory() as tempdir:
@@ -211,12 +269,44 @@ def test_figure_caption_audit_reduces_to_issue_artifact() -> None:
     assert_issue_artifact_audits(payload, "figure_caption_issues.json")
 
 
+def test_figure_caption_target_label_becomes_render_anchor() -> None:
+    module = load_module(SCRIPT, "build_specialist_issues")
+    with tempfile.TemporaryDirectory() as tempdir:
+        raw = Path(tempdir) / "figure_caption_audit.json"
+        write_json(
+            raw,
+            {
+                "coverage": {"floats": 1, "captions": 1, "signals_checked": 1},
+                "observations": [
+                    {
+                        "observation_id": "figure-caption-001",
+                        "issue_type": "rendered_caption_label_only",
+                        "severity": "low",
+                        "title": "Rendered caption line is thin",
+                        "evidence": "page 16: `Table 5: Statistics of dataset.`",
+                        "recommendation": "Confirm the full caption is visible.",
+                        "confidence": 0.64,
+                        "details": {"target_label": "tab:data_split", "target_kind": "table"},
+                    }
+                ],
+            },
+        )
+        payload = module.build_figure_caption(raw)
+    issue = payload["issues"][0]
+    hint = issue.get("render_hint", {})
+    if hint.get("anchor") != "tab:data_split" or hint.get("target_level") != "section":
+        raise AssertionError(f"Figure-caption target label should become direct render anchor: {issue}")
+
+
 if __name__ == "__main__":
     test_reference_audit_reduces_to_issue_artifact()
     test_numeric_audit_without_signals_is_skipped()
     test_layout_needs_main_review_becomes_issue()
     test_source_hygiene_audit_reduces_to_issue_artifact()
+    test_source_hygiene_marks_compiled_pdf_visibility_basis()
+    test_source_hygiene_does_not_mark_nonvisible_source_issue_as_compiled_pdf()
     test_polish_audit_reduces_to_issue_artifact()
     test_symbol_audit_reduces_to_issue_artifact()
     test_figure_caption_audit_reduces_to_issue_artifact()
+    test_figure_caption_target_label_becomes_render_anchor()
     print("build_specialist_issues regression tests passed")

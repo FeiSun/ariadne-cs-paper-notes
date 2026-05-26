@@ -46,19 +46,37 @@ def test_phase_a_resume_status_marks_completed_partial_and_pending_sections() ->
             review_units,
             [
                 {"kind": "section", "section_id": "intro", "text": "Introduction"},
-                {"kind": "paragraph", "section_id": "intro", "section_title": "Introduction", "sentences": [{"sentence_id": "s1"}]},
+                {
+                    "kind": "paragraph",
+                    "paragraph_id": "p-intro",
+                    "section_id": "intro",
+                    "section_title": "Introduction",
+                    "sentences": [{"sentence_id": "s1"}],
+                },
                 {"kind": "section", "section_id": "method", "text": "Method"},
-                {"kind": "paragraph", "section_id": "method", "section_title": "Method", "sentences": [{"sentence_id": "s2"}]},
+                {
+                    "kind": "paragraph",
+                    "paragraph_id": "p-method",
+                    "section_id": "method",
+                    "section_title": "Method",
+                    "sentences": [{"sentence_id": "s2"}],
+                },
                 {"kind": "section", "section_id": "results", "text": "Results"},
-                {"kind": "paragraph", "section_id": "results", "section_title": "Results", "sentences": [{"sentence_id": "s3"}]},
+                {
+                    "kind": "paragraph",
+                    "paragraph_id": "p-results",
+                    "section_id": "results",
+                    "section_title": "Results",
+                    "sentences": [{"sentence_id": "s3"}],
+                },
             ],
         )
         write_jsonl(prose, [{"local_id": "P1", "section_id": "intro", "title": "Issue"}])
         write_jsonl(
             paragraphs,
             [
-                {"paragraph_id": "p1", "section_id": "intro", "decision": "revise"},
-                {"paragraph_id": "p2", "section_id": "method", "decision": "revise"},
+                {"paragraph_id": "p-intro", "section_id": "intro", "decision": "revise", "all_sentences_reviewed": True},
+                {"paragraph_id": "p-method", "section_id": "method", "decision": "revise"},
             ],
         )
         write_json(reflections, {"sections": [{"section_id": "intro", "one_line": "done"}]})
@@ -106,7 +124,7 @@ def test_phase_a_resume_status_marks_completed_partial_and_pending_sections() ->
         raise AssertionError(f"Next-step packet missing append targets: {next_step}")
 
 
-def test_phase_a_resume_status_separates_front_matter_bucket() -> None:
+def test_phase_a_resume_status_includes_front_matter_in_full_coverage() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tempdir:
         root = Path(tempdir)
@@ -114,23 +132,98 @@ def test_phase_a_resume_status_separates_front_matter_bucket() -> None:
         write_jsonl(
             review_units,
             [
-                {"kind": "paragraph", "section_id": "front-matter", "section_title": "Front Matter", "sentences": [{"sentence_id": "s0"}]},
+                {
+                    "kind": "paragraph",
+                    "paragraph_id": "p-front",
+                    "section_id": "front-matter",
+                    "section_title": "Front Matter",
+                    "sentences": [{"sentence_id": "s0"}],
+                },
                 {"kind": "section", "section_id": "intro", "text": "Introduction"},
-                {"kind": "paragraph", "section_id": "intro", "section_title": "Introduction", "sentences": [{"sentence_id": "s1"}]},
+                {
+                    "kind": "paragraph",
+                    "paragraph_id": "p-intro",
+                    "section_id": "intro",
+                    "section_title": "Introduction",
+                    "sentences": [{"sentence_id": "s1"}],
+                },
             ],
         )
         payload = module.build_status(review_units=review_units)
         next_step = module.build_next_step(payload)
 
-    if payload["coverage"]["sections_total"] != 1 or payload["coverage"]["front_matter_sections"] != 1:
-        raise AssertionError(f"Front matter should be counted separately, got {payload['coverage']}")
-    if [item["section_id"] for item in payload["pending_sections"]] != ["intro"]:
-        raise AssertionError(f"Front matter should not be normal pending work: {payload['pending_sections']}")
-    if next_step["next_section"]["section_id"] != "intro":
-        raise AssertionError(f"Next section should skip front matter bucket, got {next_step}")
+    if payload["coverage"]["sections_total"] != 2 or payload["coverage"]["front_matter_sections"] != 1:
+        raise AssertionError(f"Front matter should be counted in full coverage and flagged separately, got {payload['coverage']}")
+    if [item["section_id"] for item in payload["pending_sections"]] != ["front-matter", "intro"]:
+        raise AssertionError(f"Front matter should remain pending until reviewed: {payload['pending_sections']}")
+    if next_step["next_section"]["section_id"] != "front-matter":
+        raise AssertionError(f"Next section should include front matter first, got {next_step}")
+
+
+def test_phase_a_completion_requires_sentence_review_receipts_and_phase_a_roots() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        review_units = root / "review_units.jsonl"
+        prose = root / "prose_issues.jsonl"
+        paragraphs = root / "paragraph_decisions.jsonl"
+        reflections = root / "section_reflections.json"
+        cold = root / "cold_skim_frame.json"
+        claims = root / "claim_candidates.json"
+        write_jsonl(
+            review_units,
+            [
+                {"kind": "section", "section_id": "intro", "text": "Introduction"},
+                {
+                    "kind": "paragraph",
+                    "paragraph_id": "p-intro",
+                    "section_id": "intro",
+                    "section_title": "Introduction",
+                    "sentences": [{"sentence_id": "s1"}, {"sentence_id": "s2"}],
+                },
+            ],
+        )
+        write_jsonl(prose, [])
+        write_jsonl(paragraphs, [{"paragraph_id": "p-intro", "section_id": "intro", "decision": "keep"}])
+        write_json(reflections, {"sections": [{"section_id": "intro", "one_line": "done"}]})
+        payload = module.build_status(
+            review_units=review_units,
+            prose_issues=prose,
+            paragraph_decisions=paragraphs,
+            section_reflections=reflections,
+            cold_skim=cold,
+            claim_candidates=claims,
+        )
+        if payload["coverage"]["sections_completed"] != 0 or payload["coverage"]["phase_a_complete"]:
+            raise AssertionError(f"Sentence receipt should be required before completion: {payload['coverage']}")
+        write_jsonl(
+            paragraphs,
+            [
+                {
+                    "paragraph_id": "p-intro",
+                    "section_id": "intro",
+                    "decision": "keep",
+                    "reviewed_sentence_ids": ["s1", "s2"],
+                }
+            ],
+        )
+        write_json(cold, {"problem": "P", "gap": "G"})
+        write_json(claims, {"claim_candidates": []})
+        payload = module.build_status(
+            review_units=review_units,
+            prose_issues=prose,
+            paragraph_decisions=paragraphs,
+            section_reflections=reflections,
+            cold_skim=cold,
+            claim_candidates=claims,
+        )
+
+    if payload["coverage"]["sections_completed"] != 1 or not payload["coverage"]["phase_a_complete"]:
+        raise AssertionError(f"Expected full Phase A completion after receipts and roots, got {payload['coverage']}")
 
 
 if __name__ == "__main__":
     test_phase_a_resume_status_marks_completed_partial_and_pending_sections()
-    test_phase_a_resume_status_separates_front_matter_bucket()
+    test_phase_a_resume_status_includes_front_matter_in_full_coverage()
+    test_phase_a_completion_requires_sentence_review_receipts_and_phase_a_roots()
     print("phase_a_resume_status regression tests passed")

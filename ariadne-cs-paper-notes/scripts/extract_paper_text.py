@@ -799,10 +799,20 @@ def is_within_root(path: Path, root: Path) -> bool:
 
 def resolve_import_path(path: Path, match: re.Match[str], state: ExtractionState, root: Path | None = None) -> Path:
     if match.group(1):
-        return resolve_tex_path(path.parent, match.group(1), state, root)
+        target = match.group(1)
+        candidate = resolve_tex_path(path.parent, target, state, root)
+        if candidate.exists() or root is None:
+            return candidate
+        fallback = resolve_tex_path(root, target, state, root)
+        return fallback if fallback.exists() else candidate
     import_dir = match.group(2) or ""
     import_file = match.group(3) or ""
-    return resolve_tex_path(path.parent / import_dir, import_file, state, root)
+    candidate = resolve_tex_path(path.parent / import_dir, import_file, state, root)
+    if candidate.exists() or root is None:
+        return candidate
+    fallback_target = str(Path(import_dir) / import_file) if import_dir else import_file
+    fallback = resolve_tex_path(root, fallback_target, state, root)
+    return fallback if fallback.exists() else candidate
 
 
 def relative_depth(path: Path, root: Path) -> int:

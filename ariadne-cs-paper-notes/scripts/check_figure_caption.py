@@ -48,8 +48,16 @@ FIG_TABLE_REF_RE = re.compile(r"\\(?:ref|cref|Cref|autoref)\{([^{}]+)\}")
 GRAPHIC_EXTENSIONS = ("", ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".eps")
 RASTER_GRAPHIC_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
 PDF_GRAPHIC_EXTENSIONS = {".pdf"}
-RENDERED_CAPTION_START_RE = re.compile(r"^\s*(?:Figure|Fig\.?|Table)\s+[A-Za-z]?\d+(?:\.\d+)?\s*[:.]?", re.IGNORECASE)
-RENDERED_CAPTION_LABEL_RE = re.compile(r"^\s*(?:Figure|Fig\.?|Table)\s+[A-Za-z]?\d+(?:\.\d+)?\s*[:.]?\s*", re.IGNORECASE)
+MISSING_INPUT_RE = re.compile(r"Missing input file:")
+RENDERED_CAPTION_NUMBER = r"(?:[A-Za-z]\.)?\d+(?:\.\d+)?|[A-Za-z]\d+(?:\.\d+)?"
+RENDERED_CAPTION_START_RE = re.compile(
+    rf"^\s*(?:Figure|Fig\.?|Table)\s+(?:{RENDERED_CAPTION_NUMBER})\s*[:.]?",
+    re.IGNORECASE,
+)
+RENDERED_CAPTION_LABEL_RE = re.compile(
+    rf"^\s*(?:Figure|Fig\.?|Table)\s+(?:{RENDERED_CAPTION_NUMBER})\s*[:.]?\s*",
+    re.IGNORECASE,
+)
 
 
 def sha256_path(path: Path) -> str:
@@ -151,7 +159,13 @@ def ref_keys(raw: str) -> list[str]:
     return keys
 
 
-def audit_figure_captions(raw: str, root: Path, *, max_items: int = 80) -> tuple[list[dict[str, Any]], dict[str, int]]:
+def audit_figure_captions(
+    raw: str,
+    root: Path,
+    *,
+    max_items: int = 80,
+    source_complete: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     observations: list[dict[str, Any]] = []
     source = strip_latex_comments(raw)
     floats = list(FLOAT_ENV_RE.finditer(source))
@@ -160,13 +174,14 @@ def audit_figure_captions(raw: str, root: Path, *, max_items: int = 80) -> tuple
 
     missing_caption: list[str] = []
     missing_label: list[str] = []
-    short_caption: list[str] = []
+    short_caption: list[dict[str, Any]] = []
     placeholder_caption: list[str] = []
     missing_graphics: list[str] = []
 
     for idx, match in enumerate(floats, 1):
         env = match.group(1)
         body = match.group(2)
+        kind = "table" if env.startswith("table") or env.startswith("wraptable") else "figure"
         captions = [one_line(item.group(1)) for item in CAPTION_RE.finditer(body)]
         labels = LABEL_RE.findall(body)
         graphics = [one_line(item.group(1)) for item in INCLUDEGRAPHICS_RE.finditer(body)]
@@ -178,7 +193,14 @@ def audit_figure_captions(raw: str, root: Path, *, max_items: int = 80) -> tuple
                 if not caption_words(caption):
                     missing_caption.append(f"{env} {idx} ({label_text}) has an empty caption")
                 elif caption_words(caption) < 8:
-                    short_caption.append(f"{env} {idx} ({label_text}): {caption}")
+                    short_caption.append(
+                        {
+                            "evidence": f"{env} {idx} ({label_text}): {caption}",
+                            "target_label": label_text if labels else "",
+                            "target_kind": kind,
+                            "target_caption": caption,
+                        }
+                    )
                 if TODO_RE.search(caption) or PLACEHOLDER_RE.search(caption):
                     placeholder_caption.append(f"{env} {idx} ({label_text}): {caption}")
         if not labels:
@@ -201,16 +223,21 @@ def audit_figure_captions(raw: str, root: Path, *, max_items: int = 80) -> tuple
             confidence=0.9,
             details={"items": missing_caption[:max_items]},
         )
-    if short_caption:
+    for item in short_caption[:max_items]:
         add_observation(
             observations,
             issue_type="thin_caption",
             severity="low",
             title="Captions look too short to carry a takeaway",
-            evidence="; ".join(short_caption[:max_items]),
+            evidence=str(item.get("evidence") or ""),
             recommendation="Expand thin captions so they identify the setup, metric, and intended takeaway when needed.",
             confidence=0.72,
-            details={"items": short_caption[:max_items]},
+            details={
+                "items": [item],
+                "target_label": item.get("target_label") or "",
+                "target_kind": item.get("target_kind") or "",
+                "target_caption": item.get("target_caption") or "",
+            },
         )
     if placeholder_caption:
         add_observation(
@@ -234,7 +261,7 @@ def audit_figure_captions(raw: str, root: Path, *, max_items: int = 80) -> tuple
             confidence=0.76,
             details={"items": missing_label[:max_items]},
         )
-    if unresolved_refs:
+    if unresolved_refs and source_complete:
         add_observation(
             observations,
             issue_type="unresolved_float_reference",
@@ -270,6 +297,8 @@ def audit_figure_captions(raw: str, root: Path, *, max_items: int = 80) -> tuple
         + len(unresolved_refs)
         + len(missing_graphics),
     }
+    if not source_complete:
+        coverage["unresolved_reference_checks_skipped"] = 1
     return observations, coverage
 
 
@@ -502,17 +531,134 @@ def rendered_caption_tail(text: str) -> str:
     return RENDERED_CAPTION_LABEL_RE.sub("", text, count=1).strip()
 
 
+def normalized_caption_key(text: str) -> str:
+    text = rendered_caption_tail(one_line(text))
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def source_caption_targets(raw: str) -> list[dict[str, Any]]:
+    source = strip_latex_comments(raw)
+    targets: list[dict[str, Any]] = []
+    for idx, match in enumerate(FLOAT_ENV_RE.finditer(source), 1):
+        env = match.group(1)
+        body = match.group(2)
+        kind = "table" if env.startswith("table") or env.startswith("wraptable") else "figure"
+        labels = LABEL_RE.findall(body)
+        preferred_prefixes = ("tab:", "table:") if kind == "table" else ("fig:", "figure:")
+        label = next((item for item in labels if item.lower().startswith(preferred_prefixes)), labels[0] if labels else "")
+        for caption_match in CAPTION_RE.finditer(body):
+            caption = one_line(caption_match.group(1))
+            key = normalized_caption_key(caption)
+            if not key:
+                continue
+            targets.append(
+                {
+                    "kind": kind,
+                    "env": env,
+                    "source_index": idx,
+                    "label": label,
+                    "caption": caption,
+                    "caption_key": key,
+                }
+            )
+    if "wraptable" in source:
+        for idx, start in enumerate(re.finditer(r"\\begin\{wraptable\}", source), 1):
+            stop = source.find(r"\end{wraptable}", start.end())
+            if stop < 0:
+                continue
+            body = source[start.end() : stop]
+            labels = LABEL_RE.findall(body)
+            label = next((item for item in labels if item.lower().startswith(("tab:", "table:"))), labels[0] if labels else "")
+            for caption_match in CAPTION_RE.finditer(body):
+                caption = one_line(caption_match.group(1))
+                key = normalized_caption_key(caption)
+                if not key or any(target.get("label") == label and target.get("caption_key") == key for target in targets):
+                    continue
+                targets.append(
+                    {
+                        "kind": "table",
+                        "env": "wraptable",
+                        "source_index": idx,
+                        "label": label,
+                        "caption": caption,
+                        "caption_key": key,
+                    }
+                )
+    return targets
+
+
+def match_rendered_caption_target(text: str, caption_targets: list[dict[str, Any]]) -> dict[str, Any] | None:
+    key = normalized_caption_key(rendered_caption_tail(text))
+    if not key:
+        return None
+    for target in caption_targets:
+        target_key = str(target.get("caption_key") or "")
+        if key == target_key:
+            return target
+    for target in caption_targets:
+        target_key = str(target.get("caption_key") or "")
+        if len(key) >= 18 and (key in target_key or target_key in key):
+            return target
+    return None
+
+
+def rendered_caption_item(
+    *,
+    page_number: int,
+    text: str,
+    caption_targets: list[dict[str, Any]],
+    bbox: tuple[float, float, float, float] | None = None,
+) -> dict[str, Any]:
+    evidence = f"page {page_number}: `{compact_text(text, max_chars=160)}`"
+    if bbox is not None:
+        evidence += f" bbox=({bbox[0]:.1f},{bbox[1]:.1f},{bbox[2]:.1f},{bbox[3]:.1f})"
+    item: dict[str, Any] = {"page": page_number, "text": compact_text(text, max_chars=160), "evidence": evidence}
+    target = match_rendered_caption_target(text, caption_targets)
+    if target:
+        item["target_label"] = target.get("label", "")
+        item["target_kind"] = target.get("kind", "")
+        item["target_caption"] = target.get("caption", "")
+    return item
+
+
+def rendered_caption_details(items: list[dict[str, Any]]) -> dict[str, Any]:
+    details: dict[str, Any] = {"items": items}
+    labels: list[str] = []
+    kinds: list[str] = []
+    captions: list[str] = []
+    for item in items:
+        label = str(item.get("target_label") or "")
+        if label and label not in labels:
+            labels.append(label)
+        kind = str(item.get("target_kind") or "")
+        if kind and kind not in kinds:
+            kinds.append(kind)
+        caption = str(item.get("target_caption") or "")
+        if caption and caption not in captions:
+            captions.append(caption)
+    if labels:
+        details["target_label"] = labels[0]
+        details["target_labels"] = labels
+    if kinds:
+        details["target_kind"] = kinds[0]
+    if captions:
+        details["target_caption"] = captions[0]
+    return details
+
+
 def analyze_rendered_caption_pages(
     parsed_pages: list[tuple[int, dict[str, Any]]],
     *,
     source_caption_count: int,
     pages_all: bool,
+    caption_targets: list[dict[str, Any]] | None = None,
     max_items: int = 80,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     observations: list[dict[str, Any]] = []
     rendered_captions: list[dict[str, Any]] = []
-    edge_items: list[str] = []
-    label_only_items: list[str] = []
+    edge_items: list[dict[str, Any]] = []
+    label_only_items: list[dict[str, Any]] = []
+    caption_targets = caption_targets or []
 
     for page_number, page in parsed_pages:
         width = float(page.get("width") or 0)
@@ -531,10 +677,17 @@ def analyze_rendered_caption_pages(
             rendered_captions.append({"page": page_number, "text": text, "bbox": [x_min, y_min, x_max, y_max]})
             if x_min < edge_margin or x_max > width - edge_margin or y_max > height - bottom_margin:
                 edge_items.append(
-                    f"page {page_number}: `{compact_text(text, max_chars=160)}` bbox=({x_min:.1f},{y_min:.1f},{x_max:.1f},{y_max:.1f})"
+                    rendered_caption_item(
+                        page_number=page_number,
+                        text=text,
+                        caption_targets=caption_targets,
+                        bbox=(x_min, y_min, x_max, y_max),
+                    )
                 )
             if caption_words(rendered_caption_tail(text)) < 4:
-                label_only_items.append(f"page {page_number}: `{compact_text(text, max_chars=160)}`")
+                label_only_items.append(
+                    rendered_caption_item(page_number=page_number, text=text, caption_targets=caption_targets)
+                )
 
     rendered_caption_count = len(rendered_captions)
     if source_caption_count and pages_all and rendered_caption_count == 0:
@@ -565,10 +718,10 @@ def analyze_rendered_caption_pages(
             issue_type="rendered_caption_edge_risk",
             severity="medium",
             title="Rendered caption text sits close to the page edge",
-            evidence="; ".join(edge_items[:max_items]),
+            evidence="; ".join(str(item.get("evidence") or "") for item in edge_items[:max_items]),
             recommendation="Inspect these pages for clipped captions, overfull lines, or captions pushed into margins.",
             confidence=0.82,
-            details={"items": edge_items[:max_items]},
+            details=rendered_caption_details(edge_items[:max_items]),
         )
     if label_only_items:
         add_observation(
@@ -576,16 +729,19 @@ def analyze_rendered_caption_pages(
             issue_type="rendered_caption_label_only",
             severity="low",
             title="Rendered caption lines appear to contain only a label or very little takeaway text",
-            evidence="; ".join(label_only_items[:max_items]),
+            evidence="; ".join(str(item.get("evidence") or "") for item in label_only_items[:max_items]),
             recommendation="Confirm that the full caption text is visible and not separated, clipped, or too thin to guide the reader.",
             confidence=0.64,
-            details={"items": label_only_items[:max_items]},
+            details=rendered_caption_details(label_only_items[:max_items]),
         )
 
     coverage = {
         "rendered_pages_checked": len(parsed_pages),
         "rendered_captions_detected": rendered_caption_count,
         "rendered_caption_signals_checked": len(edge_items) + len(label_only_items),
+        "rendered_caption_targets_resolved": sum(
+            1 for item in [*edge_items, *label_only_items] if item.get("target_label")
+        ),
     }
     return observations, coverage
 
@@ -595,7 +751,8 @@ def audit_rendered_pdf(
     *,
     pages_value: str,
     source_caption_count: int,
-    pdftotext: str | None,
+    caption_targets: list[dict[str, Any]] | None = None,
+    pdftotext: str | None = None,
     max_items: int = 80,
 ) -> tuple[list[dict[str, Any]], dict[str, int], list[str]]:
     warnings: list[str] = []
@@ -619,6 +776,7 @@ def audit_rendered_pdf(
         parsed_pages,
         source_caption_count=source_caption_count,
         pages_all=len(pages) == total_pages,
+        caption_targets=caption_targets,
         max_items=max_items,
     )
     coverage["rendered_pages_total"] = total_pages
@@ -638,7 +796,12 @@ def build_payload(
     max_items: int = 80,
 ) -> dict[str, Any]:
     raw, root, tex_roots, warnings = load_source(source)
-    observations, coverage = audit_figure_captions(raw, root, max_items=max_items)
+    source_complete = not any(MISSING_INPUT_RE.search(warning) for warning in warnings)
+    observations, coverage = audit_figure_captions(raw, root, max_items=max_items, source_complete=source_complete)
+    if not source_complete:
+        warnings.append(
+            "Skipped unresolved figure/table reference findings because one or more LaTeX inputs could not be expanded."
+        )
     asset_observations, asset_coverage, asset_warnings = audit_figure_asset_quality(
         raw,
         root,
@@ -650,10 +813,12 @@ def build_payload(
     warnings.extend(asset_warnings)
     rendered_coverage: dict[str, int] = {}
     if pdf is not None:
+        caption_targets = source_caption_targets(raw)
         rendered_observations, rendered_coverage, rendered_warnings = audit_rendered_pdf(
             pdf,
             pages_value=pages,
             source_caption_count=int(coverage.get("captions", 0)),
+            caption_targets=caption_targets,
             pdftotext=pdftotext,
             max_items=max_items,
         )

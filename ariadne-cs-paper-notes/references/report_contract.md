@@ -36,7 +36,7 @@ For source-derived overlay reports, prefer anchor-only annotations:
 
 `findings.json` stores the full review prose once. `annotations.json` stores only anchor, short UI label, and current source artifact/hash. Render with `scripts/render_paper_html.py --annotations annotations.json --findings findings.json`; the renderer joins the teaching content at HTML generation time.
 
-For source-derived paper-reader annotation pages, render from the exact canonical source artifact used for review-unit extraction. Leave `--full-report` off for overlay plus coverage; add `--full-report` only when the user wants the extra `#global-findings` section. `--issues-dir` may contribute display-facing specialist overlays such as layout, numeric, and figure/caption, but hidden source hygiene, hidden reference metadata, and macro-only symbol findings should remain in JSON/audit artifacts unless they visibly affect the rendered paper:
+For source-derived paper-reader annotation pages, render from the exact canonical source artifact used for review-unit extraction. Leave `--full-report` off for overlay plus coverage; add `--full-report` only when the user wants the extra `#global-findings` section. `--issues-dir` may contribute display-facing specialist overlays such as layout, numeric, and figure/caption, but hidden source hygiene, hidden reference metadata, and macro-only symbol findings should remain in structured artifacts as `render_visibility: artifact_only` unless they visibly affect the rendered paper:
 
 ```bash
 scripts/render_paper_html.py <main.tex> \
@@ -231,6 +231,8 @@ Allowed `domain` values include `prose`, `whole_paper`, `layout`, `numeric`, `re
 
 Every non-empty issue must include `local_id`, `severity`, `issue_type`, `title`, `diagnosis`, `evidence_refs`, `confidence`, and `render_hint.display_group`. `Blocker` and `Major` issues should also include `reader_friction`, `writing_principle`, `self_check`, `severity_rationale`, and `downgrade_condition` unless a deterministic compiler will add them from a linked finding.
 
+Issue artifacts may set `render_visibility: "student_visible"` or `render_visibility: "artifact_only"` per issue. When omitted, prose, whole-paper, layout, numeric, and figure/caption issues are student-visible by default; reference, source-hygiene, symbol, and polish issues are artifact-only by default unless explicitly promoted because they visibly affect the rendered paper. Artifact-only findings remain in `findings.json` and `compiled_issue_index.json`, but the compiler must not create overlay annotations for them and the derivative manifest should list their final ids in `deferred_findings`.
+
 The deterministic compiler maps local ids to stable `F<number>` ids, deduplicates related issues, preserves `source_issue_ids`, and joins issue artifacts into `findings.json`, `annotations.json`, `claims.json`, and coverage. Review agents and specialists should not assign final `F<number>` ids unless the compiler is unavailable.
 
 `scripts/compile_review_artifacts.py` is the canonical compiler for issue artifacts. It reads `issue_artifacts/`, writes final `findings.json` and anchor-only `annotations.json`, and writes `issue_artifacts/compiled_issue_index.json`. The compiled index records source artifact hashes, normalized JSONL shards, `source_issue_id -> finding_id` mapping, and dedup groups so audits can verify that JSONL shards were handled by deterministic code instead of being re-read by the orchestrator.
@@ -412,7 +414,7 @@ Every layout finding or Pass 5 layout observation must trace to a real `layout_a
 
 The artifact bundle must contain data artifacts only. Do not include generated Python helper scripts, duplicate paper-preview HTML, or plaintext paper dumps.
 
-HTML is a deterministic rendering of JSON artifacts. LLM agents must not hand-write HTML, recreate the paper body, or manually assemble workbench sections when a renderer/compiler is available. If JSON and HTML are both produced, JSON is authoritative and HTML is a rendering. Every finding id in JSON must appear in HTML unless `render_manifest.json` marks it deferred. Every HTML severity badge must correspond to a finding or grouped row in JSON.
+HTML is a deterministic rendering of JSON artifacts. LLM agents must not hand-write HTML, recreate the paper body, or manually assemble legacy report sections when a renderer/compiler is available. If JSON and HTML are both produced, JSON is authoritative and HTML is a rendering. Every student-visible finding id in JSON must appear in HTML unless `render_manifest.json` marks it deferred; artifact-only findings should be deferred by design. Every HTML severity badge must correspond to a finding or grouped row in JSON.
 
 Pass observation shape:
 

@@ -43,6 +43,24 @@ def heading_level(tag: Tag) -> int:
         return 1
 
 
+def class_names(tag: Tag) -> list[str]:
+    classes = tag.get("class", [])
+    if isinstance(classes, str):
+        return classes.split()
+    return [str(item) for item in classes]
+
+
+def skip_review_node(tag: Tag) -> bool:
+    current: Tag | None = tag
+    while current is not None:
+        if current.get("data-review-skip"):
+            return True
+        if "paper-title" in class_names(current) or "paper-author" in class_names(current):
+            return True
+        current = current.parent if isinstance(current.parent, Tag) else None
+    return False
+
+
 def keep_sentence(section_id: str, text: str, *, include_checklist_boilerplate: bool) -> bool:
     if include_checklist_boilerplate or section_id != "neurips-paper-checklist":
         return True
@@ -63,6 +81,8 @@ def extract_units(source_html: Path, *, include_checklist_boilerplate: bool = Fa
         if not isinstance(node, Tag):
             continue
         if node.name in {"script", "style"}:
+            continue
+        if skip_review_node(node):
             continue
         if node.name in {"h1", "h2", "h3", "h4", "h5", "h6"} and node.get("id"):
             current_section_id = str(node.get("id") or "")

@@ -252,6 +252,8 @@ def status_counts(status_payload: dict[str, Any]) -> dict[str, int]:
         "sections_completed": int(coverage.get("sections_completed", 0) or 0),
         "sections_pending": int(coverage.get("sections_pending", 0) or 0),
         "sections_partial": int(coverage.get("sections_partial", 0) or 0),
+        "sentences_reviewed": int(coverage.get("sentences_reviewed", 0) or 0),
+        "paragraphs_reviewed": int(coverage.get("paragraphs_reviewed", 0) or 0),
     }
 
 
@@ -323,7 +325,7 @@ def call_agent(
 
 def phase_a_complete(status_payload: dict[str, Any]) -> bool:
     coverage = status_payload.get("coverage") if isinstance(status_payload, dict) else {}
-    return isinstance(coverage, dict) and int(coverage.get("sections_pending", 0) or 0) == 0
+    return isinstance(coverage, dict) and bool(coverage.get("phase_a_complete"))
 
 
 def run_phase_a(args: argparse.Namespace, calls: list[AgentCall]) -> bool:

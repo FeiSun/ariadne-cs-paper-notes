@@ -44,7 +44,7 @@ Do not routinely load the original teaching notes. This skill uses reviewer-faci
    - Optional semantic figure/caption vision review can run with `scripts/run_vision_figure_agent.py` or pipeline `--vision-figure-agent-cmd`. Page images are tool-only inputs for that specialist; the orchestrator should read only the compact runner summary and curated `figure_caption` issue artifact.
 7. After Prose Phase A/B and specialists finish, run `scripts/compile_review_artifacts.py --issues-dir <bundle>/issue_artifacts ...` to normalize JSONL shards and curated issue artifacts into final `findings.json`, `annotations.json`, and `compiled_issue_index.json`. Render from those compiled artifacts; do not ask an LLM to merge issue shards or hand-assign final `F<number>` ids.
 8. Derive mechanical companion artifacts with `scripts/build_review_derivatives.py` after compilation. It writes `coverage.json`, `render_manifest.json`, and `pass_observations.json` from compiled JSON and issue artifacts; do not ask an LLM to count or hand-write those files unless the run has an unusual split-part shape the script cannot express. The derivative render mode must match the intended HTML shape: `paper-reader-only` for overlay plus coverage, or `paper-reader-with-global-findings` when `--full-report` should append only independent Major/Blocker whole-paper findings.
-9. Render with `scripts/render_paper_html.py` from compiled artifacts. For source-derived paper-reader annotation requests, use the existing canonical source HTML with `--reuse-raw-html` plus `--findings`, `--annotations`, `--coverage`, and `--issues-dir` as available. `--issues-dir` is only for display-facing specialist overlays such as layout, numeric, and figure/caption; source hygiene, hidden reference metadata, and macro-only symbol findings remain in JSON/audit artifacts unless they visibly affect the paper. `--full-report` means "overlay plus global important findings", not the old workbench tables. The renderer must preserve the source-derived paper body and deterministically emit the requested report shape; never ask an LLM to write HTML.
+9. Render with `scripts/render_paper_html.py` from compiled artifacts. For source-derived paper-reader annotation requests, use the existing canonical source HTML with `--reuse-raw-html` plus `--findings`, `--annotations`, `--coverage`, and `--issues-dir` as available. `--issues-dir` is only for display-facing specialist overlays such as layout, numeric, and figure/caption; source hygiene, hidden reference metadata, and macro-only symbol findings remain in JSON/audit artifacts as artifact-only findings unless they visibly affect the paper. `--full-report` means "overlay plus global important findings", not the old workbench tables. The renderer must preserve the source-derived paper body and deterministically emit the requested report shape; never ask an LLM to write HTML.
 10. Treat script outputs as evidence signals. Never read `<stem>.html`, `<stem>.source.html`, rendered HTML reports, full layout audits, reference parses, full PDF text dumps, or page images back into orchestration context for verification. Use issue-only artifacts, deterministic compiler/derivative summaries, and compact audit stdout instead. Page images are allowed only for escalated layout/vision signals inside the relevant specialist.
 11. Run the Reader-Journey workflow from `references/workflow.md`: Pass 0 engagement contract, Prose Phase A for Pass 1-3, Prose Phase B for Pass 4 and cross-domain integration, specialist issue artifacts for Pass 5, and audit-driven Pass 6.
 12. Paper-reader HTML批注 requests use the paper-first overlay as the primary output. The default companion is only a compact coverage receipt; `--full-report` adds `#global-findings` for true whole-paper macro critiques such as novelty, story logic, evidence design, judge independence, or experiment validity. Do not append the old workbench sections (`总评诊断`, `问题索引`, `主张证据`, `精读批注`, `提交就绪`, `共性问题`, `修改路线`) to paper-reader reports.
@@ -59,7 +59,7 @@ Review the requested visible scope at full depth; narrow scope is allowed, lower
 
 Do not create duplicate paper-text artifacts. The only paper-reader HTML files are `<stem>.source.html` and `<stem>.html`; do not emit `*.source_preview.html`, `*_preview.html`, or other paper-text variants. Do not write `main_pdftotext.txt`, `paper.txt`, or other plaintext paper dumps next to the paper; let extraction scripts use their default temp output. Do not place generated helper scripts such as `build_overlay_artifacts.py` inside an artifact bundle.
 
-For every `Blocker` and `Major`, make the finding inspectable in JSON/workbench artifacts: location, evidence basis, confidence, verification method, severity rationale, downgrade condition, reader friction, one atomic writing principle, and a self-check question. In paper-reader overlay margin cards, do not render `位置`, `原句/片段`, or `证据/验证` as visible labels; the active source sentence/paragraph/heading already provides location and original text. Show `核查依据` only for concrete manuscript-level evidence such as numeric recomputation, PDF layout observation, citation/reference checks, source hygiene, or submission checklist risk; never show renderer provenance like `data-sentence-id`, `data-paragraph-id`, or `source-derived paper-reader`. Avoid command-style next-draft tasks unless the user explicitly asks for a revision plan or direct edits.
+For every `Blocker` and `Major`, make the finding inspectable in structured artifacts: location, evidence basis, confidence, verification method, severity rationale, downgrade condition, reader friction, one atomic writing principle, and a self-check question. In paper-reader overlay margin cards, do not render `位置`, `原句/片段`, or `证据/验证` as visible labels; the active source sentence/paragraph/heading already provides location and original text. Show `核查依据` only for concrete manuscript-level evidence such as numeric recomputation, PDF layout observation, visible citation/reference checks, or visible submission-readiness risk; keep hidden source hygiene, hidden reference metadata, and macro-only findings as `render_visibility: artifact_only` unless they visibly affect the rendered paper. Never show renderer provenance like `data-sentence-id`, `data-paragraph-id`, or `source-derived paper-reader`. Avoid command-style next-draft tasks unless the user explicitly asks for a revision plan or direct edits.
 
 For numeric/table signals, be strict and concrete. Visible table-value discrepancies remain `Blocker` in the student-facing report until the manuscript explains the aggregation/denominator. Always cite reported value, visible recomputed value, delta, and aggregation caveat when available.
 
@@ -71,17 +71,16 @@ For saved HTML reports, end with:
 
 ```text
 Saved artifacts:
-  HTML report:      /absolute/path/ariadne_notes_<stem>_<YYYYMMDD>.html
-  Artifact bundle:  /absolute/path/ariadne_notes_<stem>_<YYYYMMDD>/
+  HTML report:      /absolute/path/<stem>.html
+  Source HTML:      /absolute/path/<stem>.source.html
+  Artifact bundle:  /absolute/path/<bundle>/
     findings.json          (N findings; B Blocker, M Major)
+    annotations.json       (N overlay anchors)
     claims.json            (N claims; K overclaims/unsupported)
     issue_artifacts/        (D specialist domains; I curated issues)
-    numeric_audit.json     (N Python table/number signals)
-    layout_audit.json      (P pages checked; E escalated)
-    coverage.json          (Pass 0-6: done/pending)
+    coverage.json          (Pass 0-6: done/pending/skipped)
     render_manifest.json
-    pass_observations.json (N observations across 6 passes)
-  PDF linkage level: Level 0|1|2|3
+    pass_observations.json (compact derived pass observations)
 ```
 
 ## Platform Notes

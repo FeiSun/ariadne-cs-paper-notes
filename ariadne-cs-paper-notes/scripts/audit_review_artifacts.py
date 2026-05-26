@@ -70,6 +70,7 @@ ANCHOR_ONLY_ANNOTATION_FIELDS = {
     "title",
     "source_artifact",
     "source_hash",
+    "render_visibility",
 }
 FINDING_SELF_CHECK_FIELDS = {"self_check", "next_draft_question", "next_draft_task"}
 
@@ -397,6 +398,23 @@ def audit_findings(payload: Any, layout_audit_payload: Any | None = None) -> tup
             )
 
     return errors, warnings, ids
+
+
+def artifact_only_finding_ids(payload: Any) -> set[str]:
+    if not isinstance(payload, dict):
+        return set()
+    findings = payload.get("findings")
+    if not isinstance(findings, list):
+        return set()
+    ids: set[str] = set()
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        finding_id = compact_text(finding.get("id"))
+        visibility = compact_text(finding.get("render_visibility")).lower()
+        if finding_id and visibility == "artifact_only":
+            ids.add(finding_id)
+    return ids
 
 
 def audit_annotations(
@@ -1306,9 +1324,11 @@ def audit_artifacts(
         if isinstance(pages_checked, int) and pages_checked > 0:
             errors.append("coverage.layout declares checked pages but no layout_audit.json was provided")
 
-    finding_errors, finding_warnings, finding_ids = audit_findings(load_json(findings_path), layout_audit_payload)
+    findings_payload = load_json(findings_path)
+    finding_errors, finding_warnings, finding_ids = audit_findings(findings_payload, layout_audit_payload)
     errors.extend(finding_errors)
     warnings.extend(finding_warnings)
+    deferred.update(artifact_only_finding_ids(findings_payload))
 
     if claims_path:
         claim_errors, claim_warnings = audit_claims(load_json(claims_path), finding_ids)
@@ -1320,7 +1340,8 @@ def audit_artifacts(
         warnings.extend(numeric_warnings)
     if manifest_path:
         manifest_payload = load_json(manifest_path)
-        manifest_errors, manifest_warnings, deferred, rendered_section_ids = audit_manifest(manifest_payload, finding_ids)
+        manifest_errors, manifest_warnings, manifest_deferred, rendered_section_ids = audit_manifest(manifest_payload, finding_ids)
+        deferred.update(manifest_deferred)
         errors.extend(manifest_errors)
         warnings.extend(manifest_warnings)
     if annotations_path:

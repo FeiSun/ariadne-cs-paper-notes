@@ -129,6 +129,17 @@ def test_json_finding_must_render_or_be_deferred() -> None:
         raise AssertionError(f"Expected render/deferred error, got {errors}")
 
 
+def test_artifact_only_json_finding_may_be_absent_from_html() -> None:
+    module = load_module()
+    path = write_json({"findings": [valid_finding(id="F99", render_visibility="artifact_only")]})
+    try:
+        errors, _ = module.audit_artifacts(path, html_path=HTML)
+    finally:
+        path.unlink(missing_ok=True)
+    if any("not rendered in HTML" in error for error in errors):
+        raise AssertionError(f"Artifact-only finding should be treated as deferred for HTML rendering: {errors}")
+
+
 def test_skipped_coverage_requires_pending_marker() -> None:
     module = load_module()
     path = write_json({"units": [{"unit": "Pages", "total": 10, "reviewed": 8, "with_issues": 2, "clean": 6, "skipped": 2}]})
@@ -900,6 +911,7 @@ def main() -> int:
     test_bundle_cli_paths_pass_contract()
     test_high_risk_finding_requires_downgrade_condition()
     test_json_finding_must_render_or_be_deferred()
+    test_artifact_only_json_finding_may_be_absent_from_html()
     test_skipped_coverage_requires_pending_marker()
     test_layout_sampled_pages_cannot_claim_full_coverage()
     test_layout_coverage_requires_layout_audit()

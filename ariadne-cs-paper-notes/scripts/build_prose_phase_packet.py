@@ -116,6 +116,12 @@ def build_phase_a_packet(
             "sections_completed": coverage.get("sections_completed", 0),
             "sections_partial": coverage.get("sections_partial", 0),
             "sections_pending": coverage.get("sections_pending", 0),
+            "paragraphs_total": coverage.get("paragraphs_total", 0),
+            "paragraphs_reviewed": coverage.get("paragraphs_reviewed", 0),
+            "sentences_total": coverage.get("sentences_total", 0),
+            "sentences_reviewed": coverage.get("sentences_reviewed", 0),
+            "sentence_review_receipt_complete": coverage.get("sentence_review_receipt_complete", False),
+            "phase_a_complete": coverage.get("phase_a_complete", False),
         },
         "write_targets": {
             "cold_skim_frame": file_target(cold_skim, mode="create_once_or_update_before_section_work", required=True),
@@ -130,7 +136,14 @@ def build_phase_a_packet(
                 "cross_section_fields": ["target_anchors", "spans_sections", "related_issue_ids"],
             },
             "paragraph_decisions_jsonl": {
-                "minimum_fields": ["paragraph_id", "section_id", "decision", "paragraph_job", "next_draft_task"],
+                "minimum_fields": [
+                    "paragraph_id",
+                    "section_id",
+                    "decision",
+                    "paragraph_job",
+                    "next_draft_task",
+                    "reviewed_sentence_ids or sentence_checks or all_sentences_reviewed",
+                ],
             },
             "section_reflections_json": {
                 "minimum_fields": ["section_id", "one_line", "role_in_argument", "top_issue_ids", "unresolved_questions"],
@@ -140,7 +153,8 @@ def build_phase_a_packet(
             "Read the full review_units Markdown for whole-paper continuity, but continue detailed work only from next_section when resuming.",
             "Do not write HTML. Write JSON/JSONL artifacts only.",
             "After each section, append prose issue and paragraph decision rows, then update section_reflections.json before continuing.",
-            "If next_section is null, Phase A is complete; build phase_b_context next.",
+            "For every paragraph decision, record sentence review coverage with reviewed_sentence_ids, sentence_checks, or all_sentences_reviewed=true. Clean sentences should be counted in that receipt, not rendered as visible clean comments.",
+            "If next_section is null and coverage.phase_a_complete is true, Phase A is complete; build phase_b_context next.",
         ],
     }
 

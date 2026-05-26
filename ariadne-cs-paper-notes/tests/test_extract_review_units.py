@@ -134,6 +134,28 @@ def test_heading_without_id_is_not_section_unit(tmp_path: Path) -> None:
     assert paragraph_units(units)[0]["section_id"] == "front-matter"
 
 
+def test_front_matter_title_and_author_are_not_review_units(tmp_path: Path) -> None:
+    module = load_module()
+    source = write_source(
+        tmp_path,
+        """
+        <header id="title-block-header">
+          <h1 id="paper-title" class="title paper-title" data-review-skip="front-matter">Demo Paper</h1>
+          <p class="author paper-author" data-review-skip="front-matter"><span data-sentence-id="s-author">Anonymous ACL submission</span></p>
+        </header>
+        <div class="abstract">
+          <p data-paragraph-id="p-front-001"><span data-sentence-id="s-front-001">Abstract sentence.</span></p>
+        </div>
+        <h1 id="introduction">Introduction</h1>
+        <p data-paragraph-id="p-intro-001"><span data-sentence-id="s-intro-001">Intro sentence.</span></p>
+        """,
+    )
+    units = module.extract_units(source)
+    sections = [unit for unit in units if unit.get("kind") == "section"]
+    assert [unit["section_id"] for unit in sections] == ["introduction"]
+    assert sentence_ids(units) == ["s-front-001", "s-intro-001"]
+
+
 def test_markdown_writer_skips_empty_paragraphs(tmp_path: Path) -> None:
     module = load_module()
     units = [

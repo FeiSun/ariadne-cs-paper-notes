@@ -73,7 +73,61 @@ def test_source_hygiene_cli_writes_json() -> None:
         raise AssertionError(f"Missing tool provenance: {payload}")
 
 
+def test_acl_review_front_matter_author_commands_are_not_visible_identity_findings() -> None:
+    module = load_module()
+    raw = "\n".join(
+        [
+            r"\documentclass{article}",
+            r"\usepackage[review]{acl}",
+            r"\author{Jane Doe \\ Secret Lab \\ jane@example.com}",
+            r"\begin{document}",
+            r"\maketitle",
+            r"Clean body.",
+            r"\end{document}",
+        ]
+    )
+    observations, coverage = module.audit_source(raw, raw)
+    titles = [item["title"] for item in observations]
+    if any("Identity/anonymity signals are visible in the source" == title for title in titles):
+        raise AssertionError(f"ACL review front-matter author commands should not become visible identity findings: {observations}")
+    if coverage.get("acl_review_mode") != 1 or coverage.get("front_matter_identity_items_suppressed", 0) == 0:
+        raise AssertionError(f"Expected ACL review-mode suppression coverage, got {coverage}")
+
+
+def test_compiled_pdf_text_controls_front_matter_identity_visibility_for_any_template() -> None:
+    module = load_module()
+    raw = "\n".join(
+        [
+            r"\documentclass{article}",
+            r"\author{Jane Doe \\ Secret Lab \\ jane@example.com}",
+            r"\begin{document}",
+            r"\maketitle",
+            r"Clean body.",
+            r"\end{document}",
+        ]
+    )
+    anonymous_pdf = "Demo Paper\nAnonymous submission\n\nAbstract\nClean body."
+    observations, coverage = module.audit_source(raw, raw, compiled_text=anonymous_pdf, compiled_source="paper.pdf")
+    if any(item.get("issue_type") == "anonymity" for item in observations):
+        raise AssertionError(f"Front-matter source identity should be suppressed when compiled PDF is anonymous: {observations}")
+    if coverage.get("compiled_visibility_checked") != 1 or coverage.get("compiled_front_matter_identity_items") != 0:
+        raise AssertionError(f"Expected compiled anonymous coverage, got {coverage}")
+
+    visible_pdf = "Demo Paper\nJane Doe\nSecret Lab\njane@example.com\n\nAbstract\nClean body."
+    observations, coverage = module.audit_source(raw, raw, compiled_text=visible_pdf, compiled_source="paper.pdf")
+    titles = [item["title"] for item in observations]
+    if "Compiled submission still exposes identity/anonymity signals" not in titles:
+        raise AssertionError(f"Compiled visible identity should remain an anonymity issue: {observations}")
+    compiled_observation = next(item for item in observations if item["title"] == "Compiled submission still exposes identity/anonymity signals")
+    if compiled_observation.get("visibility_basis") != "compiled_pdf":
+        raise AssertionError(f"Expected compiled-PDF visibility basis, got {compiled_observation}")
+    if coverage.get("compiled_front_matter_identity_items", 0) == 0:
+        raise AssertionError(f"Expected visible compiled front-matter identity coverage, got {coverage}")
+
+
 if __name__ == "__main__":
     test_source_hygiene_emits_anonymity_and_placeholder_findings()
     test_source_hygiene_cli_writes_json()
+    test_acl_review_front_matter_author_commands_are_not_visible_identity_findings()
+    test_compiled_pdf_text_controls_front_matter_identity_visibility_for_any_template()
     print("check_source_hygiene regression tests passed")

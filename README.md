@@ -290,6 +290,9 @@ rsync -a \
 
 - Codex、Claude Code，或其他支持 local skills 的 agent runtime
 - Python 3.9+，推荐 Python 3.10+
+- Python 包依赖：从仓库根目录运行 `python -m pip install -r ariadne-cs-paper-notes/requirements.txt`
+
+`requirements.txt` 中的 `beautifulsoup4` 和 `lxml` 是运行时依赖，不只是测试依赖：`render_paper_html.py`、`extract_review_units.py`、`audit_html_report.py` 等都会解析 source-derived HTML。`pypdf`、`pdfplumber` 和 `Pillow` 用于 PDF 页数、PDF fallback、图像/figure 质量检查。
 
 可选但推荐：
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import re
 import sys
@@ -151,6 +152,10 @@ def annotation_stripped_text(html_text: str, *, final_html: bool) -> str:
     return compact_text(root.get_text(" ", strip=True))
 
 
+def source_integrity_tokens(text: str) -> Counter[str]:
+    return Counter(re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]", text.lower()))
+
+
 def audit_source_integrity(html_path: Path, parser: AriadneHTMLParser, source_path: Path | None = None) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -171,7 +176,10 @@ def audit_source_integrity(html_path: Path, parser: AriadneHTMLParser, source_pa
     source_body = annotation_stripped_text(source_text, final_html=False)
     rendered_body = annotation_stripped_text(rendered_text, final_html=True)
     if source_body != rendered_body:
-        errors.append("#paper-reader body differs from source artifact after stripping annotation-only markup")
+        if source_integrity_tokens(source_body) != source_integrity_tokens(rendered_body):
+            errors.append("#paper-reader body differs from source artifact after stripping annotation-only markup")
+        else:
+            warnings.append("#paper-reader source text is complete but reordered by paged/floating layout")
 
     for idx, pane in enumerate(parser.paper_panes, 1):
         declared_hash = pane.get("hash", "")
@@ -323,7 +331,7 @@ class AriadneHTMLParser(HTMLParser):
             paragraph_id = attr.get("data-paragraph-id", "")
             if paragraph_id:
                 self.paper_paragraph_ids.add(paragraph_id)
-            if element_id and tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            if element_id:
                 self.paper_section_ids.add(element_id)
             if element_id == "paper-overview-annotations":
                 self.paper_overview_ids.add("paper")

@@ -282,6 +282,7 @@ def build_source_hygiene(raw_path: Path) -> dict[str, Any]:
             continue
         local_id = observation.get("observation_id") or f"S{idx}"
         rec = compact_text(observation.get("recommendation"), max_chars=700)
+        visibility_basis = compact_text(observation.get("visibility_basis"), max_chars=80) or "source_only"
         issue = {
             "local_id": local_id,
             "severity": severity(observation.get("severity"), default="Minor"),
@@ -292,6 +293,7 @@ def build_source_hygiene(raw_path: Path) -> dict[str, Any]:
             "confidence": observation.get("confidence", 0.8),
             "recommendation": rec,
             "render_hint": {"anchor": "page:submission", "display_group": "Source Hygiene"},
+            "visibility_basis": visibility_basis,
         }
         if issue["severity"] in {"Blocker", "Major"}:
             issue.update(high_risk_fields("source_hygiene", rec))
@@ -389,6 +391,16 @@ def build_figure_caption(raw_path: Path) -> dict[str, Any]:
             continue
         local_id = observation.get("observation_id") or f"FC{idx}"
         rec = compact_text(observation.get("recommendation"), max_chars=700)
+        details = observation.get("details") if isinstance(observation.get("details"), dict) else {}
+        target_label = compact_text(details.get("target_label"), max_chars=160) if isinstance(details, dict) else ""
+        render_hint = {"anchor": "page:figures", "display_group": "Figure/Caption"}
+        if target_label:
+            render_hint = {
+                "anchor": target_label,
+                "target_level": "section",
+                "display_group": "Figure/Caption",
+                "target_kind": compact_text(details.get("target_kind"), max_chars=40),
+            }
         issue = {
             "local_id": local_id,
             "severity": severity(observation.get("severity"), default="Minor"),
@@ -398,8 +410,10 @@ def build_figure_caption(raw_path: Path) -> dict[str, Any]:
             "evidence_refs": [{"source_artifact": raw_path.name, "observation_id": local_id, "field": "observations"}],
             "confidence": observation.get("confidence", 0.75),
             "recommendation": rec,
-            "render_hint": {"anchor": "page:figures", "display_group": "Figure/Caption"},
+            "render_hint": render_hint,
         }
+        if not target_label and issue["issue_type"] in {"rendered_caption_count_mismatch", "rendered_caption_missing"}:
+            issue["render_visibility"] = "artifact_only"
         if issue["severity"] in {"Blocker", "Major"}:
             issue.update(high_risk_fields("figure_caption", rec))
         issues.append(issue)

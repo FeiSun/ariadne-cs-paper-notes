@@ -1,0 +1,5 @@
+beautifulsoup4>=4.12
+lxml>=4.9
+pypdf>=4.0
+pdfplumber>=0.11
+Pillow>=10.0

@@ -165,9 +165,98 @@ def test_derivatives_manifest_can_match_global_findings_render() -> None:
         raise AssertionError(f"Unexpected global-findings manifest sections: {sections}")
 
 
+def test_derivatives_use_phase_artifacts_for_coverage_and_defer_artifact_only_findings() -> None:
+    module = load_module(SCRIPT, "build_review_derivatives")
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        findings = root / "findings.json"
+        annotations = root / "annotations.json"
+        phase_a = root / "phase_a_resume_status.json"
+        phase_b = root / "phase_b_context.json"
+        findings.write_text(
+            json.dumps(
+                {
+                    "findings": [
+                        {
+                            "id": "F1",
+                            "severity": "Minor",
+                            "issue_type": "prose",
+                            "render_visibility": "student_visible",
+                            "source_issue_ids": ["prose:P1"],
+                        },
+                        {
+                            "id": "F2",
+                            "severity": "Minor",
+                            "issue_type": "source_hygiene",
+                            "render_visibility": "artifact_only",
+                            "source_issue_ids": ["source_hygiene:S1"],
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        annotations.write_text(
+            json.dumps(
+                {
+                    "annotations": [
+                        {"issue_id": "F1", "target_level": "sentence", "sentence_id": "s1"},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        phase_a.write_text(
+            json.dumps(
+                {
+                    "coverage": {
+                        "sections_total": 1,
+                        "sections_completed": 1,
+                        "sections_pending": 0,
+                        "paragraphs_total": 1,
+                        "paragraphs_reviewed": 1,
+                        "sentences_total": 4,
+                        "sentences_reviewed": 4,
+                        "sentence_review_receipt_complete": True,
+                        "cold_skim_present": True,
+                        "phase_a_complete": True,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        phase_b.write_text(json.dumps({"coverage": {"sections_summarized": 1}}), encoding="utf-8")
+        payloads = module.build_all(
+            findings_path=findings,
+            annotations_path=annotations,
+            issues_dir=None,
+            layout_audit_path=None,
+            source_artifact=SOURCE,
+            source_hash="",
+            requested_scope="full compiled Ariadne review",
+            output_files=[str(HTML)],
+            source_fidelity="fixture",
+            html_source="manual-fixture",
+            visible_scope="",
+            phase_a_status_path=phase_a,
+            phase_b_context_path=phase_b,
+        )
+    units = {row["unit"]: row for row in payloads["coverage"]["units"]}
+    passes = {row["pass"]: row["status"] for row in payloads["coverage"]["reader_journey_passes"]}
+    if units["Sentences"]["total"] != 4 or units["Sentences"]["reviewed"] != 4:
+        raise AssertionError(f"Expected sentence coverage from Phase A status, got {units}")
+    if passes["Pass 1"] != "done" or passes["Pass 2"] != "done" or passes["Pass 4"] != "done":
+        raise AssertionError(f"Expected concrete pass status from artifacts, got {passes}")
+    if passes["Pass 6"] != "pending":
+        raise AssertionError(f"Derivative builder should not pre-certify audit pass, got {passes}")
+    if payloads["render_manifest"]["deferred_findings"] != ["F2"]:
+        raise AssertionError(f"Artifact-only finding should be deferred for HTML audit: {payloads['render_manifest']}")
+
+
 if __name__ == "__main__":
     test_derivative_artifacts_satisfy_existing_audit_contract()
     test_derivatives_cli_writes_all_outputs()
     test_derivatives_manifest_can_match_paper_reader_only_render()
     test_derivatives_manifest_can_match_global_findings_render()
+    test_derivatives_use_phase_artifacts_for_coverage_and_defer_artifact_only_findings()
     print("build_review_derivatives regression tests passed")

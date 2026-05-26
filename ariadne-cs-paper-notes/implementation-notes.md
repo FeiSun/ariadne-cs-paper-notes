@@ -38,7 +38,7 @@ This file records implementation decisions, tradeoffs, and spec clarifications m
 ## 2026-05-23 -- Renderer Boundary
 
 - `scripts/render_paper_html.py` now accepts `--issues-dir` for curated specialist issues and can also render compiled `findings.json` + anchor-only `annotations.json`.
-- Decision not explicit in the original spec: issue artifacts can be rendered as unanchored paper/workbench cards when their natural anchor is page-level (`page:12`, `page:references`) rather than a source HTML sentence/paragraph id.
+- Decision not explicit in the original spec: display-facing issue artifacts can be rendered as anchored or unanchored paper-reader cards when their natural anchor is page-level (`page:12`, `page:references`) rather than a source HTML sentence/paragraph id. Artifact-only issues stay in JSON and are listed as deferred findings.
 - HTML is still fully deterministic. LLMs should not write HTML report bodies or paper-reader overlays.
 
 ## 2026-05-23 -- P1 Specialist Reducers

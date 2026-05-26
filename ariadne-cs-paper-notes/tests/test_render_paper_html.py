@@ -359,6 +359,277 @@ A & B \\
             raise AssertionError("Expected table label to be restored")
 
 
+def test_latex_float_width_classes_distinguish_figure_from_figure_star() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\begin{figure}
+\includegraphics{fig/single}
+\label{fig:single}
+\end{figure}
+\begin{figure*}
+\includegraphics{fig/wide}
+\label{fig:wide}
+\end{figure*}
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <figure id="fig:single"><img data-source-pdf="fig/single.pdf"></figure>
+  <figure id="fig:wide"><img data-source-pdf="fig/wide.pdf"></figure>
+</body></html>
+""",
+            "lxml",
+        )
+        marked = module.mark_latex_float_widths(soup, tex)
+        single = soup.find(id="fig:single")
+        wide = soup.find(id="fig:wide")
+        if marked != 2 or single is None or wide is None:
+            raise AssertionError(f"Expected both floats to be marked, got marked={marked}, soup={soup}")
+        if "paper-float-single" not in single.get("class", []) or "paper-float-wide" in single.get("class", []):
+            raise AssertionError(f"Regular figure should remain single-column: {single}")
+        if "paper-float-wide" not in wide.get("class", []):
+            raise AssertionError(f"figure* should be marked wide: {wide}")
+
+
+def test_broken_adjustbox_table_is_rebuilt_from_latex_tabular() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\begin{table*}
+\caption{Watermark and evaluation setup.}
+\label{tab:setup}
+\begin{adjustbox}{max width=\textwidth}
+\begin{tabular}{@{}L{0.22\textwidth}L{0.24\textwidth}L{0.48\textwidth}@{}}
+\toprule
+Ablation & Payload / detector & Watermark and metric \\
+\midrule
+20-bit sweep & Payload space $2^{20}$; segmented decoding. & $\gamma=0.5$; exact message acc. \\
+RS+ECC & Payload space $2^{20}$; RS-coded segmented decoding. & $\delta\in\{1.0,1.5,\ldots,4.5\}$; no attack. \\
+\bottomrule
+\end{tabular}
+\end{adjustbox}
+\end{table*}
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <div class="table* paper-table" id="tab:setup"><div class="tabular"><p>@L0.22L0.24L0.48@ Ablation & Payload / detector & Watermark and metric</p></div></div>
+</body></html>
+""",
+            "lxml",
+        )
+        replaced = module.replace_broken_latex_tables(soup, tex)
+        table = soup.select_one("#tab\\:setup table")
+        if replaced != 1 or table is None:
+            raise AssertionError(f"Expected broken table to be rebuilt, got replaced={replaced}, soup={soup}")
+        text = table.get_text(" ", strip=True)
+        if "@L" in text or "Payload / detector" not in text or "RS+ECC" not in text:
+            raise AssertionError(f"Rebuilt table text is wrong: {text}")
+        if table.find("caption") is None or "Table 1:" not in table.find("caption").get_text(" ", strip=True):
+            raise AssertionError("Rebuilt table should include a numbered caption")
+
+
+def test_rebuilt_table_cells_clean_nested_tabular_linebreaks() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\begin{table*}
+\caption{Payload and segment layouts.}
+\label{tab:layouts}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Experiment & Segment layouts \\
+\midrule
+20-bit sweep & \begin{tabular}[t]{@{}l@{}}$B=20$\\$s=1,2$\\$n=s$\end{tabular} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <div class="table* paper-table" id="tab:layouts"><div class="tabular"><p>@L0.3L0.7@ Experiment & Segment layouts</p></div></div>
+</body></html>
+""",
+            "lxml",
+        )
+        replaced = module.replace_broken_latex_tables(soup, tex)
+        table = soup.select_one("#tab\\:layouts table")
+        if replaced != 1 or table is None:
+            raise AssertionError(f"Expected nested-tabular table to be rebuilt: {soup}")
+        cell = table.find("tbody").find_all("td")[1]
+        text = cell.get_text(" ", strip=True)
+        if "\\begin{tabular}" in str(cell) or "\\\\" in str(cell) or "B=20" not in text or "n=s" not in text:
+            raise AssertionError(f"Nested tabular cleanup failed: {cell}")
+        if not cell.find("br"):
+            raise AssertionError(f"Nested tabular linebreaks should become br elements: {cell}")
+
+
+def test_float_caption_numbers_are_added_from_latex_order() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\begin{figure}
+\includegraphics{fig/a}
+\caption{First figure caption.}
+\label{fig:a}
+\end{figure}
+\begin{table}
+\caption{First table caption.}
+\label{tab:a}
+\begin{tabular}{ll}
+A & B \\
+\end{tabular}
+\end{table}
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <figure id="fig:a"><figcaption>First figure caption.</figcaption></figure>
+  <div id="tab:a" class="paper-table"><table><caption>First table caption.</caption><tbody><tr><td>A</td><td>B</td></tr></tbody></table></div>
+</body></html>
+""",
+            "lxml",
+        )
+        updated = module.add_float_caption_numbers(soup, tex)
+        if updated != 2:
+            raise AssertionError(f"Expected two numbered captions, got {updated}: {soup}")
+        if "Figure 1:" not in soup.find("figcaption").get_text(" ", strip=True):
+            raise AssertionError("Figure caption number missing")
+        if "Table 1:" not in soup.find("caption").get_text(" ", strip=True):
+            raise AssertionError("Table caption number missing")
+
+
+def test_restore_latex_labels_does_not_shift_existing_table_ids() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\begin{table}
+\caption{First table.}
+\label{tab:first}
+\begin{tabular}{ll}
+A & B \\
+\end{tabular}
+\end{table}
+\begin{table}
+\caption{Second table.}
+\label{tab:second}
+\begin{tabular}{ll}
+C & D \\
+\end{tabular}
+\end{table}
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <div id="tab:first" class="paper-table"><table><caption>First table.</caption></table></div>
+  <div class="paper-table"><table><caption>Second table.</caption></table></div>
+</body></html>
+""",
+            "lxml",
+        )
+        restored = module.restore_latex_labels(soup, tex)
+        first = soup.find(id="tab:first")
+        second = soup.find(id="tab:second")
+        misplaced_anchor = first.find(id="tab:second") if first is not None else None
+        if restored != 1 or second is None:
+            raise AssertionError(f"Expected only the missing second table label to be restored: restored={restored}, soup={soup}")
+        if misplaced_anchor is not None:
+            raise AssertionError("Second table label was incorrectly inserted into the already-labeled first table")
+
+
+def test_latex_paragraph_headings_are_not_display_numbered() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\section{Related Work}
+\paragraph{Detection-stage gaps in multi-bit decoding}
+Body sentence.
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <h1 id="related-work">Related Work</h1>
+  <h4 id="detection-stage-gaps-in-multi-bit-decoding">Detection-stage gaps in multi-bit decoding</h4>
+  <p>Body sentence.</p>
+</body></html>
+""",
+            "lxml",
+        )
+        marked = module.mark_latex_paragraph_headings(soup, tex)
+        module.ensure_display_section_numbers(soup)
+        heading = soup.find(id="detection-stage-gaps-in-multi-bit-decoding")
+        if marked != 1 or heading is None or "paper-run-in-heading" not in heading.get("class", []):
+            raise AssertionError(f"Expected paragraph heading to be marked run-in: {heading}")
+        if heading.get("data-section-number"):
+            raise AssertionError(f"Paragraph heading should not receive display numbering: {heading}")
+
+
+def test_restore_mathml_equation_labels_from_tex_annotations() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        r"""
+<html><body>
+  <p>Equation reference <a href="#eq:demo" data-reference="eq:demo">[eq:demo]</a>.</p>
+  <math display="block"><semantics><mrow></mrow><annotation encoding="application/x-tex">\label{eq:demo} x=1</annotation></semantics></math>
+</body></html>
+""",
+        "lxml",
+    )
+    restored = module.restore_mathml_labels(soup)
+    if restored != 1 or soup.find(id="eq:demo") is None:
+        raise AssertionError(f"Expected MathML label id to be restored, got restored={restored}, soup={soup}")
+
+
 def test_ensure_references_heading_for_csl_entries() -> None:
     module = load_module()
     soup = BeautifulSoup(
@@ -376,6 +647,147 @@ def test_ensure_references_heading_for_csl_entries() -> None:
         raise AssertionError("Expected deterministic References heading before #refs")
     if heading.find_next_sibling(id="refs") is None:
         raise AssertionError("References heading should be inserted immediately before #refs")
+
+
+def test_bibliography_before_appendix_is_restored_after_pandoc_append() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\section{Body}
+Body sentence.
+\bibliography{refs}
+\appendix
+\section{Proof}\label{sec:proof}
+Appendix sentence.
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <h1 id="body">Body</h1>
+  <p>Body sentence.</p>
+  <h1 id="sec:proof">Proof</h1>
+  <p>Appendix sentence.</p>
+  <h1 id="references">References</h1>
+  <div id="refs" class="references csl-bib-body"><div class="csl-entry">Reference item.</div></div>
+</body></html>
+""",
+            "lxml",
+        )
+        moved = module.restore_bibliography_position(soup, tex)
+        refs = soup.find(id="references")
+        appendix = soup.find(id="sec:proof")
+        if not moved or refs is None or appendix is None:
+            raise AssertionError(f"Expected references to move before appendix: moved={moved}, soup={soup}")
+        if refs.find_next("h1") is not appendix:
+            raise AssertionError("References heading should precede the first appendix heading")
+        if refs.find_next_sibling(id="refs") is None:
+            raise AssertionError("References body should move together with its heading")
+
+
+def test_reused_source_restores_references_before_appendix_and_alpha_numbers() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        raw_html = tmp / "paper.source.html"
+        out = tmp / "paper.html"
+        assets = tmp / "assets"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\section{Intro}\label{sec:intro}
+Body sentence.
+\bibliography{refs}
+\appendix
+\section{Prompt Details}\label{apd:prompts}
+Appendix sentence.
+\subsection{Data Split}\label{apd:data}
+Nested appendix sentence.
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        raw_html.write_text(
+            module.source_artifact_shell(
+                "Demo",
+                """
+<h1 id="sec:intro">Intro</h1>
+<p><span class="paper-sentence" data-sentence-id="s-sec-intro-p001-s001">Body sentence.</span></p>
+<h1 id="apd:prompts">Prompt Details</h1>
+<p><span class="paper-sentence" data-sentence-id="s-apd-prompts-p001-s001">Appendix sentence.</span></p>
+<h2 id="apd:data">Data Split</h2>
+<p><span class="paper-sentence" data-sentence-id="s-apd-data-p001-s001">Nested appendix sentence.</span></p>
+<h1 id="references">References</h1>
+<div id="refs" class="references csl-bib-body"><div class="csl-entry">Reference item.</div></div>
+""",
+            ),
+            encoding="utf-8",
+        )
+
+        soup, _, _ = module.prepare_source_soup(
+            tex,
+            raw_html,
+            output_path=out,
+            asset_dir=assets,
+            inline_images=False,
+            reuse_raw_html=True,
+        )
+        module.ensure_display_section_numbers(soup, tex)
+
+        refs = soup.find(id="references")
+        appendix = soup.find(id="apd:prompts")
+        nested = soup.find(id="apd:data")
+        if refs is None or appendix is None or nested is None:
+            raise AssertionError(f"Expected refs and appendix headings in reused source: {soup}")
+        if refs.find_next("h1") is not appendix:
+            raise AssertionError(f"References should be restored before appendix in reused source: {soup}")
+        if appendix.get("data-section-number") != "A" or nested.get("data-section-number") != "A.1":
+            raise AssertionError(f"Appendix headings should use alpha numbering, got {appendix}, {nested}")
+
+
+def test_appendix_section_reference_text_uses_alpha_number() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\section{Intro}\label{sec:intro}
+See Appendix~\ref{apd:prompts}.
+\bibliography{refs}
+\appendix
+\section{Prompt Details}\label{apd:prompts}
+Appendix sentence.
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <h1 id="sec:intro">Intro</h1>
+  <p>See Appendix <a data-reference="apd:prompts" href="#apd:prompts">9</a>.</p>
+  <h1 id="apd:prompts">Prompt Details</h1>
+</body></html>
+""",
+            "lxml",
+        )
+        module.ensure_display_section_numbers(soup, tex)
+        updated = module.sync_section_reference_numbers(soup)
+        link = soup.find("a", attrs={"data-reference": "apd:prompts"})
+        if updated != 1 or link is None or link.get_text(" ", strip=True) != "A":
+            raise AssertionError(f"Appendix ref text should sync to alpha number: updated={updated}, soup={soup}")
 
 
 def test_bibliography_paths_find_tex_bibliography_files() -> None:
@@ -409,6 +821,616 @@ Citation \citep{demo}.
         bibs = module.bibliography_paths(tex)
         if bibs != [bib.resolve()]:
             raise AssertionError(f"Expected bibliography file to be discovered, got {bibs}")
+
+
+def test_acl_review_front_matter_is_anonymized_and_not_numbered() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\usepackage[review]{acl}
+\title{Demo ACL Paper}
+\author{Jane Doe \\ Secret Lab \\ jane@example.com}
+\begin{document}
+\maketitle
+\section{Introduction}
+Intro sentence.
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <header id="title-block-header">
+    <h1 class="title" id="demo-acl-paper">Demo ACL Paper</h1>
+    <p class="author">Jane Doe<br>Secret Lab<br><code>jane@example.com</code></p>
+    <div class="abstract"><div class="abstract-title">Abstract</div><p>Abstract sentence.</p></div>
+  </header>
+  <h1 id="introduction">Introduction</h1>
+  <p>Intro sentence.</p>
+</body></html>
+""",
+            "lxml",
+        )
+        module.normalize_front_matter(soup, tex)
+        sentence_count = module.wrap_sentences(soup)
+        module.ensure_display_section_numbers(soup)
+
+        title = soup.select_one(".paper-title")
+        author = soup.select_one(".paper-author")
+        abstract = soup.select_one("body > .abstract")
+        intro = soup.find(id="introduction")
+        if title is None or title.get("id") != "demo-acl-paper" or title.get("data-section-number"):
+            raise AssertionError(f"Title should be marked as unnumbered front matter: {title}")
+        if author is None or author.get_text(" ", strip=True) != "Anonymous ACL submission":
+            raise AssertionError(f"ACL review author block should be anonymized: {author}")
+        if "Jane Doe" in soup.get_text(" ", strip=True) or "jane@example.com" in soup.get_text(" ", strip=True):
+            raise AssertionError("Source author identity leaked after ACL review normalization")
+        if author.select_one(".paper-sentence") is not None:
+            raise AssertionError("Anonymous ACL author placeholder should not be sentence-reviewable")
+        if abstract is None:
+            raise AssertionError("Abstract should remain visible after title block normalization")
+        if "paper-abstract-wide" in abstract.get("class", []):
+            raise AssertionError("Abstract should not be forced full-width by venue-level defaults")
+        if intro is None or intro.get("data-section-number") != "1":
+            raise AssertionError(f"Introduction should be the first numbered section: {intro}")
+        if sentence_count != 2:
+            raise AssertionError(f"Expected abstract and introduction body sentences only, got {sentence_count}")
+        if module.resolve_paper_layout(tex, "source") != "single":
+            raise AssertionError("ACL review package alone should not force a two-column layout")
+        tex.with_suffix(".pdf").write_bytes(b"%PDF-1.4\n% placeholder for layout resolver\n")
+        if module.resolve_paper_layout(tex, "source") != "paged":
+            raise AssertionError("A PDF page map without two-column evidence should default to paged single-column")
+
+
+def test_neurips_source_layout_defaults_to_paged_single_when_pdf_exists() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\usepackage[preprint]{neurips_2026}
+\begin{document}
+Hello.
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        if module.resolve_paper_layout(tex, "source") != "single":
+            raise AssertionError("NeurIPS package names should not be treated as two-column layout evidence")
+        tex.with_suffix(".pdf").write_bytes(b"%PDF-1.4\n% placeholder for layout resolver\n")
+        if module.resolve_paper_layout(tex, "source") != "paged":
+            raise AssertionError("NeurIPS source layout should default to paged single-column when the PDF exists")
+
+
+def test_twocolumn_option_defaults_to_paged_two_column_when_pdf_exists() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass[twocolumn]{article}
+\begin{document}
+Hello.
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        if module.resolve_paper_layout(tex, "source") != "two-column":
+            raise AssertionError("Generic twocolumn documentclass option should select two-column layout")
+        tex.with_suffix(".pdf").write_bytes(b"%PDF-1.4\n% placeholder for layout resolver\n")
+        if module.resolve_paper_layout(tex, "source") != "paged-two-column":
+            raise AssertionError("Generic twocolumn document with PDF should select paged two-column layout")
+
+
+def test_pdf_anonymous_front_matter_overrides_source_author_for_any_template() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\title{Demo Anonymous Paper}
+\author{Jane Doe \\ Secret Lab \\ jane@example.com}
+\begin{document}
+\maketitle
+\section{Introduction}
+Intro sentence.
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        tex.with_suffix(".pdf").write_bytes(b"%PDF fake")
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <header id="title-block-header">
+    <h1 class="title" id="demo-anonymous-paper">Demo Anonymous Paper</h1>
+    <p class="author">Jane Doe<br>Secret Lab<br><code>jane@example.com</code></p>
+  </header>
+  <h1 id="introduction">Introduction</h1>
+  <p>Intro sentence.</p>
+</body></html>
+""",
+            "lxml",
+        )
+        original = module.pdf_front_matter_is_anonymous
+        try:
+            module.pdf_front_matter_is_anonymous = lambda path: path == tex  # type: ignore[assignment]
+            module.normalize_front_matter(soup, tex)
+        finally:
+            module.pdf_front_matter_is_anonymous = original  # type: ignore[assignment]
+
+        author = soup.select_one(".paper-author")
+        if author is None or author.get_text(" ", strip=True) != "Anonymous submission":
+            raise AssertionError(f"PDF-anonymous front matter should anonymize source author block: {author}")
+        if "Jane Doe" in soup.get_text(" ", strip=True) or "jane@example.com" in soup.get_text(" ", strip=True):
+            raise AssertionError("Source author identity leaked despite anonymous compiled PDF")
+        if author.get("data-anonymous-front-matter") != "true":
+            raise AssertionError(f"Generic anonymous front matter should be marked: {author}")
+
+
+def test_paged_layout_groups_existing_sentence_ids_without_coordinate_anchors() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <h1 id="intro" data-section-number="1">Introduction</h1>
+  <p id="p-intro-001" class="paper-paragraph has-paragraph-annotation" data-paragraph-id="p-intro-001" data-has-issue="true" aria-describedby="ann-paragraph-p-intro-001-1">
+    <button class="annotation-bubble paragraph">Major</button>
+    <span class="paper-sentence has-annotation" data-sentence-id="s-intro-p001-s001">First sentence.</span>
+    <span class="paper-sentence has-annotation" data-sentence-id="s-intro-p001-s002">Second sentence crosses the page.</span>
+  </p>
+  <p data-paragraph-id="p-intro-002"><span class="paper-sentence" data-sentence-id="s-intro-p002-s001">Third sentence.</span></p>
+</body></html>
+""",
+        "lxml",
+    )
+    pages, assigned = module.split_children_into_pages(
+        soup,
+        {
+            "s-intro-p001-s001": 1,
+            "s-intro-p001-s002": 2,
+            "s-intro-p002-s001": 2,
+        },
+    )
+    if assigned != 3 or len(pages) != 2:
+        raise AssertionError(f"Expected two page wrappers for three assigned sentences, got pages={len(pages)} assigned={assigned}")
+    page_numbers = [page.get("data-page") for page in soup.select(".paper-page")]
+    if page_numbers != ["1", "2"]:
+        raise AssertionError(f"Unexpected page wrappers: {page_numbers}")
+    sentence_ids = [node.get("data-sentence-id") for node in soup.select(".paper-sentence")]
+    if sentence_ids != ["s-intro-p001-s001", "s-intro-p001-s002", "s-intro-p002-s001"]:
+        raise AssertionError(f"Sentence ids changed during page wrapping: {sentence_ids}")
+    if len(soup.select('[data-paragraph-id="p-intro-001"]')) != 1:
+        raise AssertionError("Paged paragraph split should not duplicate the paragraph anchor")
+    fragment = soup.select_one('[data-paragraph-fragment-of="p-intro-001"]')
+    if fragment is None or fragment.get("data-paragraph-id"):
+        raise AssertionError(f"Continuation paragraph fragment should be marked but not anchorable: {fragment}")
+
+
+def test_paged_layout_preserves_abstract_and_keeps_overview_outside_pages() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <aside id="paper-overview-annotations">Whole paper note.</aside>
+  <header id="title-block-header"><h1 class="paper-title">Demo</h1></header>
+  <div class="abstract"><div class="abstract-title">Abstract</div><p data-paragraph-id="p-abstract-001"><span class="paper-sentence" data-sentence-id="s-abstract-p001-s001">Abstract sentence.</span></p></div>
+  <h1 id="intro" data-section-number="1">Introduction</h1>
+  <p data-paragraph-id="p-intro-001"><span class="paper-sentence" data-sentence-id="s-intro-p001-s001">Intro sentence.</span></p>
+</body></html>
+""",
+        "lxml",
+    )
+    pages, assigned = module.split_children_into_pages(
+        soup,
+        {
+            "s-abstract-p001-s001": 1,
+            "s-intro-p001-s001": 1,
+        },
+    )
+    if assigned != 2 or len(pages) != 1:
+        raise AssertionError(f"Expected one paper page with two sentences, got pages={len(pages)} assigned={assigned}")
+    if soup.select_one(".paper-page #paper-overview-annotations") is not None:
+        raise AssertionError("Paper-level overview UI must not consume PDF page layout space")
+    if soup.select_one("body > #paper-overview-annotations") is None:
+        raise AssertionError("Paper-level overview should remain available outside page containers")
+    if soup.select_one('.paper-page[data-page="1"] > .abstract') is None:
+        raise AssertionError(f"Abstract wrapper should remain a direct page child for column-span CSS: {soup.select_one('.paper-page')}")
+    if soup.select_one(".paper-page > .abstract > p .paper-sentence") is None:
+        raise AssertionError("Abstract sentence anchor was lost while preserving the abstract wrapper")
+
+
+def test_paged_layout_places_float_only_blocks_and_preserves_pdf_page_count() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <p><span class="paper-sentence" data-sentence-id="s-intro-p001-s001">Main text sentence.</span></p>
+  <div id="tab:appendix-setup" class="table* paper-table paper-table-rebuilt paper-float-wide">
+    <table><caption>Appendix setup configuration for late-page ablations.</caption><tbody><tr><td>A</td></tr></tbody></table>
+  </div>
+</body></html>
+""",
+        "lxml",
+    )
+    pages, assigned = module.split_children_into_pages(
+        soup,
+        {"s-intro-p001-s001": 1},
+        block_assignments={"tab:appendix-setup": 3},
+        min_pages=4,
+    )
+    if assigned != 1 or len(pages) != 4:
+        raise AssertionError(f"Expected four PDF page wrappers with one sentence assignment, got pages={len(pages)}")
+    table = soup.find(id="tab:appendix-setup")
+    page3 = soup.select_one('.paper-page[data-page="3"]')
+    page4 = soup.select_one('.paper-page[data-page="4"]')
+    if table is None or table.find_parent(class_="paper-page") is not page3:
+        raise AssertionError(f"Float-only table should be placed on its matched PDF page: {soup}")
+    if page4 is None:
+        raise AssertionError("Paged layout should preserve trailing PDF-only pages even when no source sentence maps there")
+
+
+def test_paged_layout_float_page_assignment_takes_precedence_over_caption_sentences() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <figure id="fig:late" class="paper-float-wide">
+    <figcaption><span class="paper-sentence" data-sentence-id="s-cap-p001-s001">Late figure caption sentence.</span></figcaption>
+  </figure>
+</body></html>
+""",
+        "lxml",
+    )
+    module.split_children_into_pages(
+        soup,
+        {"s-cap-p001-s001": 2},
+        block_assignments={"fig:late": 4},
+        min_pages=4,
+    )
+    figure = soup.find(id="fig:late")
+    if figure is None or figure.find_parent(class_="paper-page").get("data-page") != "4":
+        raise AssertionError(f"Float block assignment should override its caption sentence page: {soup}")
+
+
+def test_sentence_page_assignment_can_skip_unanchored_reference_pages() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <p><span class="paper-sentence" data-sentence-id="s-main-001">Main body sentence with distinctive evidence.</span></p>
+  <div id="refs"><div class="csl-entry">A reference entry without sentence anchors.</div></div>
+  <p><span class="paper-sentence" data-sentence-id="s-appendix-001">Appendix method sentence with distinctive configuration and appendix-specific page context.</span></p>
+</body></html>
+""",
+        "lxml",
+    )
+    pages = [
+        module.normalize_for_match("Main body sentence with distinctive evidence."),
+        module.normalize_for_match("Reference entry one."),
+        module.normalize_for_match("Reference entry two."),
+        module.normalize_for_match("Appendix method sentence with distinctive configuration and appendix-specific page context."),
+    ]
+    pages = [" ".join(module.text_match_tokens(page)) for page in pages]
+    assignments = module.sentence_page_assignments_from_pages(soup, pages)
+    if assignments.get("s-main-001") != 1 or assignments.get("s-appendix-001") != 4:
+        raise AssertionError(f"Page assignment should skip reference-only PDF pages: {assignments}")
+
+
+def test_flow_block_assignment_places_reference_blocks_on_pdf_pages() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <p><span class="paper-sentence" data-sentence-id="s-main-001">Main body sentence with distinctive evidence.</span></p>
+  <div id="refs"><div class="csl-entry">Azaria Amos Mitchell internal state language model lying findings association computational linguistics.</div></div>
+  <p><span class="paper-sentence" data-sentence-id="s-appendix-001">Appendix method sentence with distinctive configuration.</span></p>
+</body></html>
+""",
+        "lxml",
+    )
+    pages = [
+        module.normalize_for_match("Main body sentence with distinctive evidence."),
+        module.normalize_for_match("Azaria Amos Mitchell internal state language model lying findings association computational linguistics."),
+        module.normalize_for_match("Reference continuation only."),
+        module.normalize_for_match("Appendix method sentence with distinctive configuration."),
+    ]
+    pages = [" ".join(module.text_match_tokens(page)) for page in pages]
+    sentence_assignments = module.sentence_page_assignments_from_pages(soup, pages)
+    flow_assignments = module.flow_block_page_assignments_from_pages(soup, pages, sentence_assignments, {})
+    refs = soup.find(id="refs")
+    if refs is None or flow_assignments.get(id(refs)) != 2:
+        raise AssertionError(f"Reference block should be assigned to its matched PDF page: {flow_assignments}")
+
+
+def test_reference_entries_can_split_across_pdf_pages() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <div id="refs" class="references csl-bib-body">
+    <div class="csl-entry" id="ref-a">Azaria Amos Mitchell internal state language model lying findings association computational linguistics.</div>
+    <div class="csl-entry" id="ref-b">Ziegler Daniel Stiennon Radford Amodei Christiano Irving fine tuning language models human preferences.</div>
+  </div>
+</body></html>
+""",
+        "lxml",
+    )
+    pages = [
+        module.normalize_for_match("Azaria Amos Mitchell internal state language model lying findings association computational linguistics."),
+        module.normalize_for_match("Ziegler Daniel Stiennon Radford Amodei Christiano Irving fine tuning language models human preferences."),
+    ]
+    pages = [" ".join(module.text_match_tokens(page)) for page in pages]
+    flow_assignments = module.flow_block_page_assignments_from_pages(soup, pages, {}, {})
+    module.split_children_into_pages(soup, {}, flow_block_assignments=flow_assignments, min_pages=2)
+    if soup.select_one('.paper-page[data-page="1"] #ref-a') is None:
+        raise AssertionError(f"First reference entry should be on page 1: {soup}")
+    if soup.select_one('.paper-page[data-page="2"] #ref-b') is None:
+        raise AssertionError(f"Second reference entry should be on page 2: {soup}")
+
+
+def test_paged_layout_can_backfill_pages_after_late_float() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <figure id="fig:late"><figcaption><span class="paper-sentence" data-sentence-id="s-fig-001">Late float caption.</span></figcaption></figure>
+  <p><span class="paper-sentence" data-sentence-id="s-body-001">Earlier body sentence.</span></p>
+</body></html>
+""",
+        "lxml",
+    )
+    module.split_children_into_pages(
+        soup,
+        {"s-fig-001": 4, "s-body-001": 2},
+        block_assignments={"fig:late": 4},
+        min_pages=4,
+    )
+    if soup.select_one('.paper-page[data-page="2"] [data-sentence-id="s-body-001"]') is None:
+        raise AssertionError(f"Content matched to an existing earlier page should be backfilled there: {soup}")
+    late = soup.find(id="fig:late")
+    if late is None or late.find_parent(class_="paper-page").get("data-page") != "4":
+        raise AssertionError(f"Late float should remain on its explicit page: {soup}")
+
+
+def test_list_blocks_can_split_across_pdf_pages() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <ol>
+    <li id="li-a">Checklist claim accurately reflect contributions scope.</li>
+    <li id="li-b">Checklist limitation assumption societal impact reproducibility.</li>
+  </ol>
+</body></html>
+""",
+        "lxml",
+    )
+    pages = [
+        module.normalize_for_match("Checklist claim accurately reflect contributions scope."),
+        module.normalize_for_match("Checklist limitation assumption societal impact reproducibility."),
+    ]
+    pages = [" ".join(module.text_match_tokens(page)) for page in pages]
+    flow_assignments = module.flow_block_page_assignments_from_pages(soup, pages, {}, {})
+    module.split_children_into_pages(soup, {}, flow_block_assignments=flow_assignments, min_pages=2)
+    if soup.select_one('.paper-page[data-page="1"] #li-a') is None:
+        raise AssertionError(f"First list item should be on page 1: {soup}")
+    if soup.select_one('.paper-page[data-page="2"] #li-b') is None:
+        raise AssertionError(f"Second list item should be on page 2: {soup}")
+
+
+def test_paged_two_column_css_prevents_extra_columns_from_overlapping_sidebar() -> None:
+    module = load_module()
+    html = module.report_shell(
+        "Demo",
+        '<div class="paper-page" data-page="1"></div>',
+        tex_path=Path("/tmp/paper.tex"),
+        raw_html_path=Path("/tmp/paper.source.html"),
+        raw_hash="sha256:test",
+        sentence_count=0,
+        annotations=[],
+        paper_layout="paged-two-column",
+        page_map={"pages": 1},
+    )
+    if "column-count:2" not in html or "column-fill:balance" not in html:
+        raise AssertionError("Paged two-column layout should balance content within each PDF page wrapper")
+    if "min-height:1120px" not in html or "overflow:hidden" not in html:
+        raise AssertionError("Paged layout should keep each page visually bounded so extra columns cannot overlap the sidebar")
+    if " height:1120px" in html or "{ height:1120px" in html or "column-fill:auto" in html:
+        raise AssertionError("Fixed-height auto-fill can create horizontal extra columns that spill into the annotation sidebar")
+    if ".paper-page > figure" in html or ".paper-layout-two-column > figure" in html:
+        raise AssertionError("Regular single-column figures must not be forced to span both columns")
+
+
+def test_paged_single_column_css_uses_page_wrappers_without_column_count() -> None:
+    module = load_module()
+    html = module.report_shell(
+        "Demo",
+        '<div class="paper-page" data-page="1"></div>',
+        tex_path=Path("/tmp/paper.tex"),
+        raw_html_path=Path("/tmp/paper.source.html"),
+        raw_hash="sha256:test",
+        sentence_count=0,
+        annotations=[],
+        paper_layout="paged",
+        page_map={"pages": 1},
+    )
+    if 'data-paper-layout="paged"' not in html or "paged single-column · 1 pages" not in html:
+        raise AssertionError("Paged single-column layout should be exposed in report metadata and toolbar")
+    if ".paper-pane.paper-layout-paged > .paper-page { column-count:2" in html:
+        raise AssertionError("Paged single-column pages must not inherit two-column balancing")
+    if ".paper-pane.paper-layout-paged { font-size:15px;" not in html:
+        raise AssertionError("Paged single-column layout should have its own page-wrapper styling")
+
+
+def test_table_css_keeps_paper_tables_centerable() -> None:
+    module = load_module()
+    html = module.report_shell(
+        "Demo",
+        '<div class="paper-page" data-page="1"><div id="tab:demo" class="paper-table"><table><tbody><tr><td>A</td></tr></tbody></table></div></div>',
+        tex_path=Path("/tmp/paper.tex"),
+        raw_html_path=Path("/tmp/paper.source.html"),
+        raw_hash="sha256:test",
+        sentence_count=0,
+        annotations=[],
+        paper_layout="paged-two-column",
+        page_map={"pages": 1},
+    )
+    if ".paper-pane table { width:auto;" not in html or "margin-left:auto; margin-right:auto;" not in html:
+        raise AssertionError("Paper tables should remain centerable instead of becoming left-aligned block tables")
+    if ".paper-pane table { width:100%; border-collapse:collapse; display:block;" in html:
+        raise AssertionError("Global paper table CSS should not force every table into a left-aligned scroll block")
+    if ".paper-pane .paper-table { max-width:100%; overflow-x:auto;" not in html:
+        raise AssertionError("Horizontal table overflow should be handled by the paper-table wrapper")
+
+
+def test_caption_target_cards_use_figure_caption_pointer_label() -> None:
+    module = load_module()
+    cards = module.render_annotation_cards(
+        [
+            {
+                "issue_id": "F1",
+                "severity": "polish",
+                "issue_type": "rendered_caption_label_only",
+                "target_level": "section",
+                "section_id": "tab:data_split",
+                "title": "Caption is thin",
+                "problem": "Caption lacks takeaway.",
+            }
+        ]
+    )
+    if "指向图表/Caption" not in cards:
+        raise AssertionError("Caption-target issue should not be labeled as a generic section pointer")
+    if "指向章节" in cards:
+        raise AssertionError("Caption-target issue leaked the generic section pointer label")
+
+
+def test_inline_annotation_label_is_clipped_inside_pill() -> None:
+    module = load_module()
+    html = module.report_shell(
+        "Demo",
+        '<p><span class="paper-sentence has-annotation" data-inline-label="很长很长的中文批注标题">Sentence.</span></p>',
+        tex_path=Path("/tmp/paper.tex"),
+        raw_html_path=Path("/tmp/paper.source.html"),
+        raw_hash="sha256:test",
+        sentence_count=1,
+        annotations=[],
+    )
+    if "overflow:hidden; text-overflow:ellipsis" not in html:
+        raise AssertionError("Inline annotation labels should be clipped instead of painting over paper text")
+
+
+def test_acl_anonymous_front_matter_suppresses_source_only_identity_false_positive() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <header><h1 class="paper-title" id="demo">Demo</h1><p class="paper-author paper-anonymous-author" data-acl-review-anonymous="true">Anonymous ACL submission</p></header>
+  <p><span class="paper-sentence" data-sentence-id="s-front-p001-s001">Abstract sentence.</span></p>
+  <p><span class="paper-sentence" data-sentence-id="s-front-p001-s002">Another sentence.</span></p>
+</body></html>
+""",
+        "lxml",
+    )
+    annotations = [
+        {
+            "issue_id": "F1",
+            "target_level": "sentence",
+            "sentence_id": "s-front-p001-s001",
+            "title": "匿名评审模式下首页仍暴露作者身份",
+            "problem": "正文入口处直接显示作者姓名、单位占位和邮箱占位；若这是 ACL review 版，匿名性在第一页已经破坏。",
+        },
+        {
+            "issue_id": "F2",
+            "target_level": "sentence",
+            "sentence_id": "s-front-p001-s002",
+            "title": "普通文字问题",
+            "problem": "This sentence still needs a useful note.",
+        },
+    ]
+    assigned = module.assign_sentence_targets(soup, annotations)
+    if [item["issue_id"] for item in assigned] != ["F2"]:
+        raise AssertionError(f"Anonymous compiled front matter should filter source-only identity false positives: {assigned}")
+
+
+def test_generic_anonymous_front_matter_suppresses_source_only_identity_false_positive() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <header><h1 class="paper-title" id="demo">Demo</h1><p class="paper-author">Anonymous submission</p></header>
+  <p><span class="paper-sentence" data-sentence-id="s-front-p001-s001">Abstract sentence.</span></p>
+  <p><span class="paper-sentence" data-sentence-id="s-front-p001-s002">Another sentence.</span></p>
+</body></html>
+""",
+        "lxml",
+    )
+    annotations = [
+        {
+            "issue_id": "F1",
+            "target_level": "sentence",
+            "sentence_id": "s-front-p001-s001",
+            "title": "匿名评审模式下首页仍暴露作者身份",
+            "problem": "首页作者姓名已经可见，双盲风险很高。",
+        },
+        {
+            "issue_id": "F2",
+            "target_level": "sentence",
+            "sentence_id": "s-front-p001-s002",
+            "title": "普通文字问题",
+            "problem": "This sentence still needs a useful note.",
+        },
+    ]
+    assigned = module.assign_sentence_targets(soup, annotations)
+    if [item["issue_id"] for item in assigned] != ["F2"]:
+        raise AssertionError(f"Generic anonymous compiled front matter should filter source-only identity false positives: {assigned}")
+
+
+def test_reuse_raw_html_does_not_rewrite_source_artifact() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\title{Tiny}
+\begin{document}
+\maketitle
+\section{Intro}
+Stable sentence.
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        raw_html = tmp / "paper.source.html"
+        source_body = """
+<header id="title-block-header"><h1 class="title paper-title" id="tiny">Tiny</h1></header>
+<h1 id="intro" data-section-number="1">Intro</h1>
+<p data-paragraph-id="p-intro-001"><span class="paper-sentence" data-sentence-id="s-intro-p001-s001">Stable sentence.</span></p>
+"""
+        raw_html.write_text(module.source_artifact_shell("Tiny", source_body), encoding="utf-8")
+        before = raw_html.read_text(encoding="utf-8")
+        output = tmp / "paper.html"
+
+        module.render(tex, output, raw_html_path=raw_html, reuse_raw_html=True)
+
+        after = raw_html.read_text(encoding="utf-8")
+        if after != before:
+            raise AssertionError("--reuse-raw-html must not rewrite the canonical source artifact")
+        rendered = BeautifulSoup(output.read_text(encoding="utf-8"), "lxml")
+        if rendered.select_one('.paper-sentence[data-sentence-id="s-intro-p001-s001"]') is None:
+            raise AssertionError("Reused source sentence anchors should render into the final report")
 
 
 def test_imports_existing_review_html_without_dropping_unanchored_notes() -> None:
@@ -459,7 +1481,7 @@ def test_imports_existing_review_html_without_dropping_unanchored_notes() -> Non
         if len(unanchored) != 1:
             raise AssertionError(f"Expected unmatched review note to be preserved, got {unanchored}")
         cards_html = module.render_annotation_cards(applied)
-        if "未定位到具体句子的批注（1）" not in cards_html:
+        if "未定位到唯一原句的批注（1）" not in cards_html:
             raise AssertionError("Unanchored imported notes should be rendered in the fallback drawer")
         cards_soup = BeautifulSoup(cards_html, "lxml")
         unanchored_card = cards_soup.select_one(".annotation-card[data-unanchored='true']")
@@ -742,7 +1764,7 @@ def test_unanchored_paper_annotations_do_not_create_overview_buttons() -> None:
         raise AssertionError("Unanchored paper issue should render only as an unanchored card")
 
 
-def test_issue_artifacts_render_as_unanchored_annotation_cards() -> None:
+def test_issue_artifacts_respect_visibility_and_render_page_level_cards() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -773,6 +1795,15 @@ def test_issue_artifacts_render_as_unanchored_annotation_cards() -> None:
                             "severity_rationale": "It affects main evidence.",
                             "downgrade_condition": "Readable compiled table.",
                             "render_hint": {"anchor": "page:1", "display_group": "compiled-display-checks"},
+                        },
+                        {
+                            "local_id": "L2",
+                            "severity": "Polish",
+                            "issue_type": "edge_text",
+                            "title": "Tool-only margin hint",
+                            "diagnosis": "This should remain audit-only.",
+                            "render_hint": {"anchor": "page:1", "display_group": "compiled-display-checks"},
+                            "render_visibility": "artifact_only",
                         }
                     ],
                 }
@@ -785,11 +1816,95 @@ def test_issue_artifacts_render_as_unanchored_annotation_cards() -> None:
     annotation = annotations[0]
     if annotation["issue_id"] != "layout:L1":
         raise AssertionError(f"Expected scoped issue id, got {annotation['issue_id']}")
-    if annotation.get("unanchored") != "true":
-        raise AssertionError("page-level issue artifact should render as unanchored card")
+    if annotation.get("unanchored") == "true" or annotation.get("page_anchor") != "page:1":
+        raise AssertionError(f"page-level issue artifact should be anchored as page-level paper note, got {annotation}")
     cards = module.render_annotation_cards(annotations)
-    if "Main table is cramped" not in cards or "编译后展示检查" not in cards:
+    if "Main table is cramped" not in cards or "编译后展示检查" not in cards or "页级/版式批注（1）" not in cards:
         raise AssertionError("Issue artifact annotation card did not preserve title/display group label")
+    if "未定位到具体句子的批注" in cards or "Tool-only margin hint" in cards:
+        raise AssertionError("Page-level artifact should not be mislabeled as unanchored or leak audit-only hints")
+
+
+def test_artifact_only_compiled_findings_do_not_render() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        findings = tmp / "findings.json"
+        annotations = tmp / "annotations.json"
+        findings.write_text(
+            json.dumps(
+                {
+                    "findings": [
+                        {
+                            "id": "F1",
+                            "severity": "Major",
+                            "issue_type": "prose",
+                            "render_visibility": "student_visible",
+                            "title": "Visible issue",
+                            "diagnosis": "This should render.",
+                            "target_anchors": ["s1"],
+                        },
+                        {
+                            "id": "F2",
+                            "severity": "Major",
+                            "issue_type": "source_hygiene",
+                            "render_visibility": "artifact_only",
+                            "title": "Macro-only issue",
+                            "diagnosis": "This should stay out of HTML.",
+                            "target_anchors": ["paper"],
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        annotations.write_text(
+            json.dumps(
+                {
+                    "annotations": [
+                        {"issue_id": "F1", "target_level": "sentence", "sentence_id": "s1", "title": "Visible issue"},
+                        {
+                            "issue_id": "F2",
+                            "target_level": "paper",
+                            "paper_id": "paper",
+                            "title": "Macro-only issue",
+                            "render_visibility": "artifact_only",
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        loaded_annotations = module.load_annotations(annotations)
+        loaded_findings = module.load_findings(findings)
+        finding_rows = module.load_findings_rows(findings)
+        merged = module.merge_annotation_findings(loaded_annotations, loaded_findings)
+        cards = module.render_annotation_cards(merged)
+        globals_html = module.render_global_findings(finding_rows)
+
+    if [item["issue_id"] for item in loaded_annotations] != ["F1"]:
+        raise AssertionError(f"Artifact-only annotation should be filtered: {loaded_annotations}")
+    if set(loaded_findings) != {"F1"} or [row["id"] for row in finding_rows] != ["F1"]:
+        raise AssertionError(f"Artifact-only finding should be filtered from renderer inputs: {loaded_findings}, {finding_rows}")
+    if "Macro-only issue" in cards or "Macro-only issue" in globals_html:
+        raise AssertionError("Artifact-only finding leaked into rendered HTML")
+
+
+def test_issue_artifact_annotations_are_suppressed_when_compiled_into_findings() -> None:
+    module = load_module()
+    annotations = [
+        {"issue_id": "figure_caption:figure-caption-001", "target_level": "section", "section_id": "tab:data_split"},
+        {"issue_id": "layout:L1", "target_level": "paper", "paper_id": "paper"},
+    ]
+    findings_by_id = {
+        "F1": {
+            "id": "F1",
+            "source_issue_ids": ["figure_caption:figure-caption-001"],
+        }
+    }
+    filtered = module.filter_compiled_issue_artifact_annotations(annotations, findings_by_id)
+    if [item["issue_id"] for item in filtered] != ["layout:L1"]:
+        raise AssertionError(f"Compiled source issue artifacts should not render twice: {filtered}")
 
 
 def main() -> int:
@@ -800,9 +1915,30 @@ def main() -> int:
     test_sentence_wrapping_preserves_list_paragraph_structure()
     test_paragraph_ids_reset_at_section_boundaries()
     test_restore_latex_labels_for_wrapfigure_and_tables()
+    test_restore_mathml_equation_labels_from_tex_annotations()
     test_ensure_references_heading_for_csl_entries()
+    test_bibliography_before_appendix_is_restored_after_pandoc_append()
+    test_reused_source_restores_references_before_appendix_and_alpha_numbers()
+    test_appendix_section_reference_text_uses_alpha_number()
     test_bibliography_paths_find_tex_bibliography_files()
+    test_latex_paragraph_headings_are_not_display_numbered()
+    test_acl_review_front_matter_is_anonymized_and_not_numbered()
+    test_neurips_source_layout_defaults_to_paged_single_when_pdf_exists()
+    test_twocolumn_option_defaults_to_paged_two_column_when_pdf_exists()
     test_imports_existing_review_html_without_dropping_unanchored_notes()
+    test_paged_layout_groups_existing_sentence_ids_without_coordinate_anchors()
+    test_paged_layout_preserves_abstract_and_keeps_overview_outside_pages()
+    test_paged_layout_places_float_only_blocks_and_preserves_pdf_page_count()
+    test_paged_layout_float_page_assignment_takes_precedence_over_caption_sentences()
+    test_sentence_page_assignment_can_skip_unanchored_reference_pages()
+    test_flow_block_assignment_places_reference_blocks_on_pdf_pages()
+    test_reference_entries_can_split_across_pdf_pages()
+    test_paged_layout_can_backfill_pages_after_late_float()
+    test_list_blocks_can_split_across_pdf_pages()
+    test_paged_two_column_css_prevents_extra_columns_from_overlapping_sidebar()
+    test_paged_single_column_css_uses_page_wrappers_without_column_count()
+    test_table_css_keeps_paper_tables_centerable()
+    test_caption_target_cards_use_figure_caption_pointer_label()
     test_multiple_annotations_on_one_sentence_get_unique_cards()
     test_annotation_cards_prefer_self_check_question_over_task()
     test_annotation_cards_hide_mechanical_anchor_metadata()
@@ -810,7 +1946,9 @@ def main() -> int:
     test_missing_explicit_sentence_id_falls_back_to_snippet_match()
     test_paragraph_section_and_paper_annotations_render_as_bubbles()
     test_unanchored_paper_annotations_do_not_create_overview_buttons()
-    test_issue_artifacts_render_as_unanchored_annotation_cards()
+    test_issue_artifacts_respect_visibility_and_render_page_level_cards()
+    test_artifact_only_compiled_findings_do_not_render()
+    test_issue_artifact_annotations_are_suppressed_when_compiled_into_findings()
     print("render_paper_html regression tests passed")
     return 0
 

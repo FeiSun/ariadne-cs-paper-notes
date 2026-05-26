@@ -82,6 +82,7 @@ def base_args(root: Path, tex: Path, bundle: Path, source: Path, **overrides):
         "skip_final_render": True,
         "skip_audit": True,
         "inline_images": False,
+        "paper_layout": "source",
         "pdf_timeout": 30,
         "render_timeout": 30,
         "specialist_timeout": 30,
@@ -188,7 +189,7 @@ def test_pipeline_writes_phase_b_packet_when_phase_a_artifacts_exist() -> None:
         )
         write_json(bundle / "claim_candidates.json", {"claim_candidates": [{"id": "C1", "text": "Claim", "location": "Intro"}]})
         (bundle / "paragraph_decisions.jsonl").write_text(
-            json.dumps({"paragraph_id": "p-intro-001", "section_id": "intro", "decision": "keep"}) + "\n",
+            json.dumps({"paragraph_id": "p-intro-001", "section_id": "intro", "decision": "keep", "all_sentences_reviewed": True}) + "\n",
             encoding="utf-8",
         )
         result = module.run_pipeline(base_args(root, tex, bundle, source, prepare_only=True))
@@ -336,6 +337,7 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
                             "decision": "revise",
                             "paragraph_job": "Introduce the core claim.",
                             "next_draft_task": "Make the contribution explicit in the first paragraph.",
+                            "all_sentences_reviewed": True,
                         },
                     )
                     append_jsonl(
@@ -506,6 +508,8 @@ def test_full_report_flag_is_opt_in_for_final_render() -> None:
             module.render_final(ctx, base_args(root, tex, bundle, source, skip_final_render=False, full_report=False))
             if "--full-report" in calls[-1]:
                 raise AssertionError("Default final render should not pass --full-report")
+            if "--paper-layout" not in calls[-1] or calls[-1][calls[-1].index("--paper-layout") + 1] != "source":
+                raise AssertionError(f"Default final render should pass source paper layout, got {calls[-1]}")
             module.render_final(ctx, base_args(root, tex, bundle, source, skip_final_render=False, full_report=True))
             if "--full-report" not in calls[-1]:
                 raise AssertionError("Explicit full_report=True should pass --full-report")

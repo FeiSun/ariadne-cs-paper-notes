@@ -549,9 +549,15 @@ def can_compile(ctx: PipelineContext, phase_a: dict[str, Any], *, allow_partial:
     if allow_partial:
         return True, ""
     coverage = phase_a.get("coverage") if isinstance(phase_a, dict) else {}
-    if isinstance(coverage, dict) and coverage.get("sections_pending", 0):
+    if not isinstance(coverage, dict) or not coverage.get("phase_a_complete"):
         return False, "needs_prose_phase_a"
-    if not (ctx.issue_artifacts / "whole_paper_findings.jsonl").exists():
+    required_phase_b = [
+        ctx.bundle / "argument_map.json",
+        ctx.bundle / "claims.json",
+        ctx.bundle / "salvageable_core.json",
+        ctx.issue_artifacts / "whole_paper_findings.jsonl",
+    ]
+    if not all(path.exists() for path in required_phase_b):
         return False, "needs_prose_phase_b"
     return True, ""
 
@@ -600,8 +606,12 @@ def build_derivatives(ctx: PipelineContext, *, requested_scope: str, full_report
         requested_scope,
         "--render-mode",
         render_mode,
+        "--phase-a-status",
+        str(ctx.bundle / "phase_a_resume_status.json"),
+        "--phase-b-context",
+        str(ctx.bundle / "phase_b_context.json"),
         "--source-integrity-check",
-        "verified",
+        "skipped",
         "--output-file",
         str(ctx.report_html),
         "--coverage-out",
@@ -645,6 +655,8 @@ def render_final(ctx: PipelineContext, args: argparse.Namespace) -> None:
         "--reuse-raw-html",
         "--coverage",
         str(ctx.bundle / "coverage.json"),
+        "--paper-layout",
+        args.paper_layout,
     ]
     if args.full_report:
         cmd.append("--full-report")
@@ -777,6 +789,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-final-render", action="store_true", help="Compile artifacts but skip final HTML rendering")
     parser.add_argument("--skip-audit", action="store_true", help="Skip final audits")
     parser.add_argument("--inline-images", action="store_true", help="Inline rendered PDF figures in final HTML")
+    parser.add_argument(
+        "--paper-layout",
+        choices=("source", "single", "two-column", "paged", "paged-two-column"),
+        default="source",
+        help="Paper pane layout for the final HTML; source infers layout from generic LaTeX/PDF signals and PDF page maps.",
+    )
     parser.add_argument("--pdf-timeout", type=int, default=300)
     parser.add_argument("--render-timeout", type=int, default=300)
     parser.add_argument("--specialist-timeout", type=int, default=300)
