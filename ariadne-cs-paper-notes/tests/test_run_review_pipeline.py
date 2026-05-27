@@ -517,6 +517,260 @@ def test_full_report_flag_is_opt_in_for_final_render() -> None:
             module.run_command = original_run_command
 
 
+def test_existing_pdf_with_missing_bibliography_is_rebuilt() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        tex = root / "main.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+Hello \citep{demo}.
+\bibliography{refs}
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        (root / "refs.bib").write_text(
+            "@article{demo,title={Demo},author={A},year={2026}}\n",
+            encoding="utf-8",
+        )
+        pdf = tex.with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF-1.4\n")
+        tex.with_suffix(".log").write_text(
+            "No file main.bbl.\nPackage natbib Warning: There were undefined citations.\n",
+            encoding="utf-8",
+        )
+        bundle = root / "bundle"
+        ctx = module.PipelineContext(
+            input_path=tex,
+            entry_tex=tex,
+            bundle=bundle,
+            issue_artifacts=bundle / "issue_artifacts",
+            pdf=pdf,
+            report_html=bundle / "report.html",
+            source_html=root / "main.source.html",
+            review_units_jsonl=bundle / "main.review_units.jsonl",
+            review_units_md=bundle / "main.review_units.md",
+        )
+        calls: list[list[str]] = []
+
+        def fake_run_command(name, cmd, *, outputs=None, timeout=300):
+            calls.append(cmd)
+            return module.PipelineStep(
+                name,
+                "completed",
+                command=cmd,
+                stdout_tail=json.dumps({"ok": True, "pdf": str(pdf), "tool": "latexmk"}),
+                outputs=[str(pdf)],
+            )
+
+        original_run_command = module.run_command
+        module.run_command = fake_run_command
+        try:
+            module.build_pdf_if_needed(ctx, base_args(root, tex, bundle, root / "main.source.html", skip_pdf_build=False))
+        finally:
+            module.run_command = original_run_command
+
+    if not calls:
+        raise AssertionError("Pipeline should rebuild an existing PDF when the bibliography pass is incomplete")
+    if ctx.pdf != pdf.resolve():
+        raise AssertionError(f"Rebuilt PDF should be retained, got {ctx.pdf}")
+    if not any("missing a completed bibliography pass" in warning for warning in ctx.warnings):
+        raise AssertionError(f"Expected bibliography rebuild warning, got {ctx.warnings}")
+
+
+def test_biblatex_with_optional_resource_marks_existing_pdf_incomplete() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        tex = root / "main.tex"
+        tex.write_text(
+            "\n".join(
+                [
+                    r"\documentclass{article}",
+                    r"\usepackage[backend=biber,style=authoryear]{biblatex}",
+                    r"\addbibresource[location=local]{refs.bib}",
+                    r"\begin{document}",
+                    r"Hello \cite{demo}.",
+                    r"\printbibliography",
+                    r"\end{document}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        pdf = tex.with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF-1.4\n")
+        tex.with_suffix(".log").write_text("No file main.bbl.\n", encoding="utf-8")
+
+        if not module.latex_uses_bibliography(tex):
+            raise AssertionError("Pipeline should detect biblatex resources with options as bibliography usage")
+        if not module.existing_pdf_has_incomplete_bibliography(tex, pdf):
+            raise AssertionError("Existing PDF without a bbl should be treated as incomplete for biblatex papers")
+
+
+def test_build_pdf_parses_full_stdout_not_truncated_tail() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        tex = root / "main.tex"
+        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        pdf = tex.with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF-1.4\n")
+        bundle = root / "bundle"
+        ctx = module.PipelineContext(
+            input_path=tex,
+            entry_tex=tex,
+            bundle=bundle,
+            issue_artifacts=bundle / "issue_artifacts",
+            pdf=None,
+            report_html=bundle / "report.html",
+            source_html=root / "main.source.html",
+            review_units_jsonl=bundle / "main.review_units.jsonl",
+            review_units_md=bundle / "main.review_units.md",
+        )
+
+        def fake_run_command(name, cmd, *, outputs=None, timeout=300):
+            payload = json.dumps({"ok": True, "pdf": str(pdf), "tool": "latexmk"})
+            return module.PipelineStep(
+                name,
+                "completed",
+                command=cmd,
+                stdout=payload,
+                stdout_tail=("x" * 2000) + payload[-20:],
+                outputs=[str(pdf)],
+            )
+
+        original_run_command = module.run_command
+        module.run_command = fake_run_command
+        try:
+            module.build_pdf_if_needed(ctx, base_args(root, tex, bundle, root / "main.source.html", skip_pdf_build=False))
+        finally:
+            module.run_command = original_run_command
+
+    if ctx.pdf != pdf.resolve():
+        raise AssertionError(f"Pipeline should parse full build_pdf stdout, got {ctx.pdf}")
+
+
+def test_stale_layout_audit_is_refreshed_against_current_pdf() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        tex = root / "main.tex"
+        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        pdf = tex.with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF-1.4\ncurrent")
+        bundle = root / "bundle"
+        issue_artifacts = bundle / "issue_artifacts"
+        write_json(
+            bundle / "layout_audit.json",
+            {
+                "pdf": str(pdf),
+                "pdf_hash": "sha256:00000000",
+                "pages_total": 1,
+                "pages_checked": [1],
+                "observations": [],
+            },
+        )
+        write_json(
+            issue_artifacts / "layout_issues.json",
+            {
+                "artifact_type": "ariadne_issue_artifact",
+                "schema_version": 1,
+                "domain": "layout",
+                "context_policy": "model_readable_issue_only",
+                "status": "skipped",
+                "source_artifacts": [
+                    {
+                        "path": str(bundle / "layout_audit.json"),
+                        "hash": "sha256:stale",
+                        "context_policy": "tool_output_hash_only",
+                    }
+                ],
+                "coverage": {"checked": 1, "issues": 0, "skipped": 1},
+                "issues": [],
+            },
+        )
+        ctx = module.PipelineContext(
+            input_path=tex,
+            entry_tex=tex,
+            bundle=bundle,
+            issue_artifacts=issue_artifacts,
+            pdf=pdf,
+            report_html=bundle / "report.html",
+            source_html=root / "main.source.html",
+            review_units_jsonl=bundle / "main.review_units.jsonl",
+            review_units_md=bundle / "main.review_units.md",
+        )
+        calls: list[str] = []
+
+        def fake_run_command(name, cmd, *, outputs=None, timeout=300):  # noqa: ARG001
+            calls.append(name)
+            out = Path(cmd[cmd.index("--out") + 1])
+            if name == "refresh_layout_audit":
+                write_json(
+                    out,
+                    {
+                        "tool": "scripts/check_page_layout.py",
+                        "tool_version": "1",
+                        "script_hash": "sha256:11111111",
+                        "pdf": str(pdf.resolve()),
+                        "pdf_hash": module.sha256_path(pdf),
+                        "pages_total": 1,
+                        "pages_checked": [1],
+                        "page_summaries": [],
+                        "observations": [],
+                    },
+                )
+            elif name == "refresh_layout_issues":
+                raw = bundle / "layout_audit.json"
+                write_json(
+                    out,
+                    {
+                        "artifact_type": "ariadne_issue_artifact",
+                        "schema_version": 1,
+                        "domain": "layout",
+                        "context_policy": "model_readable_issue_only",
+                        "status": "skipped",
+                        "source_artifacts": [
+                            {
+                                "path": str(raw),
+                                "hash": module.sha256_path(raw),
+                                "context_policy": "tool_output_hash_only",
+                            }
+                        ],
+                        "coverage": {"checked": 1, "issues": 0, "skipped": 1},
+                        "issues": [],
+                    },
+                )
+            return module.PipelineStep(name, "completed", command=cmd, outputs=[str(path) for path in outputs or []])
+
+        original_run_command = module.run_command
+        original_which = module.shutil.which
+        module.run_command = fake_run_command
+        module.shutil.which = lambda name: "/usr/bin/pdftotext-test" if name == "pdftotext" else original_which(name)
+        try:
+            module.refresh_stale_layout_artifacts(ctx, base_args(root, tex, bundle, root / "main.source.html"))
+        finally:
+            module.run_command = original_run_command
+            module.shutil.which = original_which
+
+        refreshed_audit = json.loads((bundle / "layout_audit.json").read_text(encoding="utf-8"))
+        refreshed_issues = json.loads((issue_artifacts / "layout_issues.json").read_text(encoding="utf-8"))
+        expected_pdf_hash = module.sha256_path(pdf)
+        expected_raw_hash = module.sha256_path(bundle / "layout_audit.json")
+
+    if calls != ["refresh_layout_audit", "refresh_layout_issues"]:
+        raise AssertionError(f"Expected stale layout audit and issues to refresh, got calls={calls}")
+    if refreshed_audit["pdf_hash"] != expected_pdf_hash:
+        raise AssertionError(f"Layout audit did not bind to current PDF: {refreshed_audit}")
+    if refreshed_issues["source_artifacts"][0]["hash"] != expected_raw_hash:
+        raise AssertionError(f"Layout issues did not bind to refreshed raw audit: {refreshed_issues}")
+    if not any("compiled PDF changed" in warning for warning in ctx.warnings):
+        raise AssertionError(f"Expected refresh warning, got {ctx.warnings}")
+
+
 if __name__ == "__main__":
     test_pipeline_prepare_checkpoint_writes_resume_packets()
     test_pipeline_partial_compile_uses_available_specialist_issues()
@@ -525,4 +779,8 @@ if __name__ == "__main__":
     test_pipeline_can_invoke_prose_agent_dry_run()
     test_pipeline_fake_agent_end_to_end_compile_render_audit()
     test_full_report_flag_is_opt_in_for_final_render()
+    test_existing_pdf_with_missing_bibliography_is_rebuilt()
+    test_biblatex_with_optional_resource_marks_existing_pdf_incomplete()
+    test_build_pdf_parses_full_stdout_not_truncated_tail()
+    test_stale_layout_audit_is_refreshed_against_current_pdf()
     print("run_review_pipeline regression tests passed")

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -25,6 +26,25 @@ def load_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def write_fake_pdftotext(directory: Path, bbox_html: str) -> None:
+    executable = directory / "pdftotext"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        f"sys.stdout.write({bbox_html!r})\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+
+
+def pdf_bbox_page(line_specs: list[tuple[float, float, float, float]]) -> str:
+    lines = "\n".join(
+        f'<line xMin="{x_min}" yMin="{y_min}" xMax="{x_max}" yMax="{y_max}"></line>'
+        for x_min, y_min, x_max, y_max in line_specs
+    )
+    return f'<doc><page width="600" height="800">{lines}</page></doc>'
 
 
 def test_render_paper_html_wraps_source_sentences_with_provenance() -> None:
@@ -579,6 +599,144 @@ C & D \\
             raise AssertionError("Second table label was incorrectly inserted into the already-labeled first table")
 
 
+def test_table_labels_are_restored_by_content_when_pandoc_reorders_tables() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\begin{table*}
+\caption{Main results caption.}
+\label{tab:main}
+\begin{tabular}{lrr}
+Method & NQ & PopQA \\
+Base & 21.42 & 16.96 \\
+RL & 34.12 & 22.27 \\
+\end{tabular}
+\end{table*}
+\begin{wraptable}{r}{0.35\textwidth}
+\caption{Algorithm ablation caption.}
+\label{tab:algo}
+\begin{tabular}{lrrr}
+Method & Llama & OLMo & Qwen \\
+Pre-RL & 30.15 & 22.79 & 21.42 \\
+GRPO & 46.39 & 36.91 & 34.12 \\
+PPO & 46.42 & 37.12 & 32.48 \\
+\end{tabular}
+\end{wraptable}
+\begin{table*}
+\caption{Model scale caption.}
+\label{tab:scale}
+\begin{tabular}{lrrr}
+NQ & Qwen2.5-7B & Qwen2.5-14B & Qwen2.5-72B \\
+Pre-RL & 21.42 & 25.24 & 34.64 \\
+Post-RL & 34.12 & 41.88 & 49.61 \\
+\end{tabular}
+\end{table*}
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <div class="paper-table"><table><caption>Wrong leading caption.</caption><tbody><tr><th>Method</th><th>NQ</th><th>PopQA</th></tr><tr><td>Base</td><td>21.42</td><td>16.96</td></tr><tr><td>RL</td><td>34.12</td><td>22.27</td></tr></tbody></table></div>
+  <div class="paper-table"><table><caption>Wrong middle caption.</caption><tbody><tr><th>NQ</th><th>Qwen2.5-7B</th><th>Qwen2.5-14B</th><th>Qwen2.5-72B</th></tr><tr><td>Pre-RL</td><td>21.42</td><td>25.24</td><td>34.64</td></tr><tr><td>Post-RL</td><td>34.12</td><td>41.88</td><td>49.61</td></tr></tbody></table></div>
+  <div class="paper-table"><table><caption>Wrong trailing caption.</caption><tbody><tr><th>Method</th><th>Llama</th><th>OLMo</th><th>Qwen</th></tr><tr><td>Pre-RL</td><td>30.15</td><td>22.79</td><td>21.42</td></tr><tr><td>GRPO</td><td>46.39</td><td>36.91</td><td>34.12</td></tr><tr><td>PPO</td><td>46.42</td><td>37.12</td><td>32.48</td></tr></tbody></table></div>
+</body></html>
+""",
+            "lxml",
+        )
+        module.restore_latex_labels(soup, tex)
+        module.add_float_caption_numbers(soup, tex)
+        main = soup.find(id="tab:main")
+        algo = soup.find(id="tab:algo")
+        scale = soup.find(id="tab:scale")
+        if main is None or "Main results caption" not in main.get_text(" ", strip=True) or "PopQA" not in main.get_text(" ", strip=True):
+            raise AssertionError(f"Main table label/caption should stay with main-results cells: {soup}")
+        if algo is None or "Table 2: Algorithm ablation caption" not in algo.get_text(" ", strip=True) or "PPO" not in algo.get_text(" ", strip=True):
+            raise AssertionError(f"Algorithm table should be Table 2 and keep PPO cells: {soup}")
+        if scale is None or "Table 3: Model scale caption" not in scale.get_text(" ", strip=True) or "Qwen2.5-72B" not in scale.get_text(" ", strip=True):
+            raise AssertionError(f"Model-scale table should be Table 3 and keep scale cells: {soup}")
+
+
+def test_commented_inputs_do_not_shift_float_numbers_or_references() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        active = tmp / "active_table.tex"
+        commented = tmp / "commented_table.tex"
+        tex = tmp / "paper.tex"
+        active.write_text(
+            r"""
+\begin{table}
+\caption{Active table caption.}
+\label{tab:active}
+\begin{tabular}{ll}
+A & B \\
+\end{tabular}
+\end{table}
+""",
+            encoding="utf-8",
+        )
+        commented.write_text(
+            r"""
+\begin{table}
+\caption{Commented-out table caption.}
+\label{tab:commented}
+\begin{tabular}{ll}
+X & Y \\
+\end{tabular}
+\end{table}
+""",
+            encoding="utf-8",
+        )
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+% \input{commented_table}
+\input{active_table}
+See Table~\ref{tab:active}.
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <div id="tab:active" class="paper-table"><table><caption>Active table caption.</caption><tbody><tr><td>A</td><td>B</td></tr></tbody></table></div>
+  <p>See Table <a data-reference="tab:active" href="#tab:active">[tab:active]</a>.</p>
+</body></html>
+""",
+            "lxml",
+        )
+        module.add_float_caption_numbers(soup, tex)
+        module.sync_float_reference_numbers(soup, tex)
+        text = soup.get_text(" ", strip=True)
+        if "Commented-out table caption" in text:
+            raise AssertionError(f"Commented input was expanded into the HTML model: {soup}")
+        if "Table 1: Active table caption" not in text:
+            raise AssertionError(f"Active table should remain Table 1: {soup}")
+        if soup.find("a", attrs={"data-reference": "tab:active"}).get_text(" ", strip=True) != "1":
+            raise AssertionError(f"Table reference should be synchronized to 1: {soup}")
+
+
+def test_latex_caption_inline_markup_is_rendered_cleanly() -> None:
+    module = load_module()
+    soup = BeautifulSoup("<html><body><caption></caption></body></html>", "lxml")
+    caption = soup.find("caption")
+    module.append_latex_inline(soup, caption, r"Accuracy (\%) with \textbf{bold} values and Pass@$k$.")
+    text = caption.get_text(" ", strip=True)
+    if r"\%" in text or r"\textbf" in text or "Pass@ k" not in text:
+        raise AssertionError(f"LaTeX caption markup should render as clean HTML text: {caption}")
+    if caption.find("strong") is None or caption.find(class_="math-inline") is None:
+        raise AssertionError(f"Expected inline bold and math markup in caption: {caption}")
+
+
 def test_latex_paragraph_headings_are_not_display_numbered() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -909,7 +1067,64 @@ Hello.
             raise AssertionError("NeurIPS source layout should default to paged single-column when the PDF exists")
 
 
-def test_twocolumn_option_defaults_to_paged_two_column_when_pdf_exists() -> None:
+def test_pdf_geometry_selects_paged_two_column_without_conference_hack() -> None:
+    module = load_module()
+    two_column_lines: list[tuple[float, float, float, float]] = []
+    for i in range(18):
+        y = 120 + i * 18
+        two_column_lines.append((52, y, 268, y + 10))
+        two_column_lines.append((332, y, 548, y + 10))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        write_fake_pdftotext(tmp, pdf_bbox_page(two_column_lines))
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = f"{tmp}{os.pathsep}{old_path}"
+        try:
+            tex = tmp / "paper.tex"
+            tex.write_text(
+                r"""
+\documentclass{article}
+\usepackage[review]{acl}
+\begin{document}
+Hello.
+\end{document}
+""",
+                encoding="utf-8",
+            )
+            tex.with_suffix(".pdf").write_bytes(b"%PDF-1.4\n% fake bbox-driven layout resolver\n")
+            if module.resolve_paper_layout(tex, "source") != "paged-two-column":
+                raise AssertionError("Compiled PDF geometry, not ACL package name, should select paged two-column layout")
+        finally:
+            os.environ["PATH"] = old_path
+
+
+def test_pdf_geometry_overrides_source_twocolumn_when_compiled_pdf_is_single() -> None:
+    module = load_module()
+    single_column_lines = [(70, 110 + i * 18, 530, 120 + i * 18) for i in range(24)]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        write_fake_pdftotext(tmp, pdf_bbox_page(single_column_lines))
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = f"{tmp}{os.pathsep}{old_path}"
+        try:
+            tex = tmp / "paper.tex"
+            tex.write_text(
+                r"""
+\documentclass[twocolumn]{article}
+\begin{document}
+Hello.
+\end{document}
+""",
+                encoding="utf-8",
+            )
+            tex.with_suffix(".pdf").write_bytes(b"%PDF-1.4\n% fake bbox-driven layout resolver\n")
+            if module.resolve_paper_layout(tex, "source") != "paged":
+                raise AssertionError("When a compiled PDF is readable, its geometry should override source twocolumn hints")
+        finally:
+            os.environ["PATH"] = old_path
+
+
+def test_twocolumn_option_does_not_override_existing_pdf_layout() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -926,8 +1141,8 @@ Hello.
         if module.resolve_paper_layout(tex, "source") != "two-column":
             raise AssertionError("Generic twocolumn documentclass option should select two-column layout")
         tex.with_suffix(".pdf").write_bytes(b"%PDF-1.4\n% placeholder for layout resolver\n")
-        if module.resolve_paper_layout(tex, "source") != "paged-two-column":
-            raise AssertionError("Generic twocolumn document with PDF should select paged two-column layout")
+        if module.resolve_paper_layout(tex, "source") != "paged":
+            raise AssertionError("When a compiled PDF exists, source layout should not promote to two-column without PDF geometry evidence")
 
 
 def test_pdf_anonymous_front_matter_overrides_source_author_for_any_template() -> None:
@@ -1080,7 +1295,7 @@ def test_paged_layout_places_float_only_blocks_and_preserves_pdf_page_count() ->
         raise AssertionError("Paged layout should preserve trailing PDF-only pages even when no source sentence maps there")
 
 
-def test_paged_layout_float_page_assignment_takes_precedence_over_caption_sentences() -> None:
+def test_paged_layout_caption_sentence_page_keeps_float_in_source_position() -> None:
     module = load_module()
     soup = BeautifulSoup(
         """
@@ -1092,15 +1307,24 @@ def test_paged_layout_float_page_assignment_takes_precedence_over_caption_senten
 """,
         "lxml",
     )
+    pages = [
+        module.normalize_for_match(""),
+        module.normalize_for_match("Late figure caption sentence."),
+        module.normalize_for_match(""),
+        module.normalize_for_match("Late figure caption sentence."),
+    ]
+    pages = [" ".join(module.text_match_tokens(page)) for page in pages]
+    sentence_assignments = {"s-cap-p001-s001": 2}
+    block_assignments = module.block_page_assignments_from_pages(soup, pages, sentence_assignments)
     module.split_children_into_pages(
         soup,
-        {"s-cap-p001-s001": 2},
-        block_assignments={"fig:late": 4},
+        sentence_assignments,
+        block_assignments=block_assignments,
         min_pages=4,
     )
     figure = soup.find(id="fig:late")
-    if figure is None or figure.find_parent(class_="paper-page").get("data-page") != "4":
-        raise AssertionError(f"Float block assignment should override its caption sentence page: {soup}")
+    if figure is None or figure.find_parent(class_="paper-page").get("data-page") != "2":
+        raise AssertionError(f"Float with caption sentence page should not jump to a later repeated caption page: {soup}")
 
 
 def test_sentence_page_assignment_can_skip_unanchored_reference_pages() -> None:
@@ -1125,6 +1349,35 @@ def test_sentence_page_assignment_can_skip_unanchored_reference_pages() -> None:
     assignments = module.sentence_page_assignments_from_pages(soup, pages)
     if assignments.get("s-main-001") != 1 or assignments.get("s-appendix-001") != 4:
         raise AssertionError(f"Page assignment should skip reference-only PDF pages: {assignments}")
+
+
+def test_sentence_page_assignment_uses_global_alignment_for_ambiguous_page_turns() -> None:
+    module = load_module()
+    soup = BeautifulSoup(
+        """
+<html><body>
+  <p><span class="paper-sentence" data-sentence-id="s-first">Opening calibration sentence with distinctive first page evidence.</span></p>
+  <p><span class="paper-sentence" data-sentence-id="s-ambiguous">During detection each segment is decoded independently.</span></p>
+  <p><span class="paper-sentence" data-sentence-id="s-page-two">Theoretical decoding accuracy rises slowly with segmentation and fewer tokens per segment.</span></p>
+  <p><span class="paper-sentence" data-sentence-id="s-page-three">Existing methods exhibit message dependent generation biases across candidate messages.</span></p>
+</body></html>
+""",
+        "lxml",
+    )
+    pages = [
+        "Opening calibration sentence with distinctive first page evidence.",
+        "During detection each segment. Theoretical decoding accuracy rises slowly with segmentation and fewer tokens per segment.",
+        "During detection each segment is decoded independently. Existing methods exhibit message dependent generation biases across candidate messages.",
+    ]
+    pages = [" ".join(module.text_match_tokens(module.normalize_for_match(page))) for page in pages]
+    greedy = module._greedy_sentence_page_assignments_from_pages(soup, pages)
+    assignments = module.sentence_page_assignments_from_pages(soup, pages)
+    if greedy.get("s-ambiguous") != 3 or greedy.get("s-page-two") != 3:
+        raise AssertionError(f"Fixture should reproduce the old premature page turn: {greedy}")
+    if assignments.get("s-ambiguous") != 2 or assignments.get("s-page-two") != 2:
+        raise AssertionError(f"Global page alignment should keep the page-two run together: {assignments}")
+    if assignments.get("s-page-three") != 3:
+        raise AssertionError(f"Global page alignment should still advance on the real next-page sentence: {assignments}")
 
 
 def test_flow_block_assignment_places_reference_blocks_on_pdf_pages() -> None:
@@ -1243,11 +1496,11 @@ def test_paged_two_column_css_prevents_extra_columns_from_overlapping_sidebar() 
         page_map={"pages": 1},
     )
     if "column-count:2" not in html or "column-fill:balance" not in html:
-        raise AssertionError("Paged two-column layout should balance content within each PDF page wrapper")
+        raise AssertionError("Paged two-column layout should distribute each PDF page across both columns")
     if "min-height:1120px" not in html or "overflow:hidden" not in html:
         raise AssertionError("Paged layout should keep each page visually bounded so extra columns cannot overlap the sidebar")
     if " height:1120px" in html or "{ height:1120px" in html or "column-fill:auto" in html:
-        raise AssertionError("Fixed-height auto-fill can create horizontal extra columns that spill into the annotation sidebar")
+        raise AssertionError("Paged two-column layout must not leave PDF page content stuck in the left CSS column")
     if ".paper-page > figure" in html or ".paper-layout-two-column > figure" in html:
         raise AssertionError("Regular single-column figures must not be forced to span both columns")
 
@@ -1271,6 +1524,50 @@ def test_paged_single_column_css_uses_page_wrappers_without_column_count() -> No
         raise AssertionError("Paged single-column pages must not inherit two-column balancing")
     if ".paper-pane.paper-layout-paged { font-size:15px;" not in html:
         raise AssertionError("Paged single-column layout should have its own page-wrapper styling")
+
+
+def test_empty_full_report_annotation_panel_warns_not_complete() -> None:
+    module = load_module()
+    html = module.report_shell(
+        "Demo",
+        "<p>Body.</p>",
+        tex_path=Path("/tmp/paper.tex"),
+        raw_html_path=Path("/tmp/paper.source.html"),
+        raw_hash="sha256:test",
+        sentence_count=1,
+        annotations=[],
+        full_report=True,
+    )
+    if "审阅未完成" not in html or "Prose Phase A/B" not in html:
+        raise AssertionError("Empty full reports should warn users that prose review did not complete")
+    if "has-annotation" in html and "下一步应让审阅逻辑" in html:
+        raise AssertionError("Empty-state copy should be user-facing, not renderer-internal guidance")
+
+
+def test_coverage_receipt_lists_visible_findings_not_rendered_in_overlay() -> None:
+    module = load_module()
+    html = module.report_shell(
+        "Demo",
+        "<p>Body.</p>",
+        tex_path=Path("/tmp/paper.tex"),
+        raw_html_path=Path("/tmp/paper.source.html"),
+        raw_hash="sha256:test",
+        sentence_count=1,
+        annotations=[],
+        findings=[
+            {
+                "id": "F9",
+                "severity": "Minor",
+                "issue_type": "prose",
+                "render_visibility": "student_visible",
+                "title": "Visible but unanchored issue",
+                "primary_anchor": "missing-anchor",
+            }
+        ],
+        full_report=True,
+    )
+    if "未渲染 findings" not in html or "F9" not in html or "not anchored in overlay/global sections" not in html:
+        raise AssertionError("Coverage receipt should expose visible findings that were not rendered in overlay/global sections")
 
 
 def test_table_css_keeps_paper_tables_centerable() -> None:
@@ -1916,6 +2213,9 @@ def main() -> int:
     test_paragraph_ids_reset_at_section_boundaries()
     test_restore_latex_labels_for_wrapfigure_and_tables()
     test_restore_mathml_equation_labels_from_tex_annotations()
+    test_table_labels_are_restored_by_content_when_pandoc_reorders_tables()
+    test_commented_inputs_do_not_shift_float_numbers_or_references()
+    test_latex_caption_inline_markup_is_rendered_cleanly()
     test_ensure_references_heading_for_csl_entries()
     test_bibliography_before_appendix_is_restored_after_pandoc_append()
     test_reused_source_restores_references_before_appendix_and_alpha_numbers()
@@ -1924,19 +2224,24 @@ def main() -> int:
     test_latex_paragraph_headings_are_not_display_numbered()
     test_acl_review_front_matter_is_anonymized_and_not_numbered()
     test_neurips_source_layout_defaults_to_paged_single_when_pdf_exists()
-    test_twocolumn_option_defaults_to_paged_two_column_when_pdf_exists()
+    test_pdf_geometry_selects_paged_two_column_without_conference_hack()
+    test_pdf_geometry_overrides_source_twocolumn_when_compiled_pdf_is_single()
+    test_twocolumn_option_does_not_override_existing_pdf_layout()
     test_imports_existing_review_html_without_dropping_unanchored_notes()
     test_paged_layout_groups_existing_sentence_ids_without_coordinate_anchors()
     test_paged_layout_preserves_abstract_and_keeps_overview_outside_pages()
     test_paged_layout_places_float_only_blocks_and_preserves_pdf_page_count()
-    test_paged_layout_float_page_assignment_takes_precedence_over_caption_sentences()
+    test_paged_layout_caption_sentence_page_keeps_float_in_source_position()
     test_sentence_page_assignment_can_skip_unanchored_reference_pages()
+    test_sentence_page_assignment_uses_global_alignment_for_ambiguous_page_turns()
     test_flow_block_assignment_places_reference_blocks_on_pdf_pages()
     test_reference_entries_can_split_across_pdf_pages()
     test_paged_layout_can_backfill_pages_after_late_float()
     test_list_blocks_can_split_across_pdf_pages()
     test_paged_two_column_css_prevents_extra_columns_from_overlapping_sidebar()
     test_paged_single_column_css_uses_page_wrappers_without_column_count()
+    test_empty_full_report_annotation_panel_warns_not_complete()
+    test_coverage_receipt_lists_visible_findings_not_rendered_in_overlay()
     test_table_css_keeps_paper_tables_centerable()
     test_caption_target_cards_use_figure_caption_pointer_label()
     test_multiple_annotations_on_one_sentence_get_unique_cards()

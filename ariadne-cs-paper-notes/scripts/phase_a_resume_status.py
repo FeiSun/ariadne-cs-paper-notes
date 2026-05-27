@@ -310,7 +310,7 @@ def build_status(
             "paragraphs_reviewed": sum(int(item.get("paragraphs_reviewed", 0) or 0) for item in completed + partial),
             "sentences_total": sum(int(item.get("sentences", 0) or 0) for item in review_sections),
             "sentences_reviewed": sum(int(item.get("sentences_reviewed", 0) or 0) for item in completed + partial),
-            "sentence_review_receipt_complete": all(bool(item.get("has_sentence_review_receipt")) for item in review_sections) if review_sections else True,
+            "sentence_review_receipt_complete": all(bool(item.get("has_sentence_review_receipt")) for item in completed + pending) if review_sections else True,
             "cold_skim_present": bool(cold_skim and cold_skim.exists()),
             "claim_candidates_present": bool(claim_candidates and claim_candidates.exists()),
             "phase_a_complete": bool(

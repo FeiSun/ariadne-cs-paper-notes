@@ -251,6 +251,8 @@ def test_derivatives_use_phase_artifacts_for_coverage_and_defer_artifact_only_fi
         raise AssertionError(f"Derivative builder should not pre-certify audit pass, got {passes}")
     if payloads["render_manifest"]["deferred_findings"] != ["F2"]:
         raise AssertionError(f"Artifact-only finding should be deferred for HTML audit: {payloads['render_manifest']}")
+    if payloads["render_manifest"].get("deferred_findings_with_reason") != [{"id": "F2", "reason": "artifact_only"}]:
+        raise AssertionError(f"Deferred findings should include reasons: {payloads['render_manifest']}")
 
 
 if __name__ == "__main__":

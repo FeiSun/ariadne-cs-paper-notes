@@ -43,6 +43,61 @@ def test_bbox_parser_preserves_camelcase_attributes() -> None:
         raise AssertionError(f"Expected nonzero bbox values, got {line}")
 
 
+def test_margin_line_numbers_do_not_emit_edge_text_observations() -> None:
+    module = load_module()
+    observations, summary = module.analyze_page(
+        1,
+        {
+            "width": 595.3,
+            "height": 841.9,
+            "lines": [
+                {
+                    "xMin": 12.2,
+                    "yMin": 225.1,
+                    "xMax": 25.5,
+                    "yMax": 232.6,
+                    "words": [{"text": "589"}],
+                },
+                {
+                    "xMin": 74.0,
+                    "yMin": 225.1,
+                    "xMax": 260.0,
+                    "yMax": 236.0,
+                    "words": [{"text": "Real"}, {"text": "body"}, {"text": "line"}],
+                },
+            ],
+        },
+        "sha256:test",
+    )
+    if any(item.get("issue_type") == "edge_text" for item in observations):
+        raise AssertionError(f"Margin line number should not become edge_text: {observations}")
+    if summary["needs_main_review"]:
+        raise AssertionError(f"Margin line number should not force main review: {summary}")
+
+
+def test_real_edge_text_still_emits_observation() -> None:
+    module = load_module()
+    observations, _summary = module.analyze_page(
+        1,
+        {
+            "width": 595.3,
+            "height": 841.9,
+            "lines": [
+                {
+                    "xMin": 8.0,
+                    "yMin": 225.1,
+                    "xMax": 160.0,
+                    "yMax": 236.0,
+                    "words": [{"text": "Overfull"}, {"text": "body"}, {"text": "text"}],
+                }
+            ],
+        },
+        "sha256:test",
+    )
+    if not any(item.get("issue_type") == "edge_text" for item in observations):
+        raise AssertionError(f"Real edge body text should remain actionable: {observations}")
+
+
 def test_real_pdf_page_outputs_compact_json_when_available() -> None:
     if not PDF.exists():
         return
@@ -72,6 +127,8 @@ def test_real_pdf_page_outputs_compact_json_when_available() -> None:
 def main() -> int:
     test_parse_pages()
     test_bbox_parser_preserves_camelcase_attributes()
+    test_margin_line_numbers_do_not_emit_edge_text_observations()
+    test_real_edge_text_still_emits_observation()
     test_real_pdf_page_outputs_compact_json_when_available()
     print("check_page_layout regression tests passed")
     return 0

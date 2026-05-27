@@ -203,7 +203,7 @@ def test_layout_audit_provenance_is_checked() -> None:
         {
             "tool": "scripts/check_page_layout.py",
             "tool_version": "1",
-            "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+            "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
             "pdf": "debug/Hidden_Knowledge_with_RL/main.pdf",
             "pdf_hash": "sha256:1111111111111111",
             "pages_total": 2,
@@ -218,7 +218,7 @@ def test_layout_audit_provenance_is_checked() -> None:
                     "evidence": "Line text: `Result`.",
                     "needs_main_review": False,
                     "produced_by": "manual",
-                    "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+                    "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
                 }
             ],
         }
@@ -325,7 +325,7 @@ def test_layout_finding_accepts_layout_audit_observation_id() -> None:
         evidence_basis="PDF layout observation",
         verification_method="scripts/check_page_layout.py layout audit",
         produced_by="scripts/check_page_layout.py",
-        script_hash="sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+        script_hash="sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
         page=4,
         layout_audit_observation_id="layout-p004-001",
     )

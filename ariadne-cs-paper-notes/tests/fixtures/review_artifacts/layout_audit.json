@@ -1,7 +1,7 @@
 {
   "tool": "scripts/check_page_layout.py",
   "tool_version": "1",
-  "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+  "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
   "pdf": "debug/Hidden_Knowledge_with_RL/main.pdf",
   "pdf_hash": "sha256:d59403d783e8c8a0bccb841de70d4b2b5e5cf2059d3e48b8ffb0276fa8294345",
   "pages_total": 30,
@@ -32,7 +32,7 @@
       "evidence": "Line text: `RFT`.",
       "needs_main_review": false,
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
       "observation_id": "layout-p004-001"
     },
     {
@@ -49,7 +49,7 @@
       "evidence": "Line text: `DPO`.",
       "needs_main_review": false,
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
       "observation_id": "layout-p004-002"
     },
     {
@@ -66,7 +66,7 @@
       "evidence": "Line text: `RL`.",
       "needs_main_review": false,
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
       "observation_id": "layout-p004-003"
     },
     {
@@ -83,7 +83,7 @@
       "evidence": "Line text: `Train`.",
       "needs_main_review": false,
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
       "observation_id": "layout-p004-004"
     },
     {
@@ -100,7 +100,7 @@
       "evidence": "Line text: `Test`.",
       "needs_main_review": false,
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
       "observation_id": "layout-p004-005"
     },
     {
@@ -117,7 +117,7 @@
       "evidence": "Line text: `SFT`.",
       "needs_main_review": false,
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
       "observation_id": "layout-p004-006"
     },
     {
@@ -134,7 +134,7 @@
       "evidence": "Line text: `DPO`.",
       "needs_main_review": false,
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
       "observation_id": "layout-p004-007"
     },
     {
@@ -151,7 +151,7 @@
       "evidence": "Line text: `RFT`.",
       "needs_main_review": false,
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
       "observation_id": "layout-p004-008"
     },
     {
@@ -168,7 +168,7 @@
       "evidence": "Line text: `RL`.",
       "needs_main_review": false,
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
       "observation_id": "layout-p004-009"
     },
     {
@@ -185,7 +185,7 @@
       "evidence": "Line text: `Accuracy`.",
       "needs_main_review": false,
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0",
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb",
       "observation_id": "layout-p004-010"
     }
   ]

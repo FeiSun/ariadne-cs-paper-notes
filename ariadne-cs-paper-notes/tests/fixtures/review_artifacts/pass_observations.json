@@ -48,7 +48,7 @@
       "layout_audit_observation_id": "layout-p004-001",
       "observation": "Page-local layout audit found one isolated-word line.",
       "produced_by": "scripts/check_page_layout.py",
-      "script_hash": "sha256:78c267411e6678bf294ec0bfe3068cdd18ddb3516323782ed16907ecd8cd30e0"
+      "script_hash": "sha256:72075ef2e29b876f30d65d72f29a298f6d70032198c7ec6da1c08535b915cacb"
     }
   ],
   "pass_6_output_calibration": [

@@ -214,21 +214,24 @@ SECTION_HEADING_WORDS = (
     "Abstract|Introduction|Related Work|Background|Method|Methods|Approach|"
     "Experiments|Evaluation|Results|Analysis|Discussion|Limitations|Conclusion|References|Appendix"
 )
-GENERIC_NUMBERED_HEADING = r"\d+(?:\.\d+)*\s+([A-Z][^,.\n!?]{2,60}|[\u4e00-\u9fff][^\n。！？,.]{1,60})"
+GENERIC_NUMBERED_HEADING = r"\d+(?:\.\d+)*[^\S\n]+([A-Z][^,.\n!?]{2,60}|[\u4e00-\u9fff][^\n。！？,.]{1,60})"
 COMMON_SECTION_HEADING = rf"(?:\d+(?:\.\d+)*\s+)?({SECTION_HEADING_WORDS})\b[^\n]{{0,60}}"
-PDF_SECTION_RE = re.compile(rf"^\s*(?:({GENERIC_NUMBERED_HEADING})|{COMMON_SECTION_HEADING})\s*$", re.IGNORECASE | re.MULTILINE)
+PDF_SECTION_RE = re.compile(rf"^[^\S\n]*(?:({GENERIC_NUMBERED_HEADING})|{COMMON_SECTION_HEADING})[^\S\n]*$", re.IGNORECASE | re.MULTILINE)
 GENERAL_HEADING_RE = re.compile(
     rf"^#{{1,3}}\s+(.+)$|"
-    rf"^\s*(?:({GENERIC_NUMBERED_HEADING})|{COMMON_SECTION_HEADING})\s*$",
+    rf"^[^\S\n]*(?:({GENERIC_NUMBERED_HEADING})|{COMMON_SECTION_HEADING})[^\S\n]*$",
     re.IGNORECASE | re.MULTILINE,
 )
 PDF_CAPTION_RE = re.compile(r"\b(?:Figure|Fig\.|Table)\s+\d+[:.]\s+([^\n]{10,500})", re.IGNORECASE)
 PDF_CITE_RE = re.compile(
     r"\[(?:\d+(?:,\s*\d+)*(?:-\d+)?)\]|"
+    r"\[[A-Z][^\]\n]{0,180}\b\d{4}[a-z]?[^\]\n]*\]|"
     r"\[[A-Za-z][A-Za-z0-9:_-]*\d{4}[A-Za-z0-9:_-]*\]|"
     r"\([A-Z][A-Za-z-]+(?: et al\.)?,\s*\d{4}\)|"
     r"\b[A-Z][A-Za-z-]+ et al\.\s*\[\d+\]"
 )
+PDF_LINE_NUMBER_HEADING_RE = re.compile(r"^\s*\d{1,4}\s{2,}\S")
+PLACEHOLDER_CAPTIONS = {"caption", "figure caption", "table caption"}
 
 
 @dataclass
@@ -271,6 +274,15 @@ def one_line(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def nonempty_command_payloads(pattern: re.Pattern[str], raw: str) -> list[str]:
+    payloads: list[str] = []
+    for match in pattern.finditer(raw):
+        payload = one_line(match.group(1))
+        if payload:
+            payloads.append(payload)
+    return payloads
+
+
 def command_payloads(pattern: re.Pattern[str], raw: str, max_items: int) -> list[str]:
     payloads = []
     for match in pattern.finditer(raw):
@@ -285,6 +297,33 @@ def signal_snippet(text: str) -> str:
 
 def signal_line_items(pattern: re.Pattern[str], text: str) -> list[tuple[int, str]]:
     return [(text.count("\n", 0, match.start()) + 1, signal_snippet(match.group(0))) for match in pattern.finditer(text)]
+
+
+def unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in paths:
+        key = path.resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def is_pdf_noise_heading(line: str) -> bool:
+    stripped = re.sub(r"\s+", " ", line).strip()
+    if not stripped:
+        return True
+    if "\f" in line:
+        return True
+    if PDF_LINE_NUMBER_HEADING_RE.match(line):
+        return True
+    if re.fullmatch(r"[\d\s.,%+-]+", stripped):
+        return True
+    if re.match(r"^\d+(?:\.\d+)?\s+[A-Z][A-Za-z0-9./%+-]+(?:\s+[A-Z][A-Za-z0-9./%+-]+){1,}$", stripped):
+        return True
+    return False
 
 
 def split_unescaped_ampersand(row: str) -> list[str]:
@@ -385,6 +424,7 @@ def pdf_summary_header_indices(line: str) -> list[int]:
     return indices
 
 
+STRUCTURAL_TABLE_CELL_RE = re.compile(r"\\(?:multirow|multicolumn|cline|cmidrule|toprule|midrule|bottomrule|hline)\b")
 SUMMARY_COLUMN_RE = re.compile(
     r"\b(?:avg|average|mean|macro\s*avg|micro\s*avg|overall|total|sum|score|safety\s*score)\b|平均|总|總",
     re.IGNORECASE,
@@ -421,6 +461,26 @@ def visible_table_rows(raw_body: str) -> list[tuple[int, list[str]]]:
         cells = [normalized_cell_text(cell) for cell in split_unescaped_ampersand(row_clean)]
         rows.append((row_idx, cells))
     return rows
+
+
+def structural_table_row(cells: list[str]) -> bool:
+    nonempty = [cell for cell in cells if cell.strip()]
+    if not nonempty:
+        return True
+    structural_cells = sum(1 for cell in nonempty if STRUCTURAL_TABLE_CELL_RE.search(cell))
+    numeric_cells = sum(1 for cell in cells if parse_visible_number(cell) is not None)
+    return bool(structural_cells and numeric_cells == 0)
+
+
+def table_blank_positions(cells: list[str]) -> list[int]:
+    if structural_table_row(cells):
+        return []
+    first_nonempty = next((idx for idx, cell in enumerate(cells) if cell.strip()), len(cells))
+    return [
+        idx + 1
+        for idx, cell in enumerate(cells)
+        if idx >= first_nonempty and (not cell or cell in {"-", "--", "–", "—", "N/A", "NA", "n/a", "?"})
+    ]
 
 
 def table_numeric_signals(table_idx: int, rows: list[tuple[int, list[str]]]) -> list[str]:
@@ -633,6 +693,12 @@ def pdf_line_numeric_audit(text: str, max_items: int) -> list[dict[str, object]]
     return signals
 
 
+NUMERIC_NO_SIGNAL_CAVEAT = (
+    "No deterministic row-summary recomputation signal was detected by this conservative parser. "
+    "This is not a proof that tables are numerically correct; manually inspect averages, totals, rates, and formulas in claim-critical tables."
+)
+
+
 def format_pdf_numeric_signal(signal: dict[str, object]) -> str:
     tier = signal["gap_tier"]
     gap_abs = float(signal["gap_abs"])
@@ -668,7 +734,7 @@ def summarize_pdf_table_numeric_signals(text: str, max_items: int) -> tuple[list
             "then decide severity from the paper's metric definition and claim role."
         )
     else:
-        lines.append("- No visible PDF row-summary recomputation signals detected.")
+        lines.append(f"- {NUMERIC_NO_SIGNAL_CAVEAT}")
     return lines, signals
 
 
@@ -890,12 +956,13 @@ def expand_inputs(path: Path, state: ExtractionState, seen: set[Path] | None = N
     seen.add(path)
     state.source_files.append(path)
     text = read_text(path, state)
+    active_text = strip_latex_comments(text)
 
     def repl(match: re.Match[str]) -> str:
         child = resolve_import_path(path, match, state, root)
         return "\n" + expand_inputs(child, state, seen, root) + "\n"
 
-    return INPUT_RE.sub(repl, text)
+    return INPUT_RE.sub(repl, active_text)
 
 
 def run_pandoc_latex(raw: str, state: ExtractionState) -> str | None:
@@ -1004,7 +1071,8 @@ def find_bib_files(source: Path, raw: str, state: ExtractionState) -> list[Path]
     root = project_root_for(source)
     base = source.resolve().parent if source.is_file() else root
     candidates: list[Path] = []
-    for match in BIB_CMD_RE.finditer(raw):
+    active_raw = strip_latex_comments(raw)
+    for match in BIB_CMD_RE.finditer(active_raw):
         for item in match.group(1).split(","):
             name = item.strip()
             if not name:
@@ -1024,8 +1092,10 @@ def find_bib_files(source: Path, raw: str, state: ExtractionState) -> list[Path]
                 candidates.append(path)
             else:
                 state.warnings.append(f"Missing bibliography file referenced in TeX: {path}")
-    if not candidates and not BIB_CMD_RE.search(raw) and root.exists() and root.is_dir():
+    candidates = unique_paths(candidates)
+    if not candidates and not BIB_CMD_RE.search(active_raw) and root.exists() and root.is_dir():
         candidates = sorted(root.rglob("*.bib"))[:20]
+        candidates = unique_paths(candidates)
     state.bib_files.extend(candidates)
     return candidates
 
@@ -1148,7 +1218,7 @@ def section_word_stats(plain_text: str, headings: list[str] | None = None, max_i
         else:
             matches = []
     else:
-        matches = list(GENERAL_HEADING_RE.finditer(plain_text))
+        matches = [match for match in GENERAL_HEADING_RE.finditer(plain_text) if not is_pdf_noise_heading(match.group(0))]
     if not matches:
         words = len(re.findall(r"\b\w+\b", plain_text))
         cites = len(PDF_CITE_RE.findall(plain_text))
@@ -1335,9 +1405,7 @@ def summarize_table_sanity(raw: str, max_items: int) -> list[str]:
         for row_idx, cells in rows:
             if len(cells) > expected_cols:
                 expected_cols = len(cells)
-            blank_positions = [
-                idx + 1 for idx, cell in enumerate(cells) if not cell or cell in {"-", "--", "–", "—", "N/A", "NA", "n/a", "?"}
-            ]
+            blank_positions = table_blank_positions(cells)
             if blank_positions:
                 table_signals.append(
                     f"Table {table_idx}, row {row_idx}: blank/placeholder cell(s) at column(s) "
@@ -1370,7 +1438,7 @@ def summarize_table_sanity(raw: str, max_items: int) -> list[str]:
                 "rerun with a larger --max-items before claiming full numerical coverage."
             )
     else:
-        lines.append("- No visible derived-value recomputation signals detected in LaTeX tabular-like environments.")
+        lines.append(f"- {NUMERIC_NO_SIGNAL_CAVEAT}")
     lines.append(
         "- Reviewer instruction: cite concrete reported/computed/delta values from these signals when writing table findings; "
         "do not collapse them into vague wording such as 'the average seems off'. Treat script output as evidence signals, not final judgment."
@@ -1380,8 +1448,9 @@ def summarize_table_sanity(raw: str, max_items: int) -> list[str]:
 
 def summarize_latex(raw: str, plain_text: str, source: Path, state: ExtractionState, max_items: int) -> list[str]:
     lines = ["# Review Signals", ""]
+    active_raw = strip_latex_comments(raw)
 
-    bib_files = find_bib_files(source, raw, state)
+    bib_files = find_bib_files(source, active_raw, state)
     bib_entries: list[tuple[Path, int]] = []
     for bib in bib_files[:max_items]:
         text = read_text(bib, state)
@@ -1395,7 +1464,7 @@ def summarize_latex(raw: str, plain_text: str, source: Path, state: ExtractionSt
     else:
         lines.append("## Extraction Warnings\n- None.")
 
-    docs = [m.group(1) for m in DOCUMENTCLASS_RE.finditer(raw)]
+    docs = [m.group(1) for m in DOCUMENTCLASS_RE.finditer(active_raw)]
     lines.append("\n## Template/Class Signals")
     if docs:
         for doc in docs[:max_items]:
@@ -1403,14 +1472,14 @@ def summarize_latex(raw: str, plain_text: str, source: Path, state: ExtractionSt
     else:
         lines.append("- No documentclass detected.")
 
-    titles = [one_line(m.group(1)) for m in TITLE_CMD_RE.finditer(raw)]
-    abstracts = [one_line(m.group(1)) for m in ABSTRACT_ENV_RE.finditer(raw)]
+    titles = nonempty_command_payloads(TITLE_CMD_RE, active_raw)
+    abstracts = nonempty_command_payloads(ABSTRACT_ENV_RE, active_raw)
     abstract_words = len(re.findall(r"\b\w+\b", abstracts[0])) if abstracts else 0
     lines.append("\n## Title and Abstract")
     lines.append(f"- Title: {titles[0] if titles else 'Not detected'}")
     lines.append(f"- Abstract words: {abstract_words}")
 
-    sections = [(m.group(1), one_line(m.group(2))) for m in SECTION_CMD_RE.finditer(raw)]
+    sections = [(m.group(1), one_line(m.group(2))) for m in SECTION_CMD_RE.finditer(active_raw)]
     lines.append("\n## Sections")
     if sections:
         for level, title in sections[:max_items]:
@@ -1418,21 +1487,27 @@ def summarize_latex(raw: str, plain_text: str, source: Path, state: ExtractionSt
     else:
         lines.append("- No LaTeX section commands detected.")
 
-    captions = [one_line(m.group(1)) for m in CAPTION_CMD_RE.finditer(raw)]
+    captions = [one_line(m.group(1)) for m in CAPTION_CMD_RE.finditer(active_raw)]
     lines.append("\n## Captions")
     if captions:
         for idx, caption in enumerate(captions[:max_items], 1):
-            label = "empty caption" if not caption else caption[:500]
+            normalized_caption = caption.lower().strip(" .:")
+            if not caption:
+                label = "empty caption"
+            elif normalized_caption in PLACEHOLDER_CAPTIONS:
+                label = f"{caption[:500]} [placeholder caption]"
+            else:
+                label = caption[:500]
             lines.append(f"- Caption {idx}: {label}")
     else:
         lines.append("- No captions detected.")
 
-    lines.extend(summarize_table_sanity(raw, max_items))
-    lines.extend(summarize_equations(raw, max_items))
-    lines.extend(summarize_symbol_consistency(raw, max_items))
+    lines.extend(summarize_table_sanity(active_raw, max_items))
+    lines.extend(summarize_equations(active_raw, max_items))
+    lines.extend(summarize_symbol_consistency(active_raw, max_items))
 
-    refs = [item.strip() for match in REF_CMD_RE.finditer(raw) for item in match.group(1).split(",") if item.strip()]
-    cites = [item.strip() for match in CITE_CMD_RE.finditer(raw) for item in match.group(1).split(",") if item.strip()]
+    refs = [item.strip() for match in REF_CMD_RE.finditer(active_raw) for item in match.group(1).split(",") if item.strip()]
+    cites = [item.strip() for match in CITE_CMD_RE.finditer(active_raw) for item in match.group(1).split(",") if item.strip()]
     lines.append("\n## Reference and Citation Signals")
     lines.append(f"- Reference command/items detected: {len(refs)}")
     lines.append(f"- Citation command/items detected: {len(cites)}")
@@ -1456,7 +1531,7 @@ def summarize_latex(raw: str, plain_text: str, source: Path, state: ExtractionSt
         density = cite_count / max(words, 1) * 1000
         lines.append(f"- {title}: {words} words, {cite_count} citation-like markers, {density:.1f}/1k words")
 
-    lines.extend(summarize_common(plain_text, raw, state, max_items))
+    lines.extend(summarize_common(plain_text, active_raw, state, max_items))
     return lines
 
 
@@ -1478,7 +1553,7 @@ def summarize_pdf_with_numeric(
     else:
         lines.append("## Extraction Warnings\n- None.")
 
-    sections = [m.group(0).strip() for m in PDF_SECTION_RE.finditer(text)]
+    sections = [m.group(0).strip() for m in PDF_SECTION_RE.finditer(text) if not is_pdf_noise_heading(m.group(0))]
     captions = [one_line(m.group(0)) for m in PDF_CAPTION_RE.finditer(text)]
     citations = PDF_CITE_RE.findall(text)
 

@@ -87,6 +87,37 @@ def test_latex_signals() -> None:
     assert_contains(output, "Why This Matters:")
 
 
+def test_latex_signal_scans_ignore_commented_template_commands() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "custom.bib").write_text("@article{x2024,title={X},year={2024}}\n", encoding="utf-8")
+        (root / "anthology.bib").write_text("@article{unused2024,title={Unused},year={2024}}\n", encoding="utf-8")
+        (root / "main.tex").write_text(
+            "\n".join(
+                [
+                    r"\documentclass{article}",
+                    r"% Template note: both \title{} and \workshoptitle{} are required.",
+                    r"% \bibliography{anthology,custom}",
+                    r"\title{Actual Paper Title}",
+                    r"\begin{document}",
+                    r"\begin{abstract}Short abstract.\end{abstract}",
+                    r"\section{Intro}",
+                    r"\caption{Real caption}",
+                    r"\bibliography{custom}",
+                    r"\end{document}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        output = run_extract(root)
+
+    assert_contains(output, "Title: Actual Paper Title")
+    assert_contains(output, "Caption 1: Real caption")
+    assert_contains(output, "custom.bib: 1 entries")
+    assert_not_contains(output, "Title: \n")
+    assert_not_contains(output, "anthology.bib")
+
+
 def test_latex_signals_without_pandoc() -> None:
     module = load_module()
     real_which = module.shutil.which
@@ -180,6 +211,37 @@ def test_pdf_heading_heuristic_no_generic_noise() -> None:
     assert_not_contains(output, "- John Smith")
     assert_not_contains(output, "- Boston University")
     assert_not_contains(output, "- Table 1")
+
+
+def test_pdf_heading_heuristic_skips_submission_line_numbers_and_table_fragments() -> None:
+    sample = "\n".join(
+        [
+            "Abstract",
+            "We improve a method.",
+            "80   Our main contributions are summarized as follows:",
+            "204   further examine whether the improvement in factual recall",
+            "4",
+            "\f                                                 Base           Voting         CoT               RL",
+            "67.9",
+            "      Total Cases",
+            "1 Introduction",
+            "Body text [Zhang et al., 2026].",
+            "2 Method",
+            "More text [Guo et al., 2025, Wen et al., 2026].",
+        ]
+    )
+    module = load_module()
+    state = module.ExtractionState()
+    output = "\n".join(module.summarize_pdf(sample, Path("paper.pdf"), state, 50))
+
+    assert_contains(output, "- Abstract")
+    assert_contains(output, "- 1 Introduction")
+    assert_contains(output, "- 2 Method")
+    assert_contains(output, "Citation-like markers detected: 2")
+    assert_not_contains(output, "80   Our main contributions")
+    assert_not_contains(output, "204   further examine")
+    assert_not_contains(output, "Base           Voting")
+    assert_not_contains(output, "Total Cases")
 
 
 def test_pdf_coverage_metadata_uses_detected_page_count() -> None:
@@ -300,6 +362,26 @@ def test_table_parser_handles_escaped_ampersands_and_dash_placeholders() -> None
     assert_contains(output, "Model A")
 
 
+def test_table_sanity_does_not_treat_multirow_scaffolding_as_blank_data() -> None:
+    module = load_module()
+    raw = "\n".join(
+        [
+            r"\begin{tabular}{llrr}",
+            r"& & \textbf{A} & \textbf{B} \\",
+            r"\multirow{2}{*}{Group} & TP & 43 & 45 \\",
+            r"& TN & 44 & 44 \\",
+            r"Model & Missing & & 0.6 \\",
+            r"\end{tabular}",
+        ]
+    )
+    output = "\n".join(module.summarize_table_sanity(raw, 50))
+
+    assert_contains(output, "Model")
+    assert_contains(output, "blank/placeholder cell")
+    assert_not_contains(output, "row 1: blank/placeholder")
+    assert_not_contains(output, "row 3: blank/placeholder")
+
+
 def test_table_numeric_signals_surface_reported_computed_delta() -> None:
     module = load_module()
     raw = "\n".join(
@@ -326,6 +408,23 @@ def test_table_numeric_signals_surface_reported_computed_delta() -> None:
     assert_not_contains(output.lower(), "wrong")
 
 
+def test_numeric_no_signal_message_is_a_caveat_not_a_clean_bill() -> None:
+    module = load_module()
+    raw = "\n".join(
+        [
+            r"\begin{tabular}{lrr}",
+            r"Method & A & B \\",
+            r"Model & 1.0 & 2.0 \\",
+            r"\end{tabular}",
+        ]
+    )
+    output = "\n".join(module.summarize_table_sanity(raw, 50))
+    assert_contains(output, "not a proof that tables are numerically correct")
+
+    pdf_lines, _ = module.summarize_pdf_table_numeric_signals("Table 1\nModel A 1.0 2.0", 50)
+    assert_contains("\n".join(pdf_lines), "not a proof that tables are numerically correct")
+
+
 def test_table_numeric_signals_classify_large_gap_as_deterministic() -> None:
     module = load_module()
     raw = "\n".join(
@@ -343,6 +442,54 @@ def test_table_numeric_signals_classify_large_gap_as_deterministic() -> None:
     assert_contains(output, "visible arithmetic mean of column(s) 2, 3, 4, 5, 6, 7 = 37.64")
     assert_contains(output, "Rendered finding must be Blocker")
     assert_contains(output, "Gap exceeds the broad plausible aggregation range")
+
+
+def test_expand_inputs_ignores_commented_inputs_before_real_include() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        section = root / "Section"
+        tables = root / "Tables"
+        section.mkdir()
+        tables.mkdir()
+        (root / "main.tex").write_text(
+            "\n".join(
+                [
+                    r"\documentclass{article}",
+                    r"\begin{document}",
+                    r"\input{Section/background}",
+                    r"\input{Section/appendix}",
+                    r"\end{document}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (section / "background.tex").write_text(r"% \input{Tables/data_split}", encoding="utf-8")
+        (section / "appendix.tex").write_text(r"\input{Tables/data_split}", encoding="utf-8")
+        (tables / "data_split.tex").write_text("REAL TABLE CONTENT", encoding="utf-8")
+        state = module.ExtractionState()
+        text = module.expand_inputs(root / "main.tex", state, root=root)
+
+    assert_contains(text, "REAL TABLE CONTENT")
+    assert_not_contains("\n".join(state.warnings), "Skipped recursive input")
+
+
+def test_placeholder_captions_are_marked_not_ranked_as_normal_takeaways() -> None:
+    module = load_module()
+    raw = "\n".join(
+        [
+            r"\documentclass{article}",
+            r"\begin{document}",
+            r"\caption{Caption}",
+            r"\caption{A real evidence-bearing caption.}",
+            r"\end{document}",
+        ]
+    )
+    state = module.ExtractionState()
+    output = "\n".join(module.summarize_latex(raw, module.latex_to_plain(raw, state), Path("paper.tex"), state, 50))
+
+    assert_contains(output, "Caption 1: Caption [placeholder caption]")
+    assert_contains(output, "Caption 2: A real evidence-bearing caption.")
 
 
 def test_symbol_consistency_signals_surface_macro_and_variant_drift() -> None:

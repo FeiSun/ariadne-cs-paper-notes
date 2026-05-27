@@ -220,6 +220,8 @@ def test_phase_a_completion_requires_sentence_review_receipts_and_phase_a_roots(
 
     if payload["coverage"]["sections_completed"] != 1 or not payload["coverage"]["phase_a_complete"]:
         raise AssertionError(f"Expected full Phase A completion after receipts and roots, got {payload['coverage']}")
+    if not payload["coverage"]["sentence_review_receipt_complete"]:
+        raise AssertionError(f"Completed sections should preserve sentence receipt completion: {payload['coverage']}")
 
 
 if __name__ == "__main__":

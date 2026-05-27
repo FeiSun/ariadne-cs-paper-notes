@@ -37,6 +37,7 @@ IGNORED_SINGLE_WORDS = {
     "references",
 }
 NUMERIC_HEADING_RE = re.compile(r"^\d+(?:\.\d+)*\.?$")
+MARGIN_LINE_NUMBER_RE = re.compile(r"^\d{1,5}$")
 CAPTION_LABEL_RE = re.compile(r"^(?:Figure|Fig|Table|Eq|Eqn|Equation|Algorithm|Alg)\.?\s*\d+", re.IGNORECASE)
 TRAILING_PUNCT_RE = re.compile(r"[,.;:]\s*$")
 
@@ -173,6 +174,16 @@ def is_probable_page_number(text: str) -> bool:
     return stripped.isdigit() or (stripped.startswith("-") and stripped.endswith("-") and stripped.strip("-").isdigit())
 
 
+def is_probable_margin_line_number(text: str, x_min: float, x_max: float, width: float) -> bool:
+    stripped = text.strip()
+    if not MARGIN_LINE_NUMBER_RE.match(stripped):
+        return False
+    span = max(0.0, x_max - x_min)
+    marker_band = max(36.0, width * 0.07)
+    marker_width = max(24.0, width * 0.045)
+    return span <= marker_width and (x_max <= marker_band or x_min >= width - marker_band)
+
+
 def is_probable_intentional_short_line(text: str) -> bool:
     stripped = text.strip()
     return (
@@ -283,7 +294,9 @@ def analyze_page(page_number: int, page: dict[str, Any], script_hash: str) -> tu
                 )
             )
 
-        if x_min < edge_margin or x_max > width - edge_margin:
+        if (x_min < edge_margin or x_max > width - edge_margin) and not is_probable_margin_line_number(
+            text, x_min, x_max, width
+        ):
             observations.append(
                 observation(
                     page=page_number,

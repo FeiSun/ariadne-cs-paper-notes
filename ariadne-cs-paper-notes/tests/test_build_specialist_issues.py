@@ -88,10 +88,10 @@ def test_layout_needs_main_review_becomes_issue() -> None:
                     {
                         "observation_id": "layout-p001-001",
                         "page": 1,
-                        "issue_type": "edge_text",
+                        "issue_type": "large_vertical_gap",
                         "severity": "polish",
-                        "observation": "Text near edge.",
-                        "evidence": "Line bbox touches margin.",
+                        "observation": "Large vertical gap inside the page text area may indicate float rhythm trouble.",
+                        "evidence": "Vertical gap is 180.0 pt before the next body line.",
                         "needs_main_review": True,
                     }
                 ],

@@ -330,6 +330,9 @@ def build_render_manifest(
         "output_files": output_files,
         "sections": sections,
         "deferred_findings": deferred_findings,
+        "deferred_findings_with_reason": [
+            {"id": finding_id, "reason": "artifact_only"} for finding_id in deferred_findings
+        ],
         "paper_reader": paper_reader,
         "pdf_linkage_level": "Level 0",
     }

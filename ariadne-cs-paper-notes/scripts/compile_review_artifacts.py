@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bs4 import BeautifulSoup, Tag
+
 
 SCHEMA_VERSION = 1
 ISSUE_ARTIFACT_TYPE = "ariadne_issue_artifact"
@@ -315,6 +317,102 @@ def load_source_issues(issues_dir: Path) -> tuple[list[SourceIssue], list[dict[s
     return all_issues, normalized_jsonl, source_artifacts
 
 
+def load_source_soup(source_artifact: str) -> BeautifulSoup | None:
+    if not source_artifact:
+        return None
+    path = Path(source_artifact)
+    if not path.exists() or not path.is_file():
+        return None
+    return BeautifulSoup(path.read_text(encoding="utf-8", errors="replace"), "lxml")
+
+
+def source_anchor_node(soup: BeautifulSoup, anchor: str) -> Tag | None:
+    if not anchor:
+        return None
+    if anchor.startswith("s-"):
+        node = soup.find(attrs={"data-sentence-id": anchor})
+        return node if isinstance(node, Tag) else None
+    if anchor.startswith("p-"):
+        node = soup.find(attrs={"data-paragraph-id": anchor})
+        return node if isinstance(node, Tag) else None
+    node = soup.find(id=anchor)
+    return node if isinstance(node, Tag) else None
+
+
+def float_container_for_reference(target: Tag) -> Tag:
+    current: Tag | None = target
+    fallback = target
+    while current is not None:
+        if current.name in {"body", "html"}:
+            break
+        if current.name in {"figure", "table"}:
+            return current
+        classes = current.get("class", [])
+        if isinstance(classes, str):
+            classes = classes.split()
+        node_id = str(current.get("id") or "")
+        if any(str(item).startswith(("paper-float", "paper-table", "paper-figure")) for item in classes):
+            fallback = current
+        elif node_id.startswith(("fig:", "tab:")):
+            fallback = current
+        current = current.parent if isinstance(current.parent, Tag) else None
+    return fallback
+
+
+def caption_number_for_reference(soup: BeautifulSoup, ref: str) -> str:
+    target = soup.find(id=ref)
+    if not isinstance(target, Tag):
+        return ""
+    container = float_container_for_reference(target)
+    caption = container.find("figcaption") or container.find("caption")
+    if not isinstance(caption, Tag):
+        return ""
+    match = re.search(r"\b(?:Figure|Table)\s+(\d+)\s*:", caption.get_text(" ", strip=True))
+    return match.group(1) if match else ""
+
+
+def stale_resolved_float_reference_issue(issue: SourceIssue, soup: BeautifulSoup | None) -> bool:
+    if soup is None:
+        return False
+    issue_type = first_nonempty(issue.row, "issue_type", "type", max_chars=120).lower()
+    if issue_type not in {"figure_reference", "table_reference", "float_reference"}:
+        return False
+    node = source_anchor_node(soup, primary_anchor(issue.row))
+    if not isinstance(node, Tag):
+        return False
+    checked = 0
+    for link in node.find_all("a"):
+        if not isinstance(link, Tag):
+            continue
+        ref = str(link.get("data-reference") or "").strip()
+        href = str(link.get("href") or "").strip()
+        if not ref and href.startswith("#"):
+            ref = href[1:]
+        if not ref.startswith(("fig:", "tab:")):
+            continue
+        caption_number = caption_number_for_reference(soup, ref)
+        link_text = compact_text(link.get_text(" ", strip=True), max_chars=80)
+        if not caption_number or link_text != caption_number:
+            return False
+        checked += 1
+    return checked > 0
+
+
+def filter_stale_source_issues(
+    issues: list[SourceIssue],
+    *,
+    source_soup: BeautifulSoup | None,
+) -> tuple[list[SourceIssue], list[str]]:
+    kept: list[SourceIssue] = []
+    stale_ids: list[str] = []
+    for issue in issues:
+        if stale_resolved_float_reference_issue(issue, source_soup):
+            stale_ids.append(issue.source_id)
+            continue
+        kept.append(issue)
+    return kept, stale_ids
+
+
 def evidence_refs(row: dict[str, Any]) -> list[Any]:
     value = row.get("evidence_refs") or row.get("evidence_ref") or []
     return as_list(value)
@@ -543,6 +641,8 @@ def compile_artifacts(
     start_index: int = 1,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     source_issues, normalized_jsonl, source_artifacts = load_source_issues(issues_dir)
+    source_soup = load_source_soup(source_artifact)
+    source_issues, stale_source_issue_ids = filter_stale_source_issues(source_issues, source_soup=source_soup)
     groups = deduplicate(source_issues)
     findings: list[dict[str, Any]] = []
     source_to_finding: dict[str, str] = {}
@@ -579,6 +679,7 @@ def compile_artifacts(
         "source_artifacts": source_artifacts,
         "normalized_jsonl_shards": normalized_jsonl,
         "source_issue_count": len(source_issues),
+        "stale_source_issue_ids": stale_source_issue_ids,
         "finding_count": len(findings),
         "annotation_count": len(annotations),
         "artifact_only_finding_ids": [

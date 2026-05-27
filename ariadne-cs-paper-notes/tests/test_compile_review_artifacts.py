@@ -252,10 +252,54 @@ def test_compiler_keeps_compiled_pdf_identity_issue_visible() -> None:
             raise AssertionError(f"No artifact-only ids expected for compiled PDF identity issue: {index}")
 
 
+def test_compiler_drops_stale_resolved_float_reference_issue() -> None:
+    module = load_module(SCRIPT, "compile_review_artifacts")
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        issues = root / "issue_artifacts"
+        issues.mkdir()
+        source = root / "paper.source.html"
+        source.write_text(
+            """
+<html><body>
+  <p><span data-sentence-id="s-demo">As shown in Figure <a data-reference="fig:demo" href="#fig:demo">2</a>, the result holds.</span></p>
+  <figure id="fig:demo"><figcaption><strong>Figure 2: </strong>Demo caption.</figcaption></figure>
+</body></html>
+""",
+            encoding="utf-8",
+        )
+        (issues / "prose_issues.jsonl").write_text(
+            json.dumps(
+                {
+                    "local_id": "P1",
+                    "domain": "prose",
+                    "severity": "Major",
+                    "issue_type": "figure_reference",
+                    "title": "图号引用错误",
+                    "diagnosis": "Old cache claimed this sentence pointed to the wrong figure.",
+                    "target_anchors": ["s-demo"],
+                    "primary_anchor": "s-demo",
+                    "render_visibility": "student_visible",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        findings, annotations, index = module.compile_artifacts(issues_dir=issues, source_artifact=str(source))
+
+        if findings["findings"] or annotations["annotations"]:
+            raise AssertionError(f"Resolved stale figure-reference issue should be dropped: {findings}, {annotations}")
+        if index["stale_source_issue_ids"] != ["prose:P1"]:
+            raise AssertionError(f"Stale issue id should be recorded in the index: {index}")
+
+
 if __name__ == "__main__":
     test_compile_jsonl_and_specialist_artifacts()
     test_compiler_deduplicates_matching_evidence_refs()
     test_compiler_allows_explicit_student_visible_specialist_issue()
     test_compiler_hides_source_only_anonymous_front_matter_false_positive()
     test_compiler_keeps_compiled_pdf_identity_issue_visible()
+    test_compiler_drops_stale_resolved_float_reference_issue()
     print("compile_review_artifacts regression tests passed")

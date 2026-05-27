@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -17,11 +18,16 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from build_paper_pdf import find_entry_tex  # noqa: E402
+from build_paper_pdf import expanded_latex_for_tool_detection, find_entry_tex  # noqa: E402
 
 
 STATUS_FILE = "pipeline_status.json"
 ISSUE_DIR_NAME = "issue_artifacts"
+BIB_COMMAND_RE = re.compile(
+    r"\\(?:bibliography|addbibresource|addglobalbib|addsectionbib)(?:\s*\[[^\]]*\])?\s*\{[^{}]+\}"
+    r"|\\printbibliography\b"
+)
+BIBLATEX_PACKAGE_RE = re.compile(r"\\usepackage(?:\s*\[[^\]]*\])?\s*\{[^{}]*\bbiblatex\b[^{}]*\}")
 
 
 def sha256_path(path: Path) -> str:
@@ -58,6 +64,8 @@ class PipelineStep:
     command: list[str] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
     returncode: int | None = None
+    stdout: str = field(default="", repr=False)
+    stderr: str = field(default="", repr=False)
     stdout_tail: str = ""
     stderr_tail: str = ""
     message: str = ""
@@ -126,6 +134,8 @@ def run_command(name: str, cmd: list[str], *, outputs: list[Path] | None = None,
         command=cmd,
         outputs=[str(path) for path in outputs or []],
         returncode=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
         stdout_tail=compact_tail(result.stdout),
         stderr_tail=compact_tail(result.stderr),
     )
@@ -206,10 +216,159 @@ def append_step(ctx: PipelineContext, step: PipelineStep) -> None:
         raise RuntimeError(f"{step.name} failed with return code {step.returncode}")
 
 
+def strip_latex_comments(text: str) -> str:
+    lines: list[str] = []
+    for line in text.splitlines():
+        escaped = False
+        kept: list[str] = []
+        for char in line:
+            if char == "%" and not escaped:
+                break
+            kept.append(char)
+            escaped = char == "\\" and not escaped
+            if char != "\\":
+                escaped = False
+        lines.append("".join(kept))
+    return "\n".join(lines)
+
+
+def latex_uses_bibliography(entry: Path) -> bool:
+    expanded = strip_latex_comments(expanded_latex_for_tool_detection(entry))
+    return bool(BIB_COMMAND_RE.search(expanded) or BIBLATEX_PACKAGE_RE.search(expanded))
+
+
+def existing_pdf_has_incomplete_bibliography(entry: Path, pdf: Path) -> bool:
+    if not pdf.exists() or not latex_uses_bibliography(entry):
+        return False
+    bbl_candidates = {pdf.with_suffix(".bbl"), entry.with_suffix(".bbl")}
+    if not any(path.exists() and path.stat().st_size > 0 for path in bbl_candidates):
+        return True
+    log_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in {pdf.with_suffix(".log"), entry.with_suffix(".log")}
+        if path.exists()
+    )
+    return bool(
+        re.search(r"No file\s+[^.\s]+\.bbl", log_text)
+        or "There were undefined citations" in log_text
+        or re.search(r"Citation `[^']+' .* undefined", log_text)
+    )
+
+
+def layout_audit_stale_for_pdf(layout_audit: Path, pdf: Path) -> bool:
+    if not layout_audit.exists():
+        return True
+    try:
+        payload = read_json(layout_audit)
+    except (OSError, json.JSONDecodeError):
+        return True
+    declared_hash = str(payload.get("pdf_hash") or "")
+    return not declared_hash or declared_hash != sha256_path(pdf)
+
+
+def layout_issue_stale_for_raw(layout_issues: Path, layout_audit: Path) -> bool:
+    if not layout_issues.exists():
+        return layout_audit.exists()
+    if not layout_audit.exists():
+        return True
+    try:
+        payload = read_json(layout_issues)
+    except (OSError, json.JSONDecodeError):
+        return True
+    source_artifacts = payload.get("source_artifacts")
+    if not isinstance(source_artifacts, list):
+        return True
+    raw_hash = sha256_path(layout_audit)
+    raw_path = str(layout_audit)
+    for source in source_artifacts:
+        if not isinstance(source, dict):
+            continue
+        source_path = str(source.get("path") or "")
+        if source_path == raw_path or Path(source_path).name == layout_audit.name:
+            return str(source.get("hash") or "") != raw_hash
+    return True
+
+
+def refresh_stale_layout_artifacts(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    if ctx.pdf is None or not ctx.pdf.exists():
+        return
+    layout_audit = ctx.bundle / "layout_audit.json"
+    layout_issues = ctx.issue_artifacts / "layout_issues.json"
+    has_layout_artifacts = layout_audit.exists() or layout_issues.exists()
+    if not has_layout_artifacts:
+        return
+
+    needs_audit = layout_audit_stale_for_pdf(layout_audit, ctx.pdf)
+    needs_issues = needs_audit or layout_issue_stale_for_raw(layout_issues, layout_audit)
+    if not needs_audit and not needs_issues:
+        return
+
+    if needs_audit:
+        if not shutil.which("pdftotext"):
+            ctx.warnings.append(
+                "Could not refresh stale layout_audit.json because pdftotext is unavailable; stale layout artifacts will be ignored."
+            )
+            return
+        ctx.warnings.append("Refreshing layout_audit.json because the compiled PDF changed.")
+        step = run_command(
+            "refresh_layout_audit",
+            [
+                sys.executable,
+                script("check_page_layout.py"),
+                str(ctx.pdf),
+                "--pages",
+                args.pages,
+                "--out",
+                str(layout_audit),
+            ],
+            outputs=[layout_audit],
+            timeout=args.specialist_timeout,
+        )
+        append_step(ctx, step)
+
+    if needs_issues or needs_audit:
+        step = run_command(
+            "refresh_layout_issues",
+            [
+                sys.executable,
+                script("build_specialist_issues.py"),
+                "--domain",
+                "layout",
+                "--raw-audit",
+                str(layout_audit),
+                "--out",
+                str(layout_issues),
+            ],
+            outputs=[layout_issues],
+            timeout=args.specialist_timeout,
+        )
+        append_step(ctx, step)
+
+
+def usable_layout_audit_path(ctx: PipelineContext) -> Path | None:
+    layout_audit = ctx.bundle / "layout_audit.json"
+    if not layout_audit.exists():
+        return None
+    if ctx.pdf is None or not ctx.pdf.exists():
+        return layout_audit
+    try:
+        payload = read_json(layout_audit)
+    except (OSError, json.JSONDecodeError):
+        return layout_audit
+    declared_hash = str(payload.get("pdf_hash") or "")
+    if declared_hash and declared_hash != sha256_path(ctx.pdf):
+        ctx.warnings.append("Ignoring stale layout_audit.json because its PDF hash does not match the current compiled PDF.")
+        return None
+    return layout_audit
+
+
 def build_pdf_if_needed(ctx: PipelineContext, args: argparse.Namespace) -> None:
-    if ctx.pdf is not None:
+    if ctx.pdf is not None and not existing_pdf_has_incomplete_bibliography(ctx.entry_tex, ctx.pdf):
         ctx.steps.append(PipelineStep("build_pdf", "skipped", outputs=[str(ctx.pdf)], message="using existing PDF"))
         return
+    if ctx.pdf is not None:
+        ctx.warnings.append("Existing PDF appears to be missing a completed bibliography pass; rebuilding PDF with the standard LaTeX bibliography flow.")
+        ctx.pdf = None
     if args.skip_pdf_build:
         ctx.steps.append(PipelineStep("build_pdf", "skipped", message="PDF build disabled and no existing PDF found"))
         return
@@ -221,7 +380,7 @@ def build_pdf_if_needed(ctx: PipelineContext, args: argparse.Namespace) -> None:
     ctx.steps.append(step)
     if step.status == "completed":
         try:
-            payload = json.loads(step.stdout_tail)
+            payload = json.loads(step.stdout or step.stdout_tail)
         except json.JSONDecodeError:
             payload = {}
         pdf = Path(str(payload.get("pdf") or ""))
@@ -621,8 +780,8 @@ def build_derivatives(ctx: PipelineContext, *, requested_scope: str, full_report
         "--pass-observations-out",
         str(ctx.bundle / "pass_observations.json"),
     ]
-    layout_audit = ctx.bundle / "layout_audit.json"
-    if layout_audit.exists():
+    layout_audit = usable_layout_audit_path(ctx)
+    if layout_audit is not None:
         cmd.extend(["--layout-audit", str(layout_audit)])
     step = run_command(
         "build_review_derivatives",
@@ -695,8 +854,8 @@ def run_audits(ctx: PipelineContext, args: argparse.Namespace) -> None:
     claims = ctx.bundle / "claims.json"
     if claims.exists():
         cmd.extend(["--claims", str(claims)])
-    layout_audit = ctx.bundle / "layout_audit.json"
-    if layout_audit.exists():
+    layout_audit = usable_layout_audit_path(ctx)
+    if layout_audit is not None:
         cmd.extend(["--layout-audit", str(layout_audit)])
     review_step = run_command("audit_review_artifacts", cmd)
     append_step(ctx, review_step)
@@ -708,6 +867,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     ctx.issue_artifacts.mkdir(parents=True, exist_ok=True)
     try:
         build_pdf_if_needed(ctx, args)
+        refresh_stale_layout_artifacts(ctx, args)
         render_source(ctx, args)
         extract_units(ctx)
         maybe_build_prose_shards(ctx, args)

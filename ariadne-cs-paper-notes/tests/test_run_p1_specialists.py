@@ -198,6 +198,106 @@ def test_runner_writes_skipped_stubs_without_inputs() -> None:
         raise AssertionError(f"Expected all skipped, got {summary}")
 
 
+def test_runner_refreshes_stale_layout_audit_for_current_pdf() -> None:
+    module = load_module(SCRIPT, "run_p1_specialists")
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        bundle = root / "bundle"
+        pdf = root / "main.pdf"
+        pdf.write_bytes(b"%PDF-1.4\ncurrent")
+        write_json(
+            bundle / "layout_audit.json",
+            {
+                "pdf": str(pdf),
+                "pdf_hash": "sha256:00000000",
+                "pages_total": 1,
+                "pages_checked": [1],
+                "observations": [],
+            },
+        )
+        commands: list[list[str]] = []
+
+        def fake_which(name: str) -> str | None:
+            return "/usr/bin/pdftotext-test" if name == "pdftotext" else None
+
+        def fake_run_command(cmd: list[str], *, cwd=None, timeout=180):  # noqa: ARG001
+            commands.append(cmd)
+            if Path(cmd[1]).name == "check_page_layout.py":
+                out = Path(cmd[cmd.index("--out") + 1])
+                write_json(
+                    out,
+                    {
+                        "tool": "scripts/check_page_layout.py",
+                        "tool_version": "1",
+                        "script_hash": "sha256:11111111",
+                        "pdf": str(pdf),
+                        "pdf_hash": module.sha256_path(pdf),
+                        "pages_total": 1,
+                        "pages_checked": [1],
+                        "page_summaries": [],
+                        "observations": [],
+                    },
+                )
+            elif Path(cmd[1]).name == "build_specialist_issues.py":
+                out = Path(cmd[cmd.index("--out") + 1])
+                raw = bundle / "layout_audit.json"
+                write_json(
+                    out,
+                    {
+                        "artifact_type": "ariadne_issue_artifact",
+                        "schema_version": 1,
+                        "domain": "layout",
+                        "context_policy": "model_readable_issue_only",
+                        "status": "skipped",
+                        "source_artifacts": [
+                            {
+                                "path": str(raw),
+                                "hash": module.sha256_path(raw),
+                                "context_policy": "tool_output_hash_only",
+                            }
+                        ],
+                        "coverage": {"checked": 1, "issues": 0, "skipped": 1},
+                        "issues": [],
+                    },
+                )
+
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+        original_run_command = module.run_command
+        original_which = module.shutil.which
+        module.run_command = fake_run_command
+        module.shutil.which = fake_which
+        try:
+            summary = module.run_specialists(
+                bundle=bundle,
+                tex=None,
+                pdf=pdf,
+                aux=None,
+                bbl=None,
+                domains=["layout"],
+                force=False,
+                pages="all",
+            )
+        finally:
+            module.run_command = original_run_command
+            module.shutil.which = original_which
+        refreshed = json.loads((bundle / "layout_audit.json").read_text(encoding="utf-8"))
+        expected_pdf_hash = module.sha256_path(pdf)
+
+    command_names = [Path(command[1]).name for command in commands]
+    if command_names != ["check_page_layout.py", "build_specialist_issues.py"]:
+        raise AssertionError(f"Expected stale layout audit to refresh before issue build, got {command_names}")
+    if refreshed["pdf_hash"] != expected_pdf_hash:
+        raise AssertionError(f"Refreshed layout audit should bind to current PDF, got {refreshed}")
+    if summary["results"][0]["status"] != "skipped":
+        raise AssertionError(f"Expected refreshed empty layout issue artifact to be skipped, got {summary}")
+
+
 def test_runner_passes_pdf_to_figure_caption_audit() -> None:
     module = load_module(SCRIPT, "run_p1_specialists")
     with tempfile.TemporaryDirectory() as tempdir:
@@ -280,5 +380,6 @@ def test_runner_passes_pdf_to_figure_caption_audit() -> None:
 if __name__ == "__main__":
     test_runner_uses_existing_raw_audits_and_builds_issue_artifacts()
     test_runner_writes_skipped_stubs_without_inputs()
+    test_runner_refreshes_stale_layout_audit_for_current_pdf()
     test_runner_passes_pdf_to_figure_caption_audit()
     print("run_p1_specialists regression tests passed")

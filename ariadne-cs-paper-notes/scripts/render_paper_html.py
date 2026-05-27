@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -880,7 +881,7 @@ def pdf_bbox_attrs(raw_attrs: str) -> dict[str, float]:
     return attrs
 
 
-def pdf_page_line_boxes(pdf_path: Path, *, max_pages: int = 3) -> list[dict[str, object]]:
+def pdf_page_line_boxes(pdf_path: Path, *, max_pages: int = 6) -> list[dict[str, object]]:
     pdftotext = shutil.which("pdftotext")
     if not pdf_path.exists() or not pdftotext:
         return []
@@ -915,35 +916,81 @@ def pdf_page_line_boxes(pdf_path: Path, *, max_pages: int = 3) -> list[dict[str,
     return pages
 
 
-def pdf_looks_two_column(pdf_path: Path) -> bool:
-    for page in pdf_page_line_boxes(pdf_path):
-        width = float(page.get("width") or 0)
-        height = float(page.get("height") or 0)
-        if width <= 0 or height <= 0:
+def median_float(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def pdf_page_two_column_signal(page: dict[str, object]) -> bool | None:
+    width = float(page.get("width") or 0)
+    height = float(page.get("height") or 0)
+    if width <= 0 or height <= 0:
+        return None
+    raw_lines = page.get("lines") or []
+    if not isinstance(raw_lines, list):
+        return None
+    body_lines: list[dict[str, float]] = []
+    for line in raw_lines:
+        if not isinstance(line, dict):
             continue
-        raw_lines = page.get("lines") or []
-        if not isinstance(raw_lines, list):
+        x_min = float(line.get("xMin") or 0)
+        x_max = float(line.get("xMax") or 0)
+        y_min = float(line.get("yMin") or 0)
+        line_width = x_max - x_min
+        if line_width <= width * 0.035:
             continue
-        body_lines: list[dict[str, float]] = []
-        for line in raw_lines:
-            if not isinstance(line, dict):
-                continue
-            y_min = float(line.get("yMin") or 0)
-            if height * 0.12 <= y_min <= height * 0.92:
-                body_lines.append(line)
-        if len(body_lines) < 16:
-            continue
-        left_lines = sum(1 for line in body_lines if float(line.get("xMax") or 0) < width * 0.54)
-        right_lines = sum(1 for line in body_lines if float(line.get("xMin") or 0) > width * 0.46)
-        full_width_lines = sum(
-            1
-            for line in body_lines
-            if float(line.get("xMin") or 0) < width * 0.35 and float(line.get("xMax") or 0) > width * 0.65
-        )
-        column_line_share = (left_lines + right_lines) / max(len(body_lines), 1)
-        if left_lines >= 6 and right_lines >= 6 and column_line_share >= 0.55 and full_width_lines <= max(8, len(body_lines) * 0.35):
+        if height * 0.10 <= y_min <= height * 0.93:
+            body_lines.append(
+                {
+                    "xMin": x_min,
+                    "xMax": x_max,
+                    "center": (x_min + x_max) / 2,
+                    "width": line_width,
+                }
+            )
+    if len(body_lines) < 12:
+        return None
+    narrow_lines = [line for line in body_lines if line["width"] <= width * 0.52]
+    left_lines = [line for line in narrow_lines if line["center"] < width * 0.48 and line["xMax"] < width * 0.56]
+    right_lines = [line for line in narrow_lines if line["center"] > width * 0.52 and line["xMin"] > width * 0.44]
+    full_width_lines = [
+        line
+        for line in body_lines
+        if line["width"] >= width * 0.58 and line["xMin"] < width * 0.32 and line["xMax"] > width * 0.68
+    ]
+    per_side_threshold = max(6, int(len(body_lines) * 0.18))
+    if len(left_lines) >= per_side_threshold and len(right_lines) >= per_side_threshold:
+        gutter = median_float([line["xMin"] for line in right_lines]) - median_float([line["xMax"] for line in left_lines])
+        if gutter >= max(18.0, width * 0.04) and len(full_width_lines) <= max(8, int(len(body_lines) * 0.40)):
             return True
-    return False
+    if len(full_width_lines) >= max(6, int(len(body_lines) * 0.45)):
+        return False
+    if len(left_lines) < 4 or len(right_lines) < 4:
+        return False
+    return None
+
+
+def compiled_pdf_two_column_signal(pdf_path: Path) -> bool | None:
+    classified: list[bool] = []
+    for page in pdf_page_line_boxes(pdf_path):
+        signal = pdf_page_two_column_signal(page)
+        if signal is not None:
+            classified.append(signal)
+    if not classified:
+        return None
+    two_column_pages = sum(1 for signal in classified if signal)
+    if two_column_pages == 0:
+        return False
+    return two_column_pages >= 2 or two_column_pages / len(classified) >= 0.34
+
+
+def pdf_looks_two_column(pdf_path: Path) -> bool:
+    return compiled_pdf_two_column_signal(pdf_path) is True
 
 
 def is_acl_review_mode(tex_path: Path) -> bool:
@@ -1005,10 +1052,10 @@ def resolve_paper_layout(tex_path: Path, requested: str = "source") -> str:
     if requested in {"single", "two-column", "paged", "paged-two-column"}:
         return requested
     pdf_path = tex_path.with_suffix(".pdf")
-    two_column = latex_source_requests_two_column(tex_path) or pdf_looks_two_column(pdf_path)
     if pdf_path.exists():
-        return "paged-two-column" if two_column else "paged"
-    return "two-column" if two_column else "single"
+        pdf_two_column = compiled_pdf_two_column_signal(pdf_path)
+        return "paged-two-column" if pdf_two_column is True else "paged"
+    return "two-column" if latex_source_requests_two_column(tex_path) else "single"
 
 
 def front_matter_header(soup: BeautifulSoup) -> Tag | None:
@@ -1173,6 +1220,7 @@ def read_latex_tree(path: Path, seen: set[Path] | None = None, root_dir: Path | 
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         text = path.read_text(encoding="latin-1")
+    text = strip_latex_comments(text)
 
     def replace_input(match: re.Match[str]) -> str:
         raw_path = match.group(1).strip()
@@ -1296,6 +1344,8 @@ def mark_latex_float_widths(soup: BeautifulSoup, tex_path: Path) -> int:
         target = latex_label_target(soup, label, "figure" if kind == "figure" else "table" if kind == "table" else None)
         if target is None:
             continue
+        classes = [class_name for class_name in class_names(target) if class_name not in {"paper-float-single", "paper-float-wide"}]
+        target["class"] = classes
         if bool(unit.get("wide")):
             add_class(target, "paper-float-wide")
         else:
@@ -1390,24 +1440,67 @@ def latex_inline_to_html(soup: BeautifulSoup, value: str) -> list[object]:
     text = text.replace("\\textwidth", "")
     text = re.sub(r"@\{\}", "", text)
     text = re.sub(r"L\{[^{}]*\}", "", text)
-    text = re.sub(r"\\texttt\{([^{}]*)\}", r"`\1`", text)
     text = re.sub(r"\\(?:citet|citep|cite|ref)\{([^{}]*)\}", r"[\1]", text)
     text = re.sub(r"~", " ", text)
     text = re.sub(r"[ \t\r\f\v]+", " ", text).strip()
     parts: list[object] = []
     cursor = 0
-    for match in re.finditer(r"\$([^$]+)\$|\\\\", text):
+
+    def append_text_segment(segment: str) -> None:
+        segment = segment.replace("\\%", "%").replace("\\_", "_").replace("\\&", "&")
+        segment = segment.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$").replace("\\#", "#")
+        segment = segment.replace("\\,", " ").replace("\\;", " ")
+        if segment:
+            parts.append(NavigableString(segment))
+
+    def math_text(segment: str) -> str:
+        replacements = {
+            r"\le": "≤",
+            r"\ge": "≥",
+            r"\in": "∈",
+            r"\times": "×",
+            r"\pm": "±",
+        }
+        for raw, rendered in replacements.items():
+            segment = segment.replace(raw, rendered)
+        segment = segment.replace("\\{", "{").replace("\\}", "}").replace("\\%", "%").replace("\\_", "_")
+        segment = re.sub(r"\\(?:mathrm|text)\{([^{}]*)\}", r"\1", segment)
+        segment = segment.replace("\\left", "").replace("\\right", "")
+        return re.sub(r"\s+", " ", segment).strip()
+
+    inline_re = re.compile(r"\$([^$]+)\$|\\\\|\\(textbf|textit|emph|texttt|num)\{([^{}]*)\}")
+    for match in inline_re.finditer(text):
         if match.start() > cursor:
-            parts.append(NavigableString(text[cursor : match.start()]))
+            append_text_segment(text[cursor : match.start()])
         if match.group(0) == "\\\\":
             parts.append(soup.new_tag("br"))
+        elif match.group(1) is not None:
+            span = soup.new_tag("span")
+            span["class"] = "math-inline"
+            span.string = math_text(match.group(1))
+            parts.append(span)
         else:
-            code = soup.new_tag("code")
-            code.string = match.group(1)
-            parts.append(code)
+            command = match.group(2)
+            body = match.group(3) or ""
+            if command == "textbf":
+                node = soup.new_tag("strong")
+                for child in latex_inline_to_html(soup, body):
+                    node.append(child)
+                parts.append(node)
+            elif command in {"textit", "emph"}:
+                node = soup.new_tag("em")
+                for child in latex_inline_to_html(soup, body):
+                    node.append(child)
+                parts.append(node)
+            elif command == "texttt":
+                code = soup.new_tag("code")
+                code.string = body
+                parts.append(code)
+            else:
+                append_text_segment(body)
         cursor = match.end()
     if cursor < len(text):
-        parts.append(NavigableString(text[cursor:]))
+        append_text_segment(text[cursor:])
     return parts or [NavigableString("")]
 
 
@@ -1504,7 +1597,6 @@ def add_float_caption_numbers(soup: BeautifulSoup, tex_path: Path) -> int:
         caption_text = str(unit.get("caption") or "").strip()
         if caption is None and caption_text:
             caption = soup.new_tag("figcaption" if kind == "figure" else "caption")
-            append_latex_inline(soup, caption, caption_text)
             if kind == "figure":
                 target.append(caption)
             else:
@@ -1515,12 +1607,51 @@ def add_float_caption_numbers(soup: BeautifulSoup, tex_path: Path) -> int:
                     target.insert(0, caption)
         if not isinstance(caption, Tag):
             continue
+        if caption_text:
+            caption.clear()
+            append_latex_inline(soup, caption, caption_text)
         prefix = f"{'Figure' if kind == 'figure' else 'Table'} {counters[kind]}:"
         if normalized_text(caption).lower().startswith(prefix.lower()):
             continue
         strong = soup.new_tag("strong")
         strong.string = f"{prefix} "
         caption.insert(0, strong)
+        updated += 1
+    return updated
+
+
+def latex_float_number_map(tex_path: Path) -> dict[str, str]:
+    counters = {"figure": 0, "table": 0}
+    numbers: dict[str, str] = {}
+    for unit in latex_label_units(tex_path):
+        kind = str(unit.get("kind") or "")
+        if kind not in counters:
+            continue
+        counters[kind] += 1
+        label = str(unit.get("label") or "")
+        if label:
+            numbers[label] = str(counters[kind])
+    return numbers
+
+
+def sync_float_reference_numbers(soup: BeautifulSoup, tex_path: Path) -> int:
+    float_numbers = latex_float_number_map(tex_path)
+    updated = 0
+    for link in soup.find_all("a"):
+        if not isinstance(link, Tag):
+            continue
+        ref = str(link.get("data-reference") or "").strip()
+        href = str(link.get("href") or "").strip()
+        if not ref and href.startswith("#"):
+            ref = href[1:]
+        number = float_numbers.get(ref)
+        if not number:
+            continue
+        current = normalized_text(link)
+        if current and current not in {ref, f"[{ref}]"} and not re.fullmatch(r"\[?\d+\]?", current):
+            continue
+        link.clear()
+        link.append(NavigableString(number))
         updated += 1
     return updated
 
@@ -1700,6 +1831,96 @@ def table_label_targets(soup: BeautifulSoup) -> list[Tag]:
     return targets
 
 
+def latex_table_plain_text(value: str) -> str:
+    text = strip_latex_environment_begin(value.strip(), "tabular")
+    text = text.replace("\\end{tabular}", "")
+    text = re.sub(r"\\(?:toprule|midrule|bottomrule|centering|small|scriptsize)\b", " ", text)
+    text = re.sub(r"\\(?:textbf|textit|texttt|emph|num)\{([^{}]*)\}", r" \1 ", text)
+    text = re.sub(r"\\(?:multicolumn|multirow)\{[^{}]*\}\{[^{}]*\}\{([^{}]*)\}", r" \1 ", text)
+    text = re.sub(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])?", " ", text)
+    text = text.replace("\\%", "%").replace("\\_", "_")
+    text = re.sub(r"[{}$&]", " ", text)
+    text = text.replace("\\\\", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def table_match_tokens_from_text(value: str) -> Counter[str]:
+    text = normalize_for_match(latex_table_plain_text(value))
+    tokens = re.findall(r"[a-z]+|\d+(?:\.\d+)?", text.lower())
+    stopwords = {"and", "the", "for", "with", "from", "into", "under", "over"}
+    return Counter(token for token in tokens if token not in stopwords and (len(token) >= 2 or token.isdigit()))
+
+
+def latex_table_unit_counter(unit: dict[str, object]) -> Counter[str]:
+    rows = split_latex_table_rows(str(unit.get("tabular") or ""))
+    return table_match_tokens_from_text(" ".join(cell for row in rows for cell in row))
+
+
+def html_table_target_counter(target: Tag) -> Counter[str]:
+    table = target if target.name == "table" else target.find("table")
+    if isinstance(table, Tag):
+        cells = [cell.get_text(" ", strip=True) for cell in table.find_all(["th", "td"])]
+        if cells:
+            return table_match_tokens_from_text(" ".join(cells))
+    clone = BeautifulSoup(str(target), "lxml")
+    for caption in clone.find_all(["caption", "figcaption"]):
+        caption.decompose()
+    return table_match_tokens_from_text(clone.get_text(" ", strip=True))
+
+
+def table_content_match_score(target_counter: Counter[str], unit_counter: Counter[str]) -> tuple[int, int, float]:
+    if not target_counter or not unit_counter:
+        return 0, 0, 0.0
+    overlap = sum((target_counter & unit_counter).values())
+    unique_overlap = len(set(target_counter) & set(unit_counter))
+    coverage = overlap / max(1, min(sum(target_counter.values()), sum(unit_counter.values())))
+    return overlap, unique_overlap, coverage
+
+
+def matched_table_targets_by_latex_content(
+    table_targets: list[Tag], table_units: list[dict[str, object]]
+) -> dict[str, Tag]:
+    target_counters = [html_table_target_counter(target) for target in table_targets]
+    unit_counters = [latex_table_unit_counter(unit) for unit in table_units]
+    candidates: list[tuple[int, int, float, int, int]] = []
+    for target_idx, target_counter in enumerate(target_counters):
+        for unit_idx, unit_counter in enumerate(unit_counters):
+            overlap, unique_overlap, coverage = table_content_match_score(target_counter, unit_counter)
+            if overlap < 4 or unique_overlap < 3 or coverage < 0.35:
+                continue
+            candidates.append((overlap, unique_overlap, coverage, target_idx, unit_idx))
+    candidates.sort(reverse=True)
+    matched_targets: set[int] = set()
+    matched_units: set[int] = set()
+    by_label: dict[str, Tag] = {}
+    for _overlap, _unique_overlap, _coverage, target_idx, unit_idx in candidates:
+        if target_idx in matched_targets or unit_idx in matched_units:
+            continue
+        label = str(table_units[unit_idx].get("label") or "")
+        if not label:
+            continue
+        by_label[label] = table_targets[target_idx]
+        matched_targets.add(target_idx)
+        matched_units.add(unit_idx)
+    return by_label
+
+
+def assign_label_to_float(soup: BeautifulSoup, target: Tag, label: str) -> bool:
+    changed = False
+    for duplicate in list(soup.find_all(id=label)):
+        if duplicate is target:
+            continue
+        if has_class(duplicate, "paper-latex-label-anchor"):
+            duplicate.decompose()
+        else:
+            del duplicate["id"]
+        changed = True
+    if target.get("id") != label:
+        target["id"] = label
+        changed = True
+    return changed
+
+
 def restore_mathml_labels(soup: BeautifulSoup) -> int:
     """Restore equation labels that pandoc leaves only inside MathML annotations."""
 
@@ -1748,8 +1969,16 @@ def restore_latex_labels(soup: BeautifulSoup, tex_path: Path) -> int:
     used_table_targets: set[int] = set()
     table_cursor = 0
     table_units = [unit for unit in units if unit["kind"] == "table"]
+    content_matched_targets = matched_table_targets_by_latex_content(table_targets, table_units)
     for unit in table_units:
         label = str(unit["label"])
+        matched_target = content_matched_targets.get(label)
+        if matched_target is not None:
+            if assign_label_to_float(soup, matched_target, label):
+                restored += 1
+            used_table_targets.add(id(matched_target))
+            existing_ids.add(label)
+            continue
         existing = latex_label_target(soup, label, "table")
         if existing is not None:
             used_table_targets.add(id(existing))
@@ -1760,8 +1989,8 @@ def restore_latex_labels(soup: BeautifulSoup, tex_path: Path) -> int:
             continue
         target = table_targets[table_cursor]
         table_cursor += 1
-        if not node_or_ancestor_has_id(target):
-            target["id"] = label
+        if not node_or_ancestor_has_id(target) or str(target.get("id") or "").startswith("tab:"):
+            assign_label_to_float(soup, target, label)
         else:
             add_label_anchor(soup, target, label)
         existing_ids.add(label)
@@ -2583,7 +2812,59 @@ def best_matching_page(
     return matched_page if best_score >= min_score else 0
 
 
+def monotone_page_alignment(score_rows: list[list[int]]) -> list[int]:
+    if not score_rows or not score_rows[0]:
+        return []
+
+    page_count = len(score_rows[0])
+    backrefs: list[list[int]] = [[-1] * page_count]
+    previous = list(score_rows[0])
+    negative_infinity = -(10**12)
+
+    for row in score_rows[1:]:
+        current = [negative_infinity] * page_count
+        links = [0] * page_count
+        best_score = negative_infinity
+        best_page = 0
+        for page_idx, prior_score in enumerate(previous):
+            if prior_score > best_score:
+                best_score = prior_score
+                best_page = page_idx
+            current[page_idx] = best_score + row[page_idx]
+            links[page_idx] = best_page
+        previous = current
+        backrefs.append(links)
+
+    final_page = max(range(page_count), key=lambda idx: (previous[idx], -idx))
+    aligned_pages = [final_page] * len(score_rows)
+    for row_idx in range(len(score_rows) - 1, 0, -1):
+        aligned_pages[row_idx - 1] = backrefs[row_idx][aligned_pages[row_idx]]
+    return [page_idx + 1 for page_idx in aligned_pages]
+
+
 def sentence_page_assignments_from_pages(soup: BeautifulSoup, pages: list[str]) -> dict[str, int]:
+    if not pages:
+        return {}
+    nodes: list[tuple[str, Tag]] = []
+    for node in soup.select(".paper-sentence[data-sentence-id]"):
+        if not isinstance(node, Tag):
+            continue
+        sentence_id = str(node.get("data-sentence-id") or "")
+        if not sentence_id:
+            continue
+        nodes.append((sentence_id, node))
+    score_rows = [
+        [page_match_score(sentence_page_phrases(node), page_text) for page_text in pages]
+        for _sentence_id, node in nodes
+    ]
+    aligned_pages = monotone_page_alignment(score_rows)
+    assignments: dict[str, int] = {}
+    for (sentence_id, _node), page in zip(nodes, aligned_pages):
+        assignments[sentence_id] = page
+    return assignments
+
+
+def _greedy_sentence_page_assignments_from_pages(soup: BeautifulSoup, pages: list[str]) -> dict[str, int]:
     if not pages:
         return {}
     assignments: dict[str, int] = {}
@@ -2615,9 +2896,26 @@ def float_page_phrases(node: Tag) -> list[str]:
     return sentence_page_phrases(anchor)
 
 
-def block_page_assignments_from_pages(soup: BeautifulSoup, pages: list[str]) -> dict[str, int]:
+def assigned_caption_page(node: Tag, sentence_assignments: dict[str, int]) -> int:
+    caption = node.find("figcaption") or node.find("caption")
+    if not isinstance(caption, Tag):
+        return 0
+    for sentence in caption.select(".paper-sentence[data-sentence-id]"):
+        sentence_id = str(sentence.get("data-sentence-id") or "")
+        page = sentence_assignments.get(sentence_id, 0)
+        if page:
+            return page
+    return 0
+
+
+def block_page_assignments_from_pages(
+    soup: BeautifulSoup,
+    pages: list[str],
+    sentence_assignments: dict[str, int] | None = None,
+) -> dict[str, int]:
     if not pages:
         return {}
+    sentence_assignments = sentence_assignments or {}
     assignments: dict[str, int] = {}
     search_page = 1
     for node in soup.find_all(True):
@@ -2627,6 +2925,11 @@ def block_page_assignments_from_pages(soup: BeautifulSoup, pages: list[str]) -> 
         if target is not node:
             continue
         block_id = str(node.get("id") or "")
+        caption_page = assigned_caption_page(node, sentence_assignments)
+        if caption_page:
+            assignments[block_id] = caption_page
+            search_page = max(search_page, caption_page)
+            continue
         phrases = float_page_phrases(node)
         matched_page = best_matching_page(phrases, pages, start_page=search_page)
         if not matched_page:
@@ -2973,7 +3276,7 @@ def apply_paged_layout(soup: BeautifulSoup, tex_path: Path, page_map_path: Path 
     assignments = sentence_page_assignments_from_pages(soup, pdf_pages)
     if not assignments:
         return {"enabled": False, "pages": 0, "sentences": 0, "page_map": {}}
-    block_assignments = block_page_assignments_from_pages(soup, pdf_pages)
+    block_assignments = block_page_assignments_from_pages(soup, pdf_pages, assignments)
     flow_block_assignments = flow_block_page_assignments_from_pages(soup, pdf_pages, assignments, block_assignments)
     pages, sentence_count = split_children_into_pages(
         soup,
@@ -3062,6 +3365,7 @@ def prepare_source_soup(
                 title = extract_title(soup, tex_path)
         ensure_display_section_numbers(soup, tex_path)
         sync_section_reference_numbers(soup)
+        sync_float_reference_numbers(soup, tex_path)
         return soup, title, sentence_count
 
     run_pandoc(tex_path, raw_html_path)
@@ -3088,7 +3392,7 @@ def prepare_source_soup(
     sentence_count = wrap_sentences(soup)
     ensure_display_section_numbers(soup, tex_path)
     sync_section_reference_numbers(soup)
-    sync_section_reference_numbers(soup)
+    sync_float_reference_numbers(soup, tex_path)
     raw_html_path.write_text(source_artifact_shell(title, body_inner_html(soup)), encoding="utf-8")
     return soup, title, sentence_count
 
@@ -3153,9 +3457,15 @@ def meaningful_evidence_text(item: dict[str, str]) -> str:
     return ""
 
 
-def render_annotation_cards(annotations: list[dict[str, str]]) -> str:
+def render_annotation_cards(annotations: list[dict[str, str]], *, full_report: bool = False) -> str:
     if not annotations:
-        return '<p class="empty-state">尚未生成批注。下一步应让审阅逻辑只添加 <code>has-annotation</code> 属性和 annotation cards，不改写左侧论文正文。</p>'
+        warning = (
+            "本报告没有可显示的 overlay 批注。若这是全文审阅结果，说明 Prose Phase A/B 或 findings 编译尚未完成；"
+            "请不要把这份 HTML 当作已完成审阅。"
+            if full_report
+            else "当前预览尚未加载批注；左侧仅是由论文源码解析生成的正文。"
+        )
+        return f'<aside class="report-warning" role="status"><strong>审阅未完成</strong><p>{html.escape(warning)}</p></aside>'
     cards: list[str] = [
         '<p class="annotation-empty-state" data-annotation-empty>点击左侧带下划线的句子，这里会显示对应批注意见。</p>'
     ]
@@ -3398,9 +3708,65 @@ def render_global_findings(findings: list[dict[str, object]]) -> str:
     </section>"""
 
 
-def render_coverage_receipt(coverage: object, *, raw_hash_attr: str, source_artifact: str, sentence_count: int, annotation_count: int) -> str:
+def rendered_finding_ids(annotations: list[dict[str, str]], findings: list[dict[str, object]]) -> set[str]:
+    ids = {str(item.get("issue_id") or "").strip() for item in annotations if str(item.get("issue_id") or "").strip()}
+    ids.update(
+        str(finding.get("id") or "").strip()
+        for finding in findings
+        if str(finding.get("id") or "").strip() and is_global_finding(finding) and severity_key(finding.get("severity")) in {"blocker", "major"}
+    )
+    return ids
+
+
+def deferred_finding_rows(findings: list[dict[str, object]], annotations: list[dict[str, str]]) -> list[dict[str, object]]:
+    rendered_ids = rendered_finding_ids(annotations, findings)
+    rows: list[dict[str, object]] = []
+    for finding in findings:
+        finding_id = str(finding.get("id") or "").strip()
+        if not finding_id or finding_id in rendered_ids:
+            continue
+        if is_artifact_only(finding):
+            reason = "artifact_only"
+        else:
+            reason = "not anchored in overlay/global sections"
+        rows.append({**finding, "_deferred_reason": reason})
+    return rows
+
+
+def render_deferred_findings_summary(findings: list[dict[str, object]], annotations: list[dict[str, str]]) -> str:
+    rows = deferred_finding_rows(findings, annotations)
+    if not rows:
+        return ""
+    body_rows = []
+    for finding in rows:
+        body_rows.append(
+            f"<tr><td>{finding_id_link(finding.get('id'))}</td><td>{display_text(finding.get('_deferred_reason'))}</td><td>{display_text(finding.get('title') or finding.get('diagnosis'), fallback='未命名 finding')}</td></tr>"
+        )
+    return f"""
+      <div class="table-wrap deferred-findings">
+        <table class="report-table">
+          <caption>未渲染 findings</caption>
+          <thead><tr><th scope="col">ID</th><th scope="col">原因</th><th scope="col">标题</th></tr></thead>
+          <tbody>{''.join(body_rows)}</tbody>
+        </table>
+      </div>"""
+
+
+def render_coverage_receipt(
+    coverage: object,
+    *,
+    raw_hash_attr: str,
+    source_artifact: str,
+    sentence_count: int,
+    annotation_count: int,
+    findings: list[dict[str, object]] | None = None,
+    annotations: list[dict[str, str]] | None = None,
+) -> str:
     units = coverage.get("units", []) if isinstance(coverage, dict) else []
     rows = []
+    findings = findings or []
+    annotations = annotations or []
+    deferred_html = render_deferred_findings_summary(findings, annotations)
     for unit in units if isinstance(units, list) else []:
         if not isinstance(unit, dict):
             continue
@@ -3435,6 +3801,7 @@ def render_coverage_receipt(coverage: object, *, raw_hash_attr: str, source_arti
           </tbody>
         </table>
       </div>
+      {deferred_html}
     </section>"""
 
 
@@ -3456,6 +3823,8 @@ def render_global_report_sections(
                 source_artifact=source_artifact,
                 sentence_count=sentence_count,
                 annotation_count=len(annotations),
+                findings=findings,
+                annotations=annotations,
             ),
         ]
     )
@@ -3492,7 +3861,7 @@ def report_shell(
     title_html = html.escape(title)
     annotation_count = len(annotations)
     annotation_panel_state = ' data-empty="true"' if annotations else ""
-    annotation_cards = render_annotation_cards(annotations)
+    annotation_cards = render_annotation_cards(annotations, full_report=full_report)
     finding_anchor_index = render_finding_anchor_index(annotations)
     report_kind = "paper-reader-with-global-findings" if full_report else "paper-reader-only"
     header_title = "Ariadne Paper Reader Review" if full_report else "Ariadne Paper Reader Preview"
@@ -3535,6 +3904,8 @@ def report_shell(
             source_artifact=source_artifact,
             sentence_count=sentence_count,
             annotation_count=annotation_count,
+            findings=findings or [],
+            annotations=annotations,
         )
     )
     return f"""<!doctype html>
@@ -3557,6 +3928,9 @@ def report_shell(
     .summary-band {{ display:grid; grid-template-columns:repeat(4, minmax(120px, 1fr)); gap:10px; margin-top:16px; }}
     .summary-cell {{ border:1px solid var(--line); border-radius:8px; padding:10px; background:#fbfcfe; }}
     .summary-cell strong {{ display:block; font-size:12px; color:var(--muted); }}
+    .report-warning {{ border:1px solid #f2d98f; border-left:4px solid var(--major); border-radius:8px; background:#fff8e6; color:#4d3a00; padding:12px 14px; margin:0 0 14px; }}
+    .report-warning strong {{ display:block; margin-bottom:4px; color:#5b3b00; }}
+    .report-warning p {{ margin:0; }}
     .badge {{ display:inline-flex; align-items:center; border-radius:999px; padding:2px 8px; font-size:12px; font-weight:700; border:1px solid transparent; }}
     .blocker {{ color:var(--blocker); background:var(--blocker-bg); border-color:#ffd3cf; }}
     .major {{ color:var(--major); background:var(--major-bg); border-color:#f2d98f; }}
@@ -3793,7 +4167,7 @@ def report_shell(
     <div class="reader-toolbar">
       <div>
         <h2>论文正文批注</h2>
-        <p class="empty-state">当前是 source-derived paper-reader；正文句子已获得稳定 <code>data-sentence-id</code>，批注以 overlay 方式添加。</p>
+        <p class="empty-state">当前正文由论文源码解析生成；句子锚点保持稳定，批注以 overlay 方式添加。</p>
       </div>
       <div>
         <span class="badge blocker">■ Blocker</span>

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -12,6 +13,14 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
 
 
 def run_command(cmd: list[str], *, cwd: Path | None = None, timeout: int = 180) -> subprocess.CompletedProcess[str]:
@@ -95,15 +104,26 @@ def run_builder(domain: str, raw_audit: Path, out: Path) -> dict[str, Any]:
     }
 
 
+def layout_audit_matches_pdf(raw: Path, pdf: Path | None) -> bool:
+    if pdf is None:
+        return True
+    try:
+        payload = load_json(raw)
+    except (OSError, json.JSONDecodeError):
+        return False
+    declared_hash = str(payload.get("pdf_hash") or "")
+    return bool(declared_hash) and declared_hash == sha256_path(pdf)
+
+
 def run_layout(pdf: Path | None, bundle: Path, issues_dir: Path, *, force: bool, pages: str) -> dict[str, Any]:
     out = issues_dir / "layout_issues.json"
     raw = bundle / "layout_audit.json"
-    if raw.exists() and not force:
+    if raw.exists() and not force and layout_audit_matches_pdf(raw, pdf):
         return run_builder("layout", raw, out)
     if pdf is None:
         write_json(out, skipped_stub("layout", "no PDF provided for layout audit"))
         return {"domain": "layout", "status": "skipped", "issues": str(out), "skip_reason": "no PDF provided"}
-    if not raw.exists() or force:
+    if not raw.exists() or force or not layout_audit_matches_pdf(raw, pdf):
         if not shutil.which("pdftotext"):
             write_json(out, skipped_stub("layout", "pdftotext is unavailable"))
             return {"domain": "layout", "status": "skipped", "issues": str(out), "skip_reason": "pdftotext unavailable"}

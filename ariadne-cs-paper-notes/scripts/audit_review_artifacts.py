@@ -841,6 +841,31 @@ def audit_manifest(payload: Any, finding_ids: set[str]) -> tuple[list[str], list
         if field not in payload:
             errors.append(f"render manifest missing `{field}`")
     deferred = set(str(item) for item in payload.get("deferred_findings", []) if item)
+    detailed_deferred = payload.get("deferred_findings_with_reason", [])
+    if detailed_deferred:
+        if not isinstance(detailed_deferred, list):
+            errors.append("render manifest `deferred_findings_with_reason` must be a list")
+        else:
+            detailed_ids: set[str] = set()
+            for idx, item in enumerate(detailed_deferred, 1):
+                if not isinstance(item, dict):
+                    errors.append(f"render manifest deferred_findings_with_reason item #{idx} must be an object")
+                    continue
+                finding_id = compact_text(item.get("id"))
+                reason = compact_text(item.get("reason"))
+                if not finding_id:
+                    errors.append(f"render manifest deferred_findings_with_reason item #{idx} missing `id`")
+                else:
+                    detailed_ids.add(finding_id)
+                    deferred.add(finding_id)
+                if not reason:
+                    errors.append(f"render manifest deferred_findings_with_reason item #{idx} missing `reason`")
+            missing_detail = sorted(item for item in deferred if item not in detailed_ids)
+            if missing_detail:
+                warnings.append(
+                    "render manifest deferred_findings should include reason details for: "
+                    + ", ".join(missing_detail)
+                )
     unknown_deferred = sorted(item for item in deferred if item not in finding_ids)
     for item in unknown_deferred:
         errors.append(f"render manifest defers unknown finding id `{item}`")
