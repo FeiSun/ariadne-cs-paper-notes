@@ -15,8 +15,8 @@ SCRIPT = ROOT / "scripts" / "build_review_derivatives.py"
 AUDIT_SCRIPT = ROOT / "scripts" / "audit_review_artifacts.py"
 FIXTURES = ROOT / "tests" / "fixtures"
 ARTIFACTS = FIXTURES / "review_artifacts"
-HTML = FIXTURES / "expected_html_report.html"
-SOURCE = FIXTURES / "source_paper_reader.html"
+HTML = FIXTURES / "expected_pdf_overlay_report.html"
+SOURCE = FIXTURES / "main.tex"
 
 
 def load_module(script: Path, name: str):
@@ -43,9 +43,6 @@ def test_derivative_artifacts_satisfy_existing_audit_contract() -> None:
             source_hash="",
             requested_scope="fixture derived bundle",
             output_files=[str(HTML)],
-            source_fidelity="fixture",
-            html_source="manual-fixture",
-            visible_scope="",
         )
         coverage = root / "coverage.json"
         manifest = root / "render_manifest.json"
@@ -61,14 +58,13 @@ def test_derivative_artifacts_satisfy_existing_audit_contract() -> None:
             manifest,
             pass_observations,
             HTML,
-            SOURCE,
             ARTIFACTS / "annotations.json",
             ARTIFACTS,
             ARTIFACTS / "layout_audit.json",
         )
     allowed_warnings = {
         "legacy bundle: issue_artifacts/ absent; recommend migration",
-        "render manifest paper_reader source integrity comparison was skipped",
+        "layout_audit replay skipped: pypdf is required for page counting",
     }
     unexpected = [warning for warning in warnings if warning not in allowed_warnings]
     if errors or unexpected:
@@ -96,10 +92,6 @@ def test_derivatives_cli_writes_all_outputs() -> None:
                 "fixture cli",
                 "--output-file",
                 str(HTML),
-                "--source-fidelity",
-                "fixture",
-                "--html-source",
-                "manual-fixture",
                 "--coverage-out",
                 str(coverage),
                 "--manifest-out",
@@ -115,7 +107,7 @@ def test_derivatives_cli_writes_all_outputs() -> None:
         raise AssertionError(f"Missing generated_by provenance: {payloads}")
 
 
-def test_derivatives_manifest_can_match_paper_reader_only_render() -> None:
+def test_derivatives_manifest_can_match_pdf_overlay_render() -> None:
     module = load_module(SCRIPT, "build_review_derivatives")
     payloads = module.build_all(
         findings_path=ARTIFACTS / "findings.json",
@@ -124,45 +116,20 @@ def test_derivatives_manifest_can_match_paper_reader_only_render() -> None:
         layout_audit_path=ARTIFACTS / "layout_audit.json",
         source_artifact=SOURCE,
         source_hash="",
-        requested_scope="fixture paper-reader overlay",
+        requested_scope="fixture PDF overlay",
         output_files=[str(HTML)],
-        source_fidelity="fixture",
-        html_source="manual-fixture",
-        visible_scope="",
-        render_mode="paper-reader-only",
+        render_mode="pdf-overlay",
     )
+    manifest = payloads["render_manifest"]
     sections = [
         section["id"]
-        for section in payloads["render_manifest"].get("sections", [])
+        for section in manifest.get("sections", [])
         if section.get("status") == "rendered"
     ]
-    if sections != ["paper-reader", "coverage-receipt"]:
-        raise AssertionError(f"Unexpected paper-reader-only manifest sections: {sections}")
-
-
-def test_derivatives_manifest_can_match_global_findings_render() -> None:
-    module = load_module(SCRIPT, "build_review_derivatives")
-    payloads = module.build_all(
-        findings_path=ARTIFACTS / "findings.json",
-        annotations_path=ARTIFACTS / "annotations.json",
-        issues_dir=None,
-        layout_audit_path=ARTIFACTS / "layout_audit.json",
-        source_artifact=SOURCE,
-        source_hash="",
-        requested_scope="fixture paper-reader overlay plus global findings",
-        output_files=[str(HTML)],
-        source_fidelity="fixture",
-        html_source="manual-fixture",
-        visible_scope="",
-        render_mode="paper-reader-with-global-findings",
-    )
-    sections = [
-        section["id"]
-        for section in payloads["render_manifest"].get("sections", [])
-        if section.get("status") == "rendered"
-    ]
-    if sections != ["paper-reader", "global-findings", "coverage-receipt"]:
-        raise AssertionError(f"Unexpected global-findings manifest sections: {sections}")
+    if sections != ["paper-reader", "bbox-diagnostics", "coverage-receipt"]:
+        raise AssertionError(f"Unexpected pdf-overlay manifest sections: {sections}")
+    if manifest.get("paper_reader") is not None or manifest.get("pdf_overlay", {}).get("mode") != "pdf-overlay":
+        raise AssertionError(f"PDF overlay manifest should not use legacy paper_reader metadata: {manifest}")
 
 
 def test_derivatives_use_phase_artifacts_for_coverage_and_defer_artifact_only_findings() -> None:
@@ -235,9 +202,6 @@ def test_derivatives_use_phase_artifacts_for_coverage_and_defer_artifact_only_fi
             source_hash="",
             requested_scope="full compiled Ariadne review",
             output_files=[str(HTML)],
-            source_fidelity="fixture",
-            html_source="manual-fixture",
-            visible_scope="",
             phase_a_status_path=phase_a,
             phase_b_context_path=phase_b,
         )
@@ -258,7 +222,6 @@ def test_derivatives_use_phase_artifacts_for_coverage_and_defer_artifact_only_fi
 if __name__ == "__main__":
     test_derivative_artifacts_satisfy_existing_audit_contract()
     test_derivatives_cli_writes_all_outputs()
-    test_derivatives_manifest_can_match_paper_reader_only_render()
-    test_derivatives_manifest_can_match_global_findings_render()
+    test_derivatives_manifest_can_match_pdf_overlay_render()
     test_derivatives_use_phase_artifacts_for_coverage_and_defer_artifact_only_findings()
     print("build_review_derivatives regression tests passed")

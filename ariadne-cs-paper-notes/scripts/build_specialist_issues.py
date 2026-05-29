@@ -412,7 +412,10 @@ def build_figure_caption(raw_path: Path) -> dict[str, Any]:
             "recommendation": rec,
             "render_hint": render_hint,
         }
-        if not target_label and issue["issue_type"] in {"rendered_caption_count_mismatch", "rendered_caption_missing"}:
+        if issue["issue_type"] == "rendered_caption_label_only" or (not target_label and issue["issue_type"] in {
+            "rendered_caption_count_mismatch",
+            "rendered_caption_missing",
+        }):
             issue["render_visibility"] = "artifact_only"
         if issue["severity"] in {"Blocker", "Major"}:
             issue.update(high_risk_fields("figure_caption", rec))

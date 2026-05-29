@@ -104,7 +104,7 @@ def test_compile_jsonl_and_specialist_artifacts() -> None:
 
         findings, annotations, index = module.compile_artifacts(
             issues_dir=issues,
-            source_artifact="paper.source.html",
+            source_artifact="main.tex",
             source_hash="sha256:aaaaaaaaaaaaaaaa",
         )
 
@@ -252,33 +252,24 @@ def test_compiler_keeps_compiled_pdf_identity_issue_visible() -> None:
             raise AssertionError(f"No artifact-only ids expected for compiled PDF identity issue: {index}")
 
 
-def test_compiler_drops_stale_resolved_float_reference_issue() -> None:
+def test_compiler_hides_renderer_readable_layer_false_positive() -> None:
     module = load_module(SCRIPT, "compile_review_artifacts")
     with tempfile.TemporaryDirectory() as tempdir:
-        root = Path(tempdir)
-        issues = root / "issue_artifacts"
+        issues = Path(tempdir) / "issue_artifacts"
         issues.mkdir()
-        source = root / "paper.source.html"
-        source.write_text(
-            """
-<html><body>
-  <p><span data-sentence-id="s-demo">As shown in Figure <a data-reference="fig:demo" href="#fig:demo">2</a>, the result holds.</span></p>
-  <figure id="fig:demo"><figcaption><strong>Figure 2: </strong>Demo caption.</figcaption></figure>
-</body></html>
-""",
-            encoding="utf-8",
-        )
         (issues / "prose_issues.jsonl").write_text(
             json.dumps(
                 {
                     "local_id": "P1",
                     "domain": "prose",
-                    "severity": "Major",
-                    "issue_type": "figure_reference",
-                    "title": "图号引用错误",
-                    "diagnosis": "Old cache claimed this sentence pointed to the wrong figure.",
-                    "target_anchors": ["s-demo"],
-                    "primary_anchor": "s-demo",
+                    "severity": "Minor",
+                    "issue_type": "polish",
+                    "title": "当前 HTML 可读层 中 pass@ k k appears duplicated",
+                    "diagnosis": "当前 HTML 可读层 中 pass@ k k 和 k k 会让非 TeX 读者以为有排版错误。",
+                    "reader_friction": "符号重复会干扰读者理解 pass@k 是一个指标而不是文本噪声。",
+                    "writing_principle": "不要让读者做翻译题/查字典题/算术题",
+                    "self_check": "最终 HTML/PDF 中是否能让 pass@k 和 k 正常显示为单一数学符号？",
+                    "target_anchors": ["s-results-p001-s001"],
                     "render_visibility": "student_visible",
                 },
                 ensure_ascii=False,
@@ -287,12 +278,47 @@ def test_compiler_drops_stale_resolved_float_reference_issue() -> None:
             encoding="utf-8",
         )
 
-        findings, annotations, index = module.compile_artifacts(issues_dir=issues, source_artifact=str(source))
+        findings, annotations, index = module.compile_artifacts(issues_dir=issues)
 
-        if findings["findings"] or annotations["annotations"]:
-            raise AssertionError(f"Resolved stale figure-reference issue should be dropped: {findings}, {annotations}")
-        if index["stale_source_issue_ids"] != ["prose:P1"]:
-            raise AssertionError(f"Stale issue id should be recorded in the index: {index}")
+        if findings["findings"][0]["render_visibility"] != "artifact_only":
+            raise AssertionError(f"Renderer-layer false positive should be hidden from overlay: {findings}")
+        if annotations["annotations"]:
+            raise AssertionError(f"Renderer-layer false positive should not create PDF annotation: {annotations}")
+        if index["artifact_only_finding_ids"] != ["F1"]:
+            raise AssertionError(f"Expected artifact-only renderer-noise finding id: {index}")
+
+
+def test_compiler_keeps_real_pdf_rendering_issue_visible() -> None:
+    module = load_module(SCRIPT, "compile_review_artifacts")
+    with tempfile.TemporaryDirectory() as tempdir:
+        issues = Path(tempdir) / "issue_artifacts"
+        issues.mkdir()
+        (issues / "prose_issues.jsonl").write_text(
+            json.dumps(
+                {
+                    "local_id": "P1",
+                    "domain": "prose",
+                    "severity": "Major",
+                    "issue_type": "layout",
+                    "title": "最终 PDF 中图注压住正文",
+                    "diagnosis": "最终 PDF 中 Figure 3 的 caption 与正文重叠，读者无法辨认图注。",
+                    "target_anchors": ["fig:example"],
+                    "visibility_basis": "compiled_pdf",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        findings, annotations, index = module.compile_artifacts(issues_dir=issues)
+
+    if findings["findings"][0]["render_visibility"] != "student_visible":
+        raise AssertionError(f"Compiled-PDF rendering issue should stay visible: {findings}")
+    if len(annotations["annotations"]) != 1:
+        raise AssertionError(f"Compiled-PDF rendering issue should create annotation: {annotations}")
+    if index["artifact_only_finding_ids"]:
+        raise AssertionError(f"No artifact-only ids expected: {index}")
 
 
 if __name__ == "__main__":
@@ -301,5 +327,6 @@ if __name__ == "__main__":
     test_compiler_allows_explicit_student_visible_specialist_issue()
     test_compiler_hides_source_only_anonymous_front_matter_false_positive()
     test_compiler_keeps_compiled_pdf_identity_issue_visible()
-    test_compiler_drops_stale_resolved_float_reference_issue()
+    test_compiler_hides_renderer_readable_layer_false_positive()
+    test_compiler_keeps_real_pdf_rendering_issue_visible()
     print("compile_review_artifacts regression tests passed")

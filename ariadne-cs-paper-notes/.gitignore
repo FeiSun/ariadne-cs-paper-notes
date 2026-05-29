@@ -1,0 +1,7 @@
+
+# Local external-agent state for sandboxed smoke/migration runs
+.ariadne_codex_home/*
+!.ariadne_codex_home/.gitkeep
+
+# Local JavaScript dependencies for the PDF.js renderer
+node_modules/

@@ -296,6 +296,36 @@ def test_figure_caption_target_label_becomes_render_anchor() -> None:
     hint = issue.get("render_hint", {})
     if hint.get("anchor") != "tab:data_split" or hint.get("target_level") != "section":
         raise AssertionError(f"Figure-caption target label should become direct render anchor: {issue}")
+    if issue.get("render_visibility") != "artifact_only":
+        raise AssertionError(f"Rendered-caption geometry signal should remain artifact-only: {issue}")
+
+
+def test_unresolved_rendered_caption_label_only_is_artifact_only() -> None:
+    module = load_module(SCRIPT, "build_specialist_issues")
+    with tempfile.TemporaryDirectory() as tempdir:
+        raw = Path(tempdir) / "figure_caption_audit.json"
+        write_json(
+            raw,
+            {
+                "coverage": {"rendered_pages_checked": 1, "rendered_caption_signals_checked": 1},
+                "observations": [
+                    {
+                        "observation_id": "figure-caption-001",
+                        "issue_type": "rendered_caption_label_only",
+                        "severity": "low",
+                        "title": "Rendered caption line is thin",
+                        "evidence": "page 16: `Figure 2(a) plotter.`",
+                        "recommendation": "Confirm the full caption is visible.",
+                        "confidence": 0.64,
+                    }
+                ],
+            },
+        )
+        payload = module.build_figure_caption(raw)
+
+    issue = payload["issues"][0]
+    if issue.get("render_visibility") != "artifact_only":
+        raise AssertionError(f"Unresolved rendered-caption geometry signal should be artifact-only: {issue}")
 
 
 if __name__ == "__main__":
@@ -309,4 +339,5 @@ if __name__ == "__main__":
     test_symbol_audit_reduces_to_issue_artifact()
     test_figure_caption_audit_reduces_to_issue_artifact()
     test_figure_caption_target_label_becomes_render_anchor()
+    test_unresolved_rendered_caption_label_only_is_artifact_only()
     print("build_specialist_issues regression tests passed")

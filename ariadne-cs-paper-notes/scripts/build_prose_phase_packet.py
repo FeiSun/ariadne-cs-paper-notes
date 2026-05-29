@@ -134,6 +134,7 @@ def build_phase_a_packet(
             "prose_issues_jsonl": {
                 "minimum_fields": ["local_id", "severity", "issue_type", "title", "diagnosis", "target_anchors", "section_id"],
                 "cross_section_fields": ["target_anchors", "spans_sections", "related_issue_ids"],
+                "sentence_or_paragraph_anchor_requirement": "Include evidence_snippet: a 3-15 word quote from the anchored review unit. If you cannot quote the anchored unit, do not use that anchor.",
             },
             "paragraph_decisions_jsonl": {
                 "minimum_fields": [
@@ -154,6 +155,7 @@ def build_phase_a_packet(
             "Do not write HTML. Write JSON/JSONL artifacts only.",
             "After each section, append prose issue and paragraph decision rows, then update section_reflections.json before continuing.",
             "For every paragraph decision, record sentence review coverage with reviewed_sentence_ids, sentence_checks, or all_sentences_reviewed=true. Clean sentences should be counted in that receipt, not rendered as visible clean comments.",
+            "For every sentence- or paragraph-anchored issue, include evidence_snippet: a verbatim 3-15 word quote from the anchored review unit.",
             "If next_section is null and coverage.phase_a_complete is true, Phase A is complete; build phase_b_context next.",
         ],
     }

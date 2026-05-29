@@ -76,8 +76,24 @@ def parse_pages(value: str, total_pages: int) -> list[int]:
 def pdf_page_count(path: Path) -> int:
     try:
         from pypdf import PdfReader  # type: ignore
-    except Exception as exc:  # pragma: no cover - environment dependent
-        raise RuntimeError("pypdf is required for page counting") from exc
+    except Exception:
+        pdfinfo = shutil.which("pdfinfo")
+        if not pdfinfo:
+            raise RuntimeError("pypdf or pdfinfo is required for page counting")
+        result = subprocess.run(
+            [pdfinfo, str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "pdfinfo failed")
+        match = re.search(r"^Pages:\s*(\d+)\s*$", result.stdout, flags=re.MULTILINE)
+        if not match:
+            raise RuntimeError("pdfinfo did not report a page count")
+        return int(match.group(1))
     return len(PdfReader(str(path)).pages)
 
 

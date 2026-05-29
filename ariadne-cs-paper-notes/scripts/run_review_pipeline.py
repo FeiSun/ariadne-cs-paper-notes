@@ -38,6 +38,10 @@ def sha256_path(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def sha256_text(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
 def compact_tail(value: str, *, max_chars: int = 1600) -> str:
     if len(value) <= max_chars:
         return value
@@ -98,9 +102,10 @@ class PipelineContext:
     issue_artifacts: Path
     pdf: Path | None
     report_html: Path
-    source_html: Path
     review_units_jsonl: Path
     review_units_md: Path
+    sentence_bbox: Path
+    pdf_overlay_html: Path
     steps: list[PipelineStep] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     state: str = "running"
@@ -113,9 +118,11 @@ class PipelineContext:
             "issue_artifacts": str(self.issue_artifacts),
             "pdf": str(self.pdf) if self.pdf else "",
             "report_html": str(self.report_html),
-            "source_html": str(self.source_html),
             "review_units_jsonl": str(self.review_units_jsonl),
             "review_units_md": str(self.review_units_md),
+            "review_units_pdf_text": str(review_units_pdf_text_path(self)),
+            "sentence_bbox": str(self.sentence_bbox),
+            "pdf_overlay_html": str(self.pdf_overlay_html),
         }
 
 
@@ -149,6 +156,18 @@ def resolve_entry(source: Path) -> Path:
     return find_entry_tex(source.expanduser().resolve()).resolve()
 
 
+def is_pdf_input(source: Path) -> bool:
+    return source.expanduser().resolve().suffix.lower() == ".pdf"
+
+
+def uses_pdf_review_units(ctx: Any, args: argparse.Namespace | None = None) -> bool:
+    if isinstance(ctx, Path):
+        return is_pdf_input(ctx)
+    if isinstance(ctx, argparse.Namespace):
+        return getattr(ctx, "review_units_source", "") == "pdf"
+    return is_pdf_input(ctx.entry_tex) or (args is not None and getattr(args, "review_units_source", "") == "pdf")
+
+
 def existing_pdf(entry_tex: Path, explicit_pdf: Path | None) -> Path | None:
     if explicit_pdf:
         pdf = explicit_pdf.expanduser().resolve()
@@ -163,16 +182,24 @@ def initialize_context(args: argparse.Namespace) -> PipelineContext:
     input_path = args.input.expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(f"Input does not exist: {input_path}")
-    entry_tex = resolve_entry(input_path)
+    if args.review_units_source == "pdf":
+        if is_pdf_input(input_path):
+            pdf = input_path
+        else:
+            tex = resolve_entry(input_path)
+            pdf = existing_pdf(tex, args.pdf)
+            if pdf is None:
+                raise FileNotFoundError("PDF review-unit source requested, but no input or companion PDF was found")
+        entry_tex = pdf
+    else:
+        entry_tex = input_path if is_pdf_input(input_path) else resolve_entry(input_path)
+        pdf = input_path if is_pdf_input(input_path) else existing_pdf(entry_tex, args.pdf)
     bundle = (args.bundle.expanduser().resolve() if args.bundle else default_bundle(entry_tex).resolve())
     issue_artifacts = bundle / ISSUE_DIR_NAME
-    pdf = existing_pdf(entry_tex, args.pdf)
-    source_html = (
-        args.source_html.expanduser().resolve()
-        if args.source_html
-        else (bundle / f"{entry_tex.stem}.source.html").resolve()
+    default_report = bundle / (
+        "issue_report.html" if args.paper_view == "report-only" else "ariadne_review_pdf/index.html"
     )
-    report_html = (args.report_html.expanduser().resolve() if args.report_html else (bundle / f"{entry_tex.stem}.html").resolve())
+    report_html = (args.report_html.expanduser().resolve() if args.report_html else default_report.resolve())
     return PipelineContext(
         input_path=input_path,
         entry_tex=entry_tex,
@@ -180,9 +207,10 @@ def initialize_context(args: argparse.Namespace) -> PipelineContext:
         issue_artifacts=issue_artifacts,
         pdf=pdf,
         report_html=report_html,
-        source_html=source_html,
         review_units_jsonl=bundle / f"{entry_tex.stem}.review_units.jsonl",
         review_units_md=bundle / f"{entry_tex.stem}.review_units.md",
+        sentence_bbox=bundle / "sentence_bbox.json",
+        pdf_overlay_html=report_html if args.paper_view == "pdf-overlay" else bundle / "ariadne_review_pdf" / "index.html",
     )
 
 
@@ -232,7 +260,18 @@ def strip_latex_comments(text: str) -> str:
     return "\n".join(lines)
 
 
+def tex_tree_hash(entry: Path) -> str:
+    return sha256_text(strip_latex_comments(expanded_latex_for_tool_detection(entry)))
+
+
+def force_rebuild(args: argparse.Namespace, target: str) -> bool:
+    values = set(getattr(args, "force_rebuild", []) or [])
+    return "all" in values or target in values
+
+
 def latex_uses_bibliography(entry: Path) -> bool:
+    if is_pdf_input(entry):
+        return False
     expanded = strip_latex_comments(expanded_latex_for_tool_detection(entry))
     return bool(BIB_COMMAND_RE.search(expanded) or BIBLATEX_PACKAGE_RE.search(expanded))
 
@@ -345,6 +384,38 @@ def refresh_stale_layout_artifacts(ctx: PipelineContext, args: argparse.Namespac
         append_step(ctx, step)
 
 
+def prepare_layout_audit_for_review_units(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    if ctx.pdf is None or not ctx.pdf.exists() or uses_pdf_review_units(ctx, args):
+        ctx.steps.append(PipelineStep("prepare_layout_audit_for_review_units", "skipped", message="no TeX/PDF layout unit input"))
+        return
+    layout_audit = ctx.bundle / "layout_audit.json"
+    if layout_audit.exists() and not layout_audit_stale_for_pdf(layout_audit, ctx.pdf):
+        ctx.steps.append(PipelineStep("prepare_layout_audit_for_review_units", "skipped", outputs=[str(layout_audit)], message="fresh layout_audit.json already exists"))
+        return
+    if not shutil.which("pdftotext"):
+        ctx.steps.append(PipelineStep("prepare_layout_audit_for_review_units", "skipped", message="pdftotext unavailable"))
+        return
+    step = run_command(
+        "prepare_layout_audit_for_review_units",
+        [
+            sys.executable,
+            script("check_page_layout.py"),
+            str(ctx.pdf),
+            "--pages",
+            args.pages,
+            "--out",
+            str(layout_audit),
+        ],
+        outputs=[layout_audit],
+        timeout=args.specialist_timeout,
+    )
+    if step.status != "completed":
+        ctx.warnings.append("Could not prepare layout_audit.json before review-unit extraction; page_layout units will be omitted.")
+        step.status = "skipped"
+        step.message = "layout audit unavailable for review-unit extraction"
+    ctx.steps.append(step)
+
+
 def usable_layout_audit_path(ctx: PipelineContext) -> Path | None:
     layout_audit = ctx.bundle / "layout_audit.json"
     if not layout_audit.exists():
@@ -362,7 +433,97 @@ def usable_layout_audit_path(ctx: PipelineContext) -> Path | None:
     return layout_audit
 
 
+def review_units_cache_path(ctx: PipelineContext) -> Path:
+    return ctx.bundle / "review_units_cache.json"
+
+
+def review_units_pdf_text_path(ctx: PipelineContext) -> Path:
+    return ctx.bundle / f"{ctx.entry_tex.stem}.review_units_pdf_text.json"
+
+
+def review_units_cache_valid(ctx: PipelineContext) -> bool:
+    if not ctx.review_units_jsonl.exists() or not ctx.review_units_md.exists():
+        return False
+    cache_path = review_units_cache_path(ctx)
+    if not cache_path.exists():
+        return False
+    try:
+        payload = read_json(cache_path)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if uses_pdf_review_units(ctx):
+        return (
+            str(payload.get("source")) == str(ctx.entry_tex)
+            and str(payload.get("source_hash") or "") == sha256_path(ctx.entry_tex)
+            and str(payload.get("extractor_hash") or "") == sha256_path(Path(script("extract_pdf_review_units.py")))
+        )
+    expected_hash = tex_tree_hash(ctx.entry_tex)
+    layout_audit = ctx.bundle / "layout_audit.json"
+    if layout_audit.exists():
+        expected_hash = sha256_text(expected_hash + sha256_path(layout_audit))
+    return (
+        str(payload.get("entry_tex")) == str(ctx.entry_tex)
+        and str(payload.get("tex_tree_hash") or "") == expected_hash
+        and str(payload.get("extractor_hash") or "") == sha256_path(Path(script("extract_tex_review_units.py")))
+    )
+
+
+def write_review_units_cache(ctx: PipelineContext) -> None:
+    if uses_pdf_review_units(ctx):
+        write_json(
+            review_units_cache_path(ctx),
+            {
+                "schema_version": 1,
+                "source": str(ctx.entry_tex),
+                "source_mode": "pdf_only",
+                "source_hash": sha256_path(ctx.entry_tex),
+                "extractor_hash": sha256_path(Path(script("extract_pdf_review_units.py"))),
+                "review_units_jsonl_hash": sha256_path(ctx.review_units_jsonl),
+                "review_units_md_hash": sha256_path(ctx.review_units_md),
+            },
+        )
+        return
+    source_hash = tex_tree_hash(ctx.entry_tex)
+    layout_audit = ctx.bundle / "layout_audit.json"
+    if layout_audit.exists():
+        source_hash = sha256_text(source_hash + sha256_path(layout_audit))
+    write_json(
+        review_units_cache_path(ctx),
+        {
+            "schema_version": 1,
+            "entry_tex": str(ctx.entry_tex),
+            "tex_tree_hash": source_hash,
+            "extractor_hash": sha256_path(Path(script("extract_tex_review_units.py"))),
+            "review_units_jsonl_hash": sha256_path(ctx.review_units_jsonl),
+            "review_units_md_hash": sha256_path(ctx.review_units_md),
+        },
+    )
+
+
+def sentence_bbox_cache_valid(ctx: PipelineContext) -> bool:
+    sidecar = review_units_pdf_text_path(ctx)
+    if ctx.pdf is None or not ctx.pdf.exists() or not ctx.sentence_bbox.exists() or not sidecar.exists():
+        return False
+    try:
+        bbox_payload = read_json(ctx.sentence_bbox)
+        sidecar_payload = read_json(sidecar)
+    except (OSError, json.JSONDecodeError):
+        return False
+    pdf_hash = sha256_path(ctx.pdf)
+    units_hash = sha256_path(ctx.review_units_jsonl)
+    return (
+        str(bbox_payload.get("pdf_hash") or "") == pdf_hash
+        and str(bbox_payload.get("review_units_hash") or "") == units_hash
+        and str(sidecar_payload.get("pdf_hash") or "") == pdf_hash
+        and str(sidecar_payload.get("review_units_hash") or "") == units_hash
+    )
+
+
 def build_pdf_if_needed(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    if uses_pdf_review_units(ctx, args):
+        ctx.pdf = ctx.entry_tex
+        ctx.steps.append(PipelineStep("build_pdf", "skipped", outputs=[str(ctx.pdf)], message="PDF-only input"))
+        return
     if ctx.pdf is not None and not existing_pdf_has_incomplete_bibliography(ctx.entry_tex, ctx.pdf):
         ctx.steps.append(PipelineStep("build_pdf", "skipped", outputs=[str(ctx.pdf)], message="using existing PDF"))
         return
@@ -392,45 +553,60 @@ def build_pdf_if_needed(ctx: PipelineContext, args: argparse.Namespace) -> None:
         ctx.warnings.append("PDF build failed; continuing with source-only stages where possible.")
 
 
-def render_source(ctx: PipelineContext, args: argparse.Namespace) -> None:
-    if args.source_html and ctx.source_html.exists():
-        ctx.steps.append(PipelineStep("render_source_html", "skipped", outputs=[str(ctx.source_html)], message="using provided source HTML"))
-        return
-    if args.skip_render:
-        if not ctx.source_html.exists():
-            raise RuntimeError("--skip-render requires --source-html or an existing source HTML path")
-        ctx.steps.append(PipelineStep("render_source_html", "skipped", outputs=[str(ctx.source_html)], message="render disabled"))
-        return
-    cmd = [
-        sys.executable,
-        script("render_paper_html.py"),
-        str(ctx.entry_tex),
-        "--output",
-        str(ctx.report_html),
-        "--raw-html",
-        str(ctx.source_html),
-        "--asset-dir",
-        str(ctx.bundle / "assets"),
-    ]
-    step = run_command("render_source_html", cmd, outputs=[ctx.source_html, ctx.report_html], timeout=args.render_timeout)
-    append_step(ctx, step)
-
-
-def extract_units(ctx: PipelineContext) -> None:
-    step = run_command(
-        "extract_review_units",
-        [
+def extract_units(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    if not force_rebuild(args, "units") and review_units_cache_valid(ctx):
+        ctx.steps.append(
+            PipelineStep(
+                "extract_tex_review_units",
+                "skipped",
+                outputs=[str(ctx.review_units_jsonl), str(ctx.review_units_md)],
+                message="cached review units match current TeX tree",
+            )
+        )
+        audit_summary = ctx.bundle / "review_units_audit.json"
+        if audit_summary.exists():
+            ctx.steps.append(PipelineStep("audit_review_units", "skipped", outputs=[str(audit_summary)], message="cached audit summary exists"))
+            return
+    if uses_pdf_review_units(ctx, args):
+        cmd = [
             sys.executable,
-            script("extract_review_units.py"),
-            str(ctx.source_html),
+            script("extract_pdf_review_units.py"),
+            str(ctx.entry_tex),
             "--jsonl",
             str(ctx.review_units_jsonl),
             "--markdown",
             str(ctx.review_units_md),
-        ],
-        outputs=[ctx.review_units_jsonl, ctx.review_units_md],
-    )
+        ]
+        step_name = "extract_pdf_review_units"
+    else:
+        cmd = [
+            sys.executable,
+            script("extract_tex_review_units.py"),
+            str(ctx.entry_tex),
+            "--jsonl",
+            str(ctx.review_units_jsonl),
+            "--markdown",
+            str(ctx.review_units_md),
+        ]
+        layout_audit = ctx.bundle / "layout_audit.json"
+        if layout_audit.exists():
+            cmd.extend(["--layout-audit", str(layout_audit)])
+        step_name = "extract_tex_review_units"
+    step = run_command(step_name, cmd, outputs=[ctx.review_units_jsonl, ctx.review_units_md])
     append_step(ctx, step)
+    audit_step = run_command(
+        "audit_review_units",
+        [
+            sys.executable,
+            script("audit_review_units.py"),
+            str(ctx.review_units_jsonl),
+            "--summary-out",
+            str(ctx.bundle / "review_units_audit.json"),
+        ],
+        outputs=[ctx.bundle / "review_units_audit.json"],
+    )
+    append_step(ctx, audit_step)
+    write_review_units_cache(ctx)
 
 
 def estimate_review_unit_tokens(path: Path) -> int:
@@ -481,13 +657,13 @@ def run_specialists(ctx: PipelineContext, args: argparse.Namespace) -> None:
         script("run_p1_specialists.py"),
         "--bundle",
         str(ctx.bundle),
-        "--tex",
-        str(ctx.entry_tex),
         "--domains",
         args.domains,
         "--pages",
         args.pages,
     ]
+    if not uses_pdf_review_units(ctx, args):
+        cmd.extend(["--tex", str(ctx.entry_tex)])
     if ctx.pdf:
         cmd.extend(["--pdf", str(ctx.pdf)])
     if args.force_specialists:
@@ -563,6 +739,31 @@ def run_vision_figure_agent(ctx: PipelineContext, args: argparse.Namespace) -> N
         timeout=args.vision_figure_agent_timeout + 120,
     )
     append_step(ctx, step)
+
+
+def remap_legacy_issue_anchors(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    if not getattr(args, "remap_legacy_issue_anchors", False):
+        ctx.steps.append(PipelineStep("remap_legacy_issue_anchors", "skipped", message="legacy anchor remap disabled"))
+        return
+    out_dir = ctx.bundle / "issue_artifacts_remapped"
+    step = run_command(
+        "remap_legacy_issue_anchors",
+        [
+            sys.executable,
+            script("remap_issue_anchors.py"),
+            "--review-units",
+            str(ctx.review_units_jsonl),
+            "--issues-dir",
+            str(ctx.issue_artifacts),
+            "--out-dir",
+            str(out_dir),
+            "--threshold",
+            str(getattr(args, "legacy_anchor_remap_threshold", 0.80)),
+        ],
+        outputs=[out_dir, out_dir / "anchor_remap_summary.json"],
+    )
+    append_step(ctx, step)
+    ctx.issue_artifacts = out_dir
 
 
 def run_prose_agent(ctx: PipelineContext, args: argparse.Namespace) -> None:
@@ -721,8 +922,19 @@ def can_compile(ctx: PipelineContext, phase_a: dict[str, Any], *, allow_partial:
     return True, ""
 
 
-def compile_artifacts(ctx: PipelineContext) -> None:
-    source_hash = sha256_path(ctx.source_html) if ctx.source_html.exists() else ""
+def current_source_artifact(ctx: PipelineContext, args: argparse.Namespace) -> Path:
+    return ctx.entry_tex
+
+
+def effective_paper_view(ctx: PipelineContext, args: argparse.Namespace) -> str:
+    if args.paper_view == "pdf-overlay" and (ctx.pdf is None or not ctx.pdf.exists()):
+        return "report-only"
+    return args.paper_view
+
+
+def compile_artifacts(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    source_artifact = current_source_artifact(ctx, args)
+    source_hash = sha256_path(source_artifact) if source_artifact.exists() else ""
     step = run_command(
         "compile_review_artifacts",
         [
@@ -737,7 +949,7 @@ def compile_artifacts(ctx: PipelineContext) -> None:
             "--index-out",
             str(ctx.issue_artifacts / "compiled_issue_index.json"),
             "--source-artifact",
-            str(ctx.source_html),
+            str(source_artifact),
             "--source-hash",
             source_hash,
         ],
@@ -746,8 +958,11 @@ def compile_artifacts(ctx: PipelineContext) -> None:
     append_step(ctx, step)
 
 
-def build_derivatives(ctx: PipelineContext, *, requested_scope: str, full_report: bool) -> None:
-    render_mode = "paper-reader-with-global-findings" if full_report else "paper-reader-only"
+def build_derivatives(ctx: PipelineContext, args: argparse.Namespace, *, requested_scope: str, full_report: bool) -> None:
+    view = effective_paper_view(ctx, args)
+    render_mode = "issue-report-only" if view == "report-only" else "pdf-overlay"
+    output_file = ctx.report_html if view == "report-only" else ctx.pdf_overlay_html
+    source_artifact = current_source_artifact(ctx, args)
     cmd = [
         sys.executable,
         script("build_review_derivatives.py"),
@@ -758,9 +973,9 @@ def build_derivatives(ctx: PipelineContext, *, requested_scope: str, full_report
         "--issues-dir",
         str(ctx.issue_artifacts),
         "--source-artifact",
-        str(ctx.source_html),
+        str(source_artifact),
         "--source-hash",
-        sha256_path(ctx.source_html) if ctx.source_html.exists() else "",
+        sha256_path(source_artifact) if source_artifact.exists() else "",
         "--requested-scope",
         requested_scope,
         "--render-mode",
@@ -772,7 +987,7 @@ def build_derivatives(ctx: PipelineContext, *, requested_scope: str, full_report
         "--source-integrity-check",
         "skipped",
         "--output-file",
-        str(ctx.report_html),
+        str(output_file),
         "--coverage-out",
         str(ctx.bundle / "coverage.json"),
         "--manifest-out",
@@ -795,33 +1010,194 @@ def render_final(ctx: PipelineContext, args: argparse.Namespace) -> None:
     if args.skip_final_render:
         ctx.steps.append(PipelineStep("render_final_report", "skipped", message="final render disabled"))
         return
+    view = effective_paper_view(ctx, args)
+    if args.paper_view == "pdf-overlay" and view == "report-only":
+        ctx.warnings.append("PDF overlay requested but no compiled PDF is available; rendering issue-report-only HTML.")
+    if view == "report-only":
+        step = run_command(
+            "render_issue_report",
+            [
+                sys.executable,
+                script("render_issue_report_html.py"),
+                "--findings",
+                str(ctx.bundle / "findings.json"),
+                "--coverage",
+                str(ctx.bundle / "coverage.json"),
+                "--output",
+                str(ctx.report_html),
+                "--title",
+                f"Ariadne Issue Report: {ctx.entry_tex.stem}",
+            ],
+            outputs=[ctx.report_html],
+            timeout=args.render_timeout,
+        )
+        append_step(ctx, step)
+        return
+    if view == "pdf-overlay":
+        if ctx.pdf is None or not ctx.pdf.exists():
+            ctx.steps.append(PipelineStep("render_final_report", "skipped", message="no PDF available for pdf-overlay render"))
+            return
+        step = run_command(
+            "render_pdf_overlay_report",
+            [
+                sys.executable,
+                script("render_pdf_overlay_html.py"),
+                "--pdf",
+                str(ctx.pdf),
+                "--findings",
+                str(ctx.bundle / "findings.json"),
+                "--annotations",
+                str(ctx.bundle / "annotations.json"),
+                "--sentence-bbox",
+                str(ctx.sentence_bbox),
+                "--coverage",
+                str(ctx.bundle / "coverage.json"),
+                "--manifest",
+                str(ctx.bundle / "render_manifest.json"),
+                "--output",
+                str(ctx.pdf_overlay_html),
+                "--dpi",
+                str(args.pdf_overlay_dpi),
+                "--title",
+                f"Ariadne PDF Review: {ctx.entry_tex.stem}",
+            ],
+            outputs=[ctx.pdf_overlay_html, ctx.pdf_overlay_html.parent / "paper.pdf", ctx.pdf_overlay_html.parent / "pdfjs"],
+            timeout=args.render_timeout,
+        )
+        append_step(ctx, step)
+        ctx.report_html = ctx.pdf_overlay_html
+        return
+    raise RuntimeError(f"Unsupported paper view: {args.paper_view}")
+
+
+def build_sentence_bbox(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    if effective_paper_view(ctx, args) != "pdf-overlay":
+        ctx.steps.append(PipelineStep("build_sentence_bbox", "skipped", message="paper view is not pdf-overlay"))
+        return
+    if ctx.pdf is None or not ctx.pdf.exists():
+        ctx.steps.append(PipelineStep("build_sentence_bbox", "skipped", message="no PDF available for bbox mapping"))
+        return
+    sidecar = review_units_pdf_text_path(ctx)
+    if not force_rebuild(args, "bbox") and sentence_bbox_cache_valid(ctx):
+        ctx.steps.append(
+            PipelineStep(
+                "build_sentence_bbox",
+                "skipped",
+                outputs=[str(ctx.sentence_bbox), str(sidecar)],
+                message="cached bbox mapping matches current PDF and review units",
+            )
+        )
+        return
+    step = run_command(
+        "build_sentence_bbox",
+        [
+            sys.executable,
+            script("build_sentence_bbox.py"),
+            "--pdf",
+            str(ctx.pdf),
+            "--review-units",
+            str(ctx.review_units_jsonl),
+            "--out",
+            str(ctx.sentence_bbox),
+            "--review-units-pdf-text-out",
+            str(sidecar),
+        ],
+        outputs=[ctx.sentence_bbox, sidecar],
+        timeout=args.bbox_timeout,
+    )
+    append_step(ctx, step)
+
+
+def audit_sentence_bbox(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    if effective_paper_view(ctx, args) != "pdf-overlay":
+        ctx.steps.append(PipelineStep("audit_sentence_bbox", "skipped", message="paper view is not pdf-overlay"))
+        return
+    if not ctx.sentence_bbox.exists():
+        ctx.steps.append(PipelineStep("audit_sentence_bbox", "skipped", message="sentence_bbox.json does not exist"))
+        return
+    sidecar = review_units_pdf_text_path(ctx)
     cmd = [
         sys.executable,
-        script("render_paper_html.py"),
-        str(ctx.entry_tex),
-        "--output",
-        str(ctx.report_html),
-        "--raw-html",
-        str(ctx.source_html),
+        script("audit_sentence_bbox.py"),
+        "--review-units",
+        str(ctx.review_units_jsonl),
+        "--sentence-bbox",
+        str(ctx.sentence_bbox),
         "--annotations",
         str(ctx.bundle / "annotations.json"),
         "--findings",
         str(ctx.bundle / "findings.json"),
-        "--issues-dir",
-        str(ctx.issue_artifacts),
-        "--asset-dir",
-        str(ctx.bundle / "assets"),
-        "--reuse-raw-html",
-        "--coverage",
-        str(ctx.bundle / "coverage.json"),
-        "--paper-layout",
-        args.paper_layout,
+        "--summary-out",
+        str(ctx.bundle / "sentence_bbox_audit.json"),
+        "--evidence-threshold",
+        str(args.evidence_threshold),
     ]
-    if args.full_report:
-        cmd.append("--full-report")
-    if args.inline_images:
-        cmd.append("--inline-images")
-    step = run_command("render_final_report", cmd, outputs=[ctx.report_html, ctx.source_html], timeout=args.render_timeout)
+    if sidecar.exists():
+        cmd.extend(["--review-units-pdf-text", str(sidecar)])
+    step = run_command(
+        "audit_sentence_bbox",
+        cmd,
+        outputs=[ctx.bundle / "sentence_bbox_audit.json"],
+    )
+    append_step(ctx, step)
+
+
+def audit_rendered_text_drift(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    if effective_paper_view(ctx, args) != "pdf-overlay":
+        ctx.steps.append(PipelineStep("audit_rendered_text_drift", "skipped", message="paper view is not pdf-overlay"))
+        return
+    sidecar = review_units_pdf_text_path(ctx)
+    if not sidecar.exists():
+        ctx.steps.append(PipelineStep("audit_rendered_text_drift", "skipped", message="review_units_pdf_text sidecar does not exist"))
+        return
+    step = run_command(
+        "audit_rendered_text_drift",
+        [
+            sys.executable,
+            script("audit_rendered_text_drift.py"),
+            "--review-units",
+            str(ctx.review_units_jsonl),
+            "--review-units-pdf-text",
+            str(sidecar),
+            "--summary-out",
+            str(ctx.bundle / "rendered_text_drift_audit.json"),
+            "--warn-threshold",
+            str(args.rendered_text_warn_threshold),
+            "--error-threshold",
+            str(args.rendered_text_error_threshold),
+        ],
+        outputs=[ctx.bundle / "rendered_text_drift_audit.json"],
+    )
+    append_step(ctx, step)
+
+
+def export_annotated_pdf(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    if not args.export_annotated_pdf:
+        ctx.steps.append(PipelineStep("export_annotated_pdf", "skipped", message="annotated PDF export disabled"))
+        return
+    if effective_paper_view(ctx, args) != "pdf-overlay" or ctx.pdf is None or not ctx.sentence_bbox.exists():
+        ctx.steps.append(PipelineStep("export_annotated_pdf", "skipped", message="pdf-overlay artifacts unavailable"))
+        return
+    out = ctx.bundle / f"{ctx.entry_tex.stem}.annotated.pdf"
+    step = run_command(
+        "export_annotated_pdf",
+        [
+            sys.executable,
+            script("export_annotated_pdf.py"),
+            "--pdf",
+            str(ctx.pdf),
+            "--findings",
+            str(ctx.bundle / "findings.json"),
+            "--annotations",
+            str(ctx.bundle / "annotations.json"),
+            "--sentence-bbox",
+            str(ctx.sentence_bbox),
+            "--out",
+            str(out),
+        ],
+        outputs=[out],
+        timeout=args.render_timeout,
+    )
     append_step(ctx, step)
 
 
@@ -829,7 +1205,8 @@ def run_audits(ctx: PipelineContext, args: argparse.Namespace) -> None:
     if args.skip_audit:
         ctx.steps.append(PipelineStep("audit", "skipped", message="audit disabled"))
         return
-    html_step = run_command("audit_html_report", [sys.executable, script("audit_html_report.py"), str(ctx.report_html), "--source", str(ctx.source_html)])
+    html_cmd = [sys.executable, script("audit_html_report.py"), str(ctx.report_html)]
+    html_step = run_command("audit_html_report", html_cmd)
     append_step(ctx, html_step)
     cmd = [
         sys.executable,
@@ -848,8 +1225,6 @@ def run_audits(ctx: PipelineContext, args: argparse.Namespace) -> None:
         str(ctx.issue_artifacts),
         "--html",
         str(ctx.report_html),
-        "--source",
-        str(ctx.source_html),
     ]
     claims = ctx.bundle / "claims.json"
     if claims.exists():
@@ -868,12 +1243,13 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     try:
         build_pdf_if_needed(ctx, args)
         refresh_stale_layout_artifacts(ctx, args)
-        render_source(ctx, args)
-        extract_units(ctx)
+        prepare_layout_audit_for_review_units(ctx, args)
+        extract_units(ctx, args)
         maybe_build_prose_shards(ctx, args)
         run_specialists(ctx, args)
         run_specialist_agent(ctx, args)
         run_vision_figure_agent(ctx, args)
+        remap_legacy_issue_anchors(ctx, args)
         run_prose_agent(ctx, args)
         phase_a = phase_a_status(ctx)
         maybe_build_phase_b_context(ctx)
@@ -897,9 +1273,13 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             status_path = record_status(ctx)
             return {"status_path": status_path, "state": ctx.state, "next_action": ctx.next_action}
         requested_scope = "partial compiled Ariadne review" if args.allow_partial_compile else "full compiled Ariadne review"
-        compile_artifacts(ctx)
-        build_derivatives(ctx, requested_scope=requested_scope, full_report=args.full_report)
+        build_sentence_bbox(ctx, args)
+        compile_artifacts(ctx, args)
+        build_derivatives(ctx, args, requested_scope=requested_scope, full_report=args.full_report)
+        audit_sentence_bbox(ctx, args)
+        audit_rendered_text_drift(ctx, args)
         render_final(ctx, args)
+        export_annotated_pdf(ctx, args)
         run_audits(ctx, args)
         ctx.state = "complete"
         ctx.next_action = f"Review report ready at `{ctx.report_html}`."
@@ -915,11 +1295,17 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", type=Path, help="LaTeX project directory or entry .tex file")
+    parser.add_argument("input", type=Path, help="LaTeX project directory, entry .tex file, or PDF-only input")
     parser.add_argument("--bundle", type=Path, help="Output artifact bundle directory")
     parser.add_argument("--pdf", type=Path, help="Existing compiled PDF")
-    parser.add_argument("--source-html", type=Path, help="Existing canonical source HTML; skips source render")
     parser.add_argument("--report-html", type=Path, help="Final report HTML path")
+    parser.add_argument(
+        "--review-units-source",
+        choices=("tex", "pdf"),
+        default="tex",
+        help="Build Phase A review units from TeX, or from PDF text when only a PDF is available",
+    )
+    parser.add_argument("--paper-view", choices=("pdf-overlay", "report-only"), default="pdf-overlay", help="Final report renderer")
     parser.add_argument("--domains", default="all", help="Specialist domains for run_p1_specialists.py")
     parser.add_argument("--pages", default="all", help="Page range for layout/figure rendered checks")
     parser.add_argument("--force-specialists", action="store_true", help="Regenerate raw specialist audits")
@@ -934,6 +1320,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vision-figure-pages", default="all", help="Pages to render for optional vision figure specialist")
     parser.add_argument("--vision-figure-agent-timeout", type=int, default=1200)
     parser.add_argument("--vision-figure-dry-run", action="store_true")
+    parser.add_argument(
+        "--remap-legacy-issue-anchors",
+        action="store_true",
+        help="Remap existing prose issue anchors onto current TeX-derived review units before compile.",
+    )
+    parser.add_argument("--legacy-anchor-remap-threshold", type=float, default=0.80)
     parser.add_argument("--prose-agent-cmd", help="Optional external agent command for run_prose_agent.py")
     parser.add_argument("--prose-phase", default="all", choices=("phase_a", "phase_b", "all"), help="Prose phase(s) to run when --prose-agent-cmd is provided")
     parser.add_argument("--prose-max-iterations", type=int, default=200, help="Maximum Phase A agent iterations")
@@ -942,19 +1334,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prose-shard-threshold", type=int, default=40_000, help="Build Phase A shard packets when review_units token estimate exceeds this value")
     parser.add_argument("--prose-shard-size", type=int, default=35_000, help="Approximate max tokens per Phase A shard packet")
     parser.add_argument("--skip-pdf-build", action="store_true", help="Do not attempt to build a missing PDF")
-    parser.add_argument("--skip-render", action="store_true", help="Do not render source HTML; requires --source-html or existing source")
     parser.add_argument("--prepare-only", action="store_true", help="Stop after deterministic prep and Phase A resume packet")
     parser.add_argument("--allow-partial-compile", action="store_true", help="Compile available issues even if Prose Phase A/B is incomplete")
-    parser.add_argument("--full-report", action="store_true", help="Render global Major/Blocker paper-level findings after the paper-reader overlay")
+    parser.add_argument("--full-report", action="store_true", help="Render global Major/Blocker paper-level findings after the PDF overlay")
     parser.add_argument("--skip-final-render", action="store_true", help="Compile artifacts but skip final HTML rendering")
     parser.add_argument("--skip-audit", action="store_true", help="Skip final audits")
-    parser.add_argument("--inline-images", action="store_true", help="Inline rendered PDF figures in final HTML")
+    parser.add_argument("--pdf-overlay-dpi", type=int, default=150, help="Deprecated; PDF overlay now renders through PDF.js")
+    parser.add_argument("--bbox-timeout", type=int, default=300)
+    parser.add_argument("--evidence-threshold", type=float, default=0.80)
+    parser.add_argument("--rendered-text-warn-threshold", type=float, default=0.72)
+    parser.add_argument("--rendered-text-error-threshold", type=float, default=0.45)
+    parser.add_argument("--force-rebuild", action="append", choices=("units", "bbox", "all"), default=[], help="Ignore cached artifacts for the selected stage")
     parser.add_argument(
-        "--paper-layout",
-        choices=("source", "single", "two-column", "paged", "paged-two-column"),
-        default="source",
-        help="Paper pane layout for the final HTML; source infers layout from generic LaTeX/PDF signals and PDF page maps.",
+        "--export-annotated-pdf",
+        dest="export_annotated_pdf",
+        action="store_true",
+        default=True,
+        help="Export native PDF annotations when PyMuPDF is available (default)",
     )
+    parser.add_argument("--no-export-annotated-pdf", dest="export_annotated_pdf", action="store_false", help="Skip native annotated PDF export")
     parser.add_argument("--pdf-timeout", type=int, default=300)
     parser.add_argument("--render-timeout", type=int, default=300)
     parser.add_argument("--specialist-timeout", type=int, default=300)

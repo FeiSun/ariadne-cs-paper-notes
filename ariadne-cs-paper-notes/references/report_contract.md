@@ -7,7 +7,7 @@ Use this file for structured JSON artifacts and the paper-reader report contract
 The Reader-Journey passes are internal. Student-facing HTML now uses a paper-first shape:
 
 1. **Paper Reader / 论文正文批注**
-2. **Global Findings / 全局重要问题** only when `--full-report` is requested or the manifest declares `paper-reader-with-global-findings`
+2. **PDF Anchor Diagnostics / PDF 锚点诊断** for PDF overlay outputs
 3. **Coverage Receipt / 覆盖回执**
 
 The old workbench sections (`总评诊断`, `问题索引`, `主张证据`, `精读批注`, `提交就绪`, `共性问题`, `修改路线`) are legacy and must not be emitted by paper-reader HTML. Sentence, paragraph, and section notes belong in overlay anchors and annotation cards, not in a separate deep-reading ledger.
@@ -22,7 +22,7 @@ Every later `关联问题` links to a defined id. Later sections should write lo
 
 ## Paper-Reader Annotation Artifacts
 
-For source-derived overlay reports, prefer anchor-only annotations:
+For PDF overlay reports, prefer anchor-only annotations:
 
 ```json
 {
@@ -34,22 +34,20 @@ For source-derived overlay reports, prefer anchor-only annotations:
 }
 ```
 
-`findings.json` stores the full review prose once. `annotations.json` stores only anchor, short UI label, and current source artifact/hash. Render with `scripts/render_paper_html.py --annotations annotations.json --findings findings.json`; the renderer joins the teaching content at HTML generation time.
-
-For source-derived paper-reader annotation pages, render from the exact canonical source artifact used for review-unit extraction. Leave `--full-report` off for overlay plus coverage; add `--full-report` only when the user wants the extra `#global-findings` section. `--issues-dir` may contribute display-facing specialist overlays such as layout, numeric, and figure/caption, but hidden source hygiene, hidden reference metadata, and macro-only symbol findings should remain in structured artifacts as `render_visibility: artifact_only` unless they visibly affect the rendered paper:
+`findings.json` stores the full review prose once. `annotations.json` stores only anchor, short UI label, and current source artifact/hash. Render with `scripts/render_pdf_overlay_html.py --annotations annotations.json --findings findings.json --sentence-bbox sentence_bbox.json`; the renderer joins the teaching content at HTML generation time.
 
 ```bash
-scripts/render_paper_html.py <main.tex> \
-  --raw-html <stem>.source.html \
-  --reuse-raw-html \
+scripts/render_pdf_overlay_html.py \
+  --pdf <main.pdf> \
   --annotations <bundle>/annotations.json \
   --findings <bundle>/findings.json \
+  --sentence-bbox <bundle>/sentence_bbox.json \
   --coverage <bundle>/coverage.json \
-  --issues-dir <bundle>/issue_artifacts \
-  --output <stem>.html
+  --manifest <bundle>/render_manifest.json \
+  --output <bundle>/ariadne_review_pdf/index.html
 ```
 
-With `--full-report`, `render_manifest.json` should declare `paper-reader`, `global-findings`, and `coverage-receipt`; without it, declare only `paper-reader` and `coverage-receipt`. The renderer, not an LLM, must emit the sections declared in `render_manifest.json`. If `--reuse-raw-html` is omitted during final rendering, the renderer may regenerate source HTML and change anchors; artifact audit should treat that as unsafe for source-derived overlay reports.
+For report-only output, render with `scripts/render_issue_report_html.py --findings findings.json --coverage coverage.json --output issue_report.html`. The renderer, not an LLM, must emit the sections declared in `render_manifest.json`.
 
 ## Global Findings
 
@@ -437,11 +435,10 @@ Validate artifacts when feasible:
 ```bash
 scripts/audit_review_artifacts.py \
   --bundle ariadne_notes_<safe-paper-stem>_<YYYYMMDD>/ \
-  --html ariadne_notes_<safe-paper-stem>_<YYYYMMDD>.html \
-  --source ariadne_paper_reader_<paper-stem>.source.html
+  --html ariadne_notes_<safe-paper-stem>_<YYYYMMDD>.html
 ```
 
-For paper-reader outputs, `render_manifest.json` must set `paper_reader.source_integrity_check` to `verified`, `mismatch`, or `skipped`. `verified` requires recomputing `source_hash` from the source artifact and comparing the final paper pane against it after annotation-only markup is stripped. `skipped` is allowed only as an explicit warning state; `mismatch` is an error.
+For PDF overlay outputs, `render_manifest.json` must include `pdf_overlay.mode = "pdf-overlay"` and bind `source_artifact` / `source_hash` to the current manuscript source. For report-only outputs, it must include `report.mode = "issue-report-only"`. Source integrity for PDF overlay reports is checked through `review_units.jsonl`, `sentence_bbox.json`, compiled annotations, and manifest hashes, not through a re-rendered HTML manuscript body.
 
 Fix every `ERROR` before delivery; treat `WARNING` lines as report caveats or calibration notes.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -132,6 +133,71 @@ def test_phase_a_runner_refreshes_resume_until_complete() -> None:
             raise AssertionError(f"Expected completed Phase A status 0, got {status}")
         if not summary["phase_a_complete"] or len(summary["calls"]) != 2:
             raise AssertionError(f"Expected two section calls and Phase A complete, got {summary}")
+
+
+def test_phase_a_runner_can_use_prompt_packet_command_bridge() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        bundle = Path(tempdir) / "bundle"
+        issues_dir = bundle / "issue_artifacts"
+        issues_dir.mkdir(parents=True)
+        md, jsonl = make_review_units(bundle)
+        agent = Path(tempdir) / "stdin_phase_a_agent.py"
+        agent.write_text(
+            "\n".join(
+                [
+                    "import json, os, pathlib, sys",
+                    "prompt=sys.stdin.read()",
+                    "if '# Ariadne Agent Packet:' not in prompt: raise SystemExit(2)",
+                    "packet=json.load(open(os.environ['ARIADNE_PACKET']))",
+                    "section=packet['next_section']['section_id']",
+                    "bundle=pathlib.Path(os.environ['ARIADNE_BUNDLE'])",
+                    "issues=bundle/'issue_artifacts'/'prose_issues.jsonl'",
+                    "paras=bundle/'paragraph_decisions.jsonl'",
+                    "refs=bundle/'section_reflections.json'",
+                    "issues.parent.mkdir(parents=True, exist_ok=True)",
+                    "with open(issues, 'a') as f: f.write(json.dumps({'local_id':'P-'+section,'section_id':section,'title':'ok'})+'\\n')",
+                    "with open(paras, 'a') as f: f.write(json.dumps({'paragraph_id':'p-'+section,'section_id':section,'decision':'keep','all_sentences_reviewed':True})+'\\n')",
+                    "payload={'sections': []}",
+                    "if refs.exists(): payload=json.load(open(refs))",
+                    "payload.setdefault('sections', []).append({'section_id': section, 'one_line': 'done', 'top_issue_ids': ['P-'+section]})",
+                    "json.dump(payload, open(refs, 'w'))",
+                    "json.dump({'frame':'cold'}, open(bundle/'cold_skim_frame.json', 'w'))",
+                    "json.dump({'claims': []}, open(bundle/'claim_candidates.json', 'w'))",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        bridge = ROOT / "scripts" / "run_agent_command.py"
+        bridge_cmd = (
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(bridge))} "
+            "--packet-env ARIADNE_PROMPT_PACKET --stdin-prompt "
+            f"--command {shlex.quote(f'{sys.executable} {agent}')}"
+        )
+        status = module.main(
+            [
+                "--bundle",
+                str(bundle),
+                "--phase",
+                "phase_a",
+                "--review-units-md",
+                str(md),
+                "--review-units-jsonl",
+                str(jsonl),
+                "--agent-cmd",
+                bridge_cmd,
+                "--max-iterations",
+                "4",
+            ]
+        )
+        summary = json.loads((bundle / "prose_agent_summary.json").read_text(encoding="utf-8"))
+        prompt = bundle / "phase_a_prompt_packet.json.prompt.md"
+        if status != 0:
+            raise AssertionError(f"Expected bridge-driven Phase A status 0, got {status}")
+        if not summary["phase_a_complete"] or len(summary["calls"]) != 2:
+            raise AssertionError(f"Expected bridge calls to complete Phase A, got {summary}")
+        if not prompt.exists():
+            raise AssertionError("Expected bridge to write a prompt file beside the packet")
 
 
 def test_phase_a_runner_stops_on_no_progress() -> None:
@@ -297,6 +363,7 @@ def test_phase_b_runner_builds_compact_context_and_checks_outputs() -> None:
 if __name__ == "__main__":
     test_dry_run_builds_phase_a_packet_without_calling_agent()
     test_phase_a_runner_refreshes_resume_until_complete()
+    test_phase_a_runner_can_use_prompt_packet_command_bridge()
     test_phase_a_runner_stops_on_no_progress()
     test_phase_a_runner_can_execute_shard_manifest()
     test_phase_b_runner_builds_compact_context_and_checks_outputs()

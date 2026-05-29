@@ -18,7 +18,6 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from audit_html_report import AriadneHTMLParser, audit as audit_html  # noqa: E402
-from audit_html_report import audit_source_integrity, validate_source_hash  # noqa: E402
 
 
 SEVERITIES = {"Blocker", "Major", "Minor", "Polish"}
@@ -93,17 +92,13 @@ REQUIRED_CLAIM_FIELDS = {
 }
 
 REQUIRED_MANIFEST_FIELDS = {"output_files", "sections", "deferred_findings"}
-PAPER_READER_MANIFEST_FIELDS = {
-    "html_source",
-    "source_fidelity",
+PDF_OVERLAY_MANIFEST_FIELDS = {
+    "mode",
     "source_artifact",
     "source_hash",
-    "sentence_id_scheme",
     "annotation_mode",
     "source_integrity_check",
 }
-PAPER_READER_SOURCES = {"latexml", "ar5iv", "pandoc", "extracted-text", "manual-fixture"}
-PAPER_READER_FIDELITY = {"deterministic", "limited-scope", "fixture"}
 SOURCE_INTEGRITY_CHECKS = {"verified", "mismatch", "skipped"}
 HASH_RE = re.compile(r"^(sha1|sha256):[0-9a-fA-F]{8,}$")
 PASS_OBSERVATION_KEYS = {
@@ -241,13 +236,13 @@ def int_list_field(payload: dict[str, Any], field: str) -> list[int] | None:
 def annotation_source_artifact(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
-    return compact_text(payload.get("source_artifact") or payload.get("source_html") or payload.get("paper_reader_source_artifact"))
+    return compact_text(payload.get("source_artifact"))
 
 
 def annotation_source_hash(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
-    return compact_text(payload.get("source_hash") or payload.get("source_html_hash") or payload.get("paper_reader_source_hash"))
+    return compact_text(payload.get("source_hash"))
 
 
 def sha256_path(path: Path) -> str:
@@ -553,28 +548,28 @@ def audit_annotations(
                 )
 
     if isinstance(manifest_payload, dict):
-        paper_reader = manifest_payload.get("paper_reader")
-        if isinstance(paper_reader, dict) and paper_reader.get("annotation_mode") == "overlay-only":
-            manifest_source_hash = compact_text(paper_reader.get("source_hash"))
-            manifest_source_artifact = compact_text(paper_reader.get("source_artifact"))
+        overlay_source = manifest_payload.get("pdf_overlay")
+        if isinstance(overlay_source, dict) and overlay_source.get("annotation_mode") in {"overlay-only", "pdfjs-overlay"}:
+            manifest_source_hash = compact_text(overlay_source.get("source_hash"))
+            manifest_source_artifact = compact_text(overlay_source.get("source_artifact"))
             annotations_source_hash = annotation_source_hash(payload)
             annotations_source_artifact = annotation_source_artifact(payload)
             if manifest_source_artifact and not annotations_source_artifact:
                 errors.append(
-                    "annotations.json missing `source_artifact`; overlay annotations must name the current paper-reader source artifact"
+                    "annotations.json missing `source_artifact`; overlay annotations must name the current source artifact"
                 )
             if manifest_source_hash and not annotations_source_hash:
                 errors.append(
-                    "annotations.json missing `source_hash`; overlay annotations must be tied to the current paper-reader source"
+                    "annotations.json missing `source_hash`; overlay annotations must be tied to the current source"
                 )
             elif manifest_source_hash and annotations_source_hash and annotations_source_hash != manifest_source_hash:
                 errors.append(
-                    "annotations.json `source_hash` does not match render_manifest paper_reader.source_hash; "
+                    "annotations.json `source_hash` does not match render_manifest overlay source_hash; "
                     "regenerate annotations from the current manuscript instead of reusing a prior review"
                 )
             if full_scope and sentence_reviewed and sentence_reviewed >= 100 and len(annotations) <= 50:
                 warnings.append(
-                    "overlay-only paper-reader has 50 or fewer annotations; verify this is not a sampled/top-issues run"
+                    "PDF overlay has 50 or fewer annotations; verify this is not a sampled/top-issues run"
                 )
     return errors, warnings
 
@@ -694,7 +689,10 @@ def audit_layout_replay(payload: dict[str, Any], pdf_path: Path) -> tuple[list[s
         checker = importlib.import_module("check_page_layout")
         expected = checker.build_payload(pdf_path.resolve(), list(pages_checked), pdftotext)
     except Exception as exc:
-        errors.append(f"layout_audit replay failed: {exc}")
+        if "pypdf is required" in str(exc):
+            warnings.append(f"layout_audit replay skipped: {exc}")
+        else:
+            errors.append(f"layout_audit replay failed: {exc}")
         return errors, warnings
 
     for field in ("tool", "tool_version", "script_hash", "pdf_hash", "pages_total", "pages_checked", "page_summaries", "observations"):
@@ -877,38 +875,28 @@ def audit_manifest(payload: Any, finding_ids: set[str]) -> tuple[list[str], list
         if not rendered:
             warnings.append("render manifest has no rendered sections")
     if "paper-reader" in rendered_section_ids:
-        paper_reader = payload.get("paper_reader")
-        if not isinstance(paper_reader, dict):
-            errors.append("render manifest marks #paper-reader as rendered but missing `paper_reader` provenance object")
-        else:
-            for field in sorted(PAPER_READER_MANIFEST_FIELDS):
-                if not nonempty(paper_reader.get(field)):
-                    errors.append(f"render manifest paper_reader missing `{field}`")
-            html_source = paper_reader.get("html_source")
-            fidelity = paper_reader.get("source_fidelity")
-            if html_source not in PAPER_READER_SOURCES:
-                errors.append(f"render manifest paper_reader has invalid html_source `{html_source}`")
-            if fidelity not in PAPER_READER_FIDELITY:
-                errors.append(f"render manifest paper_reader has invalid source_fidelity `{fidelity}`")
-            if html_source == "manual-fixture" and fidelity != "fixture":
-                errors.append("render manifest paper_reader manual-fixture source must use source_fidelity `fixture`")
-            if fidelity == "limited-scope" and not nonempty(paper_reader.get("visible_scope")):
-                errors.append("render manifest paper_reader limited-scope source missing `visible_scope`")
-            if paper_reader.get("annotation_mode") != "overlay-only":
-                errors.append("render manifest paper_reader annotation_mode must be `overlay-only`")
-            source_hash = compact_text(paper_reader.get("source_hash"))
+        pdf_overlay = payload.get("pdf_overlay")
+        if isinstance(pdf_overlay, dict):
+            for field in sorted(PDF_OVERLAY_MANIFEST_FIELDS):
+                if not nonempty(pdf_overlay.get(field)):
+                    errors.append(f"render manifest pdf_overlay missing `{field}`")
+            if pdf_overlay.get("mode") != "pdf-overlay":
+                errors.append("render manifest pdf_overlay mode must be `pdf-overlay`")
+            if pdf_overlay.get("annotation_mode") not in {"overlay-only", "pdfjs-overlay"}:
+                errors.append("render manifest pdf_overlay annotation_mode must be `pdfjs-overlay`")
+            source_hash = compact_text(pdf_overlay.get("source_hash"))
             if source_hash and not HASH_RE.fullmatch(source_hash):
-                errors.append("render manifest paper_reader source_hash must look like sha1:<hex> or sha256:<hex>")
-            integrity_check = compact_text(paper_reader.get("source_integrity_check"))
+                errors.append("render manifest pdf_overlay source_hash must look like sha1:<hex> or sha256:<hex>")
+            integrity_check = compact_text(pdf_overlay.get("source_integrity_check"))
             if integrity_check not in SOURCE_INTEGRITY_CHECKS:
                 errors.append(
-                    "render manifest paper_reader source_integrity_check must be one of "
+                    "render manifest pdf_overlay source_integrity_check must be one of "
                     "`verified`, `mismatch`, or `skipped`"
                 )
             elif integrity_check == "mismatch":
-                errors.append("render manifest paper_reader source_integrity_check reports `mismatch`")
-            elif integrity_check == "skipped":
-                warnings.append("render manifest paper_reader source integrity comparison was skipped")
+                errors.append("render manifest pdf_overlay source_integrity_check reports `mismatch`")
+        else:
+            errors.append("render manifest marks #paper-reader as rendered but missing `pdf_overlay` provenance object")
     return errors, warnings, deferred, rendered_section_ids
 
 
@@ -1173,66 +1161,10 @@ def html_ids(path: Path) -> tuple[set[str], list[str], list[str]]:
     return parser.ids, errors, warnings
 
 
-def resolve_manifest_source_path(manifest_path: Path, source_artifact: str) -> Path:
-    source_path = Path(source_artifact)
-    if source_path.is_absolute():
-        return source_path
-    candidates = [parent / source_path for parent in (manifest_path.parent, *manifest_path.parents)]
-    candidates.append(Path.cwd() / source_path)
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate.resolve()
-    return candidates[0].resolve()
-
-
-def audit_manifest_source_integrity(manifest_path: Path, html_path: Path | None, source_path: Path | None = None) -> tuple[list[str], list[str]]:
-    errors: list[str] = []
-    warnings: list[str] = []
-    payload = load_json(manifest_path)
-    if not isinstance(payload, dict):
-        return errors, warnings
-    sections = payload.get("sections", [])
-    rendered_section_ids: set[str] = set()
-    if isinstance(sections, list):
-        rendered_section_ids = {
-            str(section.get("id"))
-            for section in sections
-            if isinstance(section, dict) and section.get("status") == "rendered" and section.get("id")
-        }
-    if "paper-reader" not in rendered_section_ids:
-        return errors, warnings
-    paper_reader = payload.get("paper_reader")
-    if not isinstance(paper_reader, dict):
-        return errors, warnings
-
-    integrity_check = compact_text(paper_reader.get("source_integrity_check"))
-    if integrity_check != "verified":
-        return errors, warnings
-    source_artifact = compact_text(paper_reader.get("source_artifact"))
-    resolved_source = source_path or resolve_manifest_source_path(manifest_path, source_artifact)
-    if not resolved_source.exists():
-        return [f"render manifest paper_reader source artifact does not exist: {resolved_source}"], warnings
-
-    source_hash = compact_text(paper_reader.get("source_hash"))
-    if source_hash:
-        errors.extend(validate_source_hash(resolved_source, source_hash, "render manifest paper_reader"))
-
-    if html_path is None:
-        warnings.append("render manifest paper_reader source integrity marked verified, but no --html path was provided for body comparison")
-        return errors, warnings
-    parser = AriadneHTMLParser()
-    parser.feed(html_path.read_text(encoding="utf-8"))
-    body_errors, body_warnings = audit_source_integrity(html_path, parser, resolved_source)
-    errors.extend(f"html: {item}" for item in body_errors)
-    warnings.extend(f"html: {item}" for item in body_warnings)
-    return errors, warnings
-
-
 def audit_forbidden_artifacts(
     *,
     bundle_path: Path | None = None,
     html_path: Path | None = None,
-    source_path: Path | None = None,
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -1248,7 +1180,7 @@ def audit_forbidden_artifacts(
         for candidate in bundle_path.glob("*.py"):
             if candidate.name not in {"__init__.py"} and candidate.resolve() not in reported_bundle_paths:
                 errors.append(f"artifact bundle contains Python helper `{candidate.name}`; generated bundle-local scripts are not allowed")
-    for path in (html_path, source_path):
+    for path in (html_path,):
         if path:
             checked_dirs.add(path.resolve().parent)
     for directory in sorted(checked_dirs):
@@ -1301,7 +1233,6 @@ def audit_artifacts(
     manifest_path: Path | None = None,
     pass_observations_path: Path | None = None,
     html_path: Path | None = None,
-    source_path: Path | None = None,
     annotations_path: Path | None = None,
     bundle_path: Path | None = None,
     layout_audit_path: Path | None = None,
@@ -1315,7 +1246,6 @@ def audit_artifacts(
     forbidden_errors, forbidden_warnings = audit_forbidden_artifacts(
         bundle_path=bundle_path,
         html_path=html_path,
-        source_path=source_path,
     )
     errors.extend(forbidden_errors)
     warnings.extend(forbidden_warnings)
@@ -1397,10 +1327,6 @@ def audit_artifacts(
         missing = sorted(finding_id for finding_id in finding_ids if finding_id not in ids and finding_id not in deferred)
         for finding_id in missing:
             errors.append(f"finding `{finding_id}` is in findings.json but not rendered in HTML and not deferred")
-    if manifest_path:
-        integrity_errors, integrity_warnings = audit_manifest_source_integrity(manifest_path, html_path, source_path)
-        errors.extend(integrity_errors)
-        warnings.extend(integrity_warnings)
 
     return errors, warnings
 
@@ -1418,7 +1344,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--layout-audit", type=Path)
     parser.add_argument("--issue-artifacts", type=Path, help="Directory containing curated *_issues.json artifacts")
     parser.add_argument("--html", type=Path)
-    parser.add_argument("--source", type=Path, help="Pre-annotation paper-reader source artifact to hash and compare")
     args = parser.parse_args(argv)
 
     findings = args.findings
@@ -1463,7 +1388,6 @@ def main(argv: list[str] | None = None) -> int:
         manifest,
         pass_observations,
         args.html,
-        args.source,
         annotations,
         args.bundle,
         layout_audit,

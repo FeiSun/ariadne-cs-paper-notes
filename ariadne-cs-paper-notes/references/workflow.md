@@ -21,13 +21,14 @@ For partial inputs, state missing context and review the local job fully:
 
 Source text is read at most once per representation level:
 
-- `*.review_units.md` / `*.review_units.jsonl`: Prose Review Agent Phase A input. Generate these from the canonical `<stem>.source.html` with `scripts/extract_review_units.py` and read this compact text view instead of rendered HTML.
-- `source.html`: rendering and anchor-validation base only. Do not read `<stem>.source.html`, `<stem>.html`, or any rendered HTML report back into model context for prose review or verification. Use audit scripts for verification.
+- `*.review_units.md` / `*.review_units.jsonl`: Prose Review Agent Phase A input. Generate these directly from TeX with `scripts/extract_tex_review_units.py` and read this compact text view instead of rendered HTML or PDF page text.
+- `sentence_bbox.json`: PDF coordinate mapping for renderer/audit only. Do not read it as prose evidence.
+- Rendered HTML reports are delivery/audit artifacts only. Do not read any rendered HTML report back into model context for prose review or verification. Use audit scripts for verification.
 - LaTeX source: source-level diagnostics only, such as macros, citations, labels, build hygiene, hidden comments, and checklist/source package issues. Prefer source-hygiene issue artifacts over reading large source spans in orchestration context.
 - Raw audits such as `layout_audit.json`, `references_audit.json`, `numeric_audit.json`, symbol audits, polish audits, and full PDF text dumps are `tool_only`: specialist agents or deterministic reducers may read them; the top-level orchestrator and Prose Phase B read only compact `*_issues.json` derivatives.
 - PDF pages: layout track only. Do not mix page images into the main sentence-by-sentence prose-review context. Page images may be checked by page-local tooling or a layout specialist; the orchestrator consumes only `layout_issues.json`, aggregate coverage, and audit stdout.
 
-Do not create duplicate paper-text dumps in the paper directory. Avoid `main_pdftotext.txt`, `paper.txt`, `*.source_preview.html`, `*_preview.html`, and bundle-local generated helper scripts. Use temp extraction outputs and the canonical `<stem>.source.html` / `<stem>.html` pair.
+Do not create duplicate paper-text dumps in the paper directory. Avoid `main_pdftotext.txt`, `paper.txt`, `*.source_preview.html`, `*_preview.html`, `.source.html` paper-text variants, and bundle-local generated helper scripts. Use temp extraction outputs, TeX-derived review units, and the PDF overlay/report-only HTML generated inside the artifact bundle.
 
 ## Agent Architecture
 
@@ -76,6 +77,8 @@ The orchestrator should read only `phase_a_resume_status.json` and, for the next
 If the full review units exceed the context threshold, use section-sharded Phase A and record the split in coverage. `scripts/build_prose_shards.py` writes `phase_a_shard_manifest.json` plus per-shard packets under `phase_a_shards/`. A later synthesis pass is mandatory; do not deliver independent section reviews as a substitute for whole-paper judgment.
 
 `scripts/run_prose_agent.py` is the optional execution wrapper for Phase A/B. It does not hard-code a model provider. Pass `--agent-cmd "<command>"`; the command receives `ARIADNE_PROMPT_PACKET`, `ARIADNE_BUNDLE`, and `ARIADNE_ISSUE_ARTIFACTS`, then writes the JSON/JSONL targets named in the packet. Use `--allow-incomplete` when it is called from the top-level pipeline so a pending Phase A checkpoint is not treated as a failed deterministic stage. The runner stops on `no_progress` when an agent exits successfully but does not advance resume status or write-target counts.
+
+For CLIs that read prompts from stdin, use the provider-neutral bridge as the agent command: `python3 scripts/run_agent_command.py --env CODEX_HOME=.ariadne_codex_home --stdin-prompt --command '<cli command that reads stdin>'`. The bridge reads `ARIADNE_PROMPT_PACKET`, writes `<packet>.prompt.md`, sets `ARIADNE_PACKET` and `ARIADNE_PROMPT_FILE`, applies extra `--env KEY=VALUE` entries for the nested CLI, and pipes the rendered packet prompt to the CLI.
 
 For sharded Phase A, pass `--shard-manifest <bundle>/phase_a_shard_manifest.json` to `run_prose_agent.py`. The runner executes shard packets in manifest order and skips shards whose sections are already complete.
 
@@ -142,11 +145,24 @@ For ordinary runs, prefer the deterministic coordinator:
 scripts/run_review_pipeline.py <main.tex-or-project> --bundle <bundle>
 ```
 
-It prepares/builds the PDF when possible, renders source HTML, extracts review units, runs deterministic specialists, writes `phase_a_resume_status.json`, `phase_a_next_step.json`, and `phase_a_prompt_packet.json`, and then stops if Prose Phase A/B artifacts are missing. When Phase A artifacts exist, it also writes `phase_b_context.json` and `phase_b_prompt_packet.json`. After the Prose agents have written their JSON/JSONL artifacts, rerun the same command to compile, derive, render, and audit. Use `--allow-partial-compile` only for debugging or specialist-only previews; partial compile output must not be presented as a full-paper prose review.
+It prepares/builds the PDF when possible, extracts TeX-derived review units, runs deterministic specialists, writes `phase_a_resume_status.json`, `phase_a_next_step.json`, and `phase_a_prompt_packet.json`, and then stops if Prose Phase A/B artifacts are missing. When Phase A artifacts exist, it also writes `phase_b_context.json` and `phase_b_prompt_packet.json`. After the Prose agents have written their JSON/JSONL artifacts, rerun the same command to compile, derive, render, and audit. Use `--allow-partial-compile` only for debugging or specialist-only previews; partial compile output must not be presented as a full-paper prose review.
 
-For source-derived HTML annotation pages, the coordinator calls `render_paper_html.py` with `--reuse-raw-html` and leaves `--full-report` off by default, so the deliverable stays paper-first: original manuscript text with overlay annotations and a compact coverage receipt. The exact canonical source HTML that generated `review_units` must be reused so sentence anchors do not change between Prose Phase A and final rendering. Pass `--full-report` only when the user explicitly wants the extra `#global-findings` section for independent whole-paper Major/Blocker critiques; agents must not write HTML.
+For full-paper annotation pages, the coordinator builds `sentence_bbox.json` and calls `render_pdf_overlay_html.py`, so the deliverable is the original PDF rendered by bundled PDF.js with HTML overlay highlights and a compact coverage/bbox receipt. Use `--paper-view report-only` when the user explicitly wants a findings report without displaying the paper body, or when no compiled PDF is available; agents must not write HTML.
 
 If a vision-capable figure/caption specialist is available, pass `--vision-figure-agent-cmd "<command>"`. The runner creates tool-only page images and a compact vision packet; only the curated `figure_caption` issue artifact and compact runner summary should enter orchestration context.
+
+For release migration validation across paper styles, run fresh full reviews before checking readiness:
+
+```bash
+scripts/run_pdf_overlay_full_review_matrix.py \
+  --hidden-input <hidden-main.tex> \
+  --neurips-input <neurips-or-iclr-main.tex> \
+  --acl-input <acl-main.tex> \
+  --out-root <migration-output-dir> \
+  --prose-agent-cmd "python3 scripts/run_agent_command.py --env CODEX_HOME=.ariadne_codex_home --stdin-prompt --command '<external prose CLI>'"
+```
+
+Add `--preflight` to the same command first to validate fixture paths, local PDF tools, and external CLI executability without invoking LLM agents. The real run omits `--preflight`; it calls `run_review_pipeline.py --paper-view pdf-overlay` for all three papers and then runs the strict PDF-overlay migration matrix. Use deterministic preview or preflight bundles only for setup/smoke checks; they are not full-paper migration evidence because they lack fresh Phase A/B prose artifacts.
 
 ## Deterministic Compilation
 
@@ -172,9 +188,10 @@ scripts/build_review_derivatives.py \
   --annotations <bundle>/annotations.json \
   --issues-dir <bundle>/issue_artifacts \
   --layout-audit <bundle>/layout_audit.json \
-  --source-artifact <stem>.source.html \
+  --source-artifact <main.tex> \
   --requested-scope "<scope>" \
-  --output-file <stem>.html \
+  --render-mode pdf-overlay \
+  --output-file <bundle>/ariadne_review_pdf/index.html \
   --coverage-out <bundle>/coverage.json \
   --manifest-out <bundle>/render_manifest.json \
   --pass-observations-out <bundle>/pass_observations.json
@@ -182,7 +199,7 @@ scripts/build_review_derivatives.py \
 
 The derivative builder writes `coverage.json`, `render_manifest.json`, and `pass_observations.json` from compiled artifacts and issue artifacts. It should be the default path for these files; manual versions are only acceptable when the derived script cannot express an unusual split-part run, and they must still pass artifact audit.
 
-Use `--render-mode paper-reader-only` for overlay plus coverage. Use `--render-mode paper-reader-with-global-findings` when final rendering passes `--full-report`.
+Use `--render-mode pdf-overlay` for the default embedded-PDF reader. Use `--render-mode issue-report-only` for findings/coverage without displaying the paper body.
 
 ## Artifact Workflow
 
@@ -193,7 +210,7 @@ Use `--render-mode paper-reader-only` for overlay plus coverage. Use `--render-m
    - Use `--max-items` high enough for all visible sections, captions, equations, references, and numeric signals in scope. If extraction reports incomplete coverage, rerun with a larger value before claiming full coverage.
    - For LaTeX/source input, identify the entry `.tex`; compile or locate a rendered PDF with `scripts/build_paper_pdf.py <paper-path>` when local tools allow.
    - If compilation fails, report the warning and continue source-only; ask for the PDF when layout matters.
-   - For paper-reader prose review, render the canonical source HTML, then run `scripts/extract_review_units.py <stem>.source.html`; use review units as the Prose Phase A model-facing paper text.
+   - For paper-reader prose review, run `scripts/extract_tex_review_units.py <main.tex> --jsonl <bundle>/<stem>.review_units.jsonl --markdown <bundle>/<stem>.review_units.md`; use review units as the Prose Phase A model-facing paper text.
 3. For PDF, use page numbers and short snippets. The rendered PDF is authoritative for layout, skimmability, figure/table readability, page breaks, and actual reader experience.
 4. Plain text extraction strips layout. Do not use `extract_paper_text.py` or `pdftotext` alone as evidence for layout judgments; visually inspect/render PDF pages when judging layout.
 5. For visible tables or prose-cited numbers, run numeric extraction before drafting numeric findings:

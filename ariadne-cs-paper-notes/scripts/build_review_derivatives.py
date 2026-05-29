@@ -12,18 +12,18 @@ from pathlib import Path
 from typing import Any
 
 
-PAPER_READER_GLOBAL_SECTIONS = [
+PDF_OVERLAY_SECTIONS = [
     "paper-reader",
-    "global-findings",
+    "bbox-diagnostics",
     "coverage-receipt",
 ]
-PAPER_READER_ONLY_SECTIONS = [
-    "paper-reader",
+ISSUE_REPORT_ONLY_SECTIONS = [
+    "issue-report",
     "coverage-receipt",
 ]
 RENDER_MODES = {
-    "paper-reader-with-global-findings": PAPER_READER_GLOBAL_SECTIONS,
-    "paper-reader-only": PAPER_READER_ONLY_SECTIONS,
+    "pdf-overlay": PDF_OVERLAY_SECTIONS,
+    "issue-report-only": ISSUE_REPORT_ONLY_SECTIONS,
 }
 PASS_KEYS = {
     "pass_0_engagement_contract": "Pass 0",
@@ -303,28 +303,12 @@ def build_render_manifest(
     output_files: list[str],
     source_artifact: Path | None,
     source_hash: str,
-    source_fidelity: str,
-    html_source: str,
-    visible_scope: str,
     deferred_findings: list[str],
     source_integrity_check: str = "skipped",
     rendered_sections: list[str] | None = None,
 ) -> dict[str, Any]:
-    sections = [{"id": section_id, "status": "rendered"} for section_id in (rendered_sections or PAPER_READER_GLOBAL_SECTIONS)]
-    paper_reader: dict[str, Any] = {
-        "html_source": html_source,
-        "source_fidelity": source_fidelity,
-        "source_artifact": str(source_artifact) if source_artifact else "",
-        "source_hash": source_hash,
-        "sentence_id_scheme": "section-paragraph-sentence-v2",
-        "annotation_mode": "overlay-only",
-        "source_integrity_check": source_integrity_check,
-    }
-    if visible_scope:
-        paper_reader["visible_scope"] = visible_scope
-    if source_artifact and source_artifact.exists() and not source_hash:
-        paper_reader["source_hash"] = sha256_path(source_artifact)
-    return {
+    sections = [{"id": section_id, "status": "rendered"} for section_id in (rendered_sections or PDF_OVERLAY_SECTIONS)]
+    payload: dict[str, Any] = {
         "generated_by": "scripts/build_review_derivatives.py",
         "schema_version": 1,
         "output_files": output_files,
@@ -333,9 +317,31 @@ def build_render_manifest(
         "deferred_findings_with_reason": [
             {"id": finding_id, "reason": "artifact_only"} for finding_id in deferred_findings
         ],
-        "paper_reader": paper_reader,
         "pdf_linkage_level": "Level 0",
     }
+    if rendered_sections == ISSUE_REPORT_ONLY_SECTIONS:
+        report: dict[str, Any] = {
+            "mode": "issue-report-only",
+            "source_artifact": str(source_artifact) if source_artifact else "",
+            "source_hash": source_hash,
+            "source_integrity_check": source_integrity_check,
+        }
+        if source_artifact and source_artifact.exists() and not source_hash:
+            report["source_hash"] = sha256_path(source_artifact)
+        payload["report"] = report
+        return payload
+
+    pdf_overlay: dict[str, Any] = {
+        "mode": "pdf-overlay",
+        "source_artifact": str(source_artifact) if source_artifact else "",
+        "source_hash": source_hash,
+        "annotation_mode": "pdfjs-overlay",
+        "source_integrity_check": source_integrity_check,
+    }
+    if source_artifact and source_artifact.exists() and not source_hash:
+        pdf_overlay["source_hash"] = sha256_path(source_artifact)
+    payload["pdf_overlay"] = pdf_overlay
+    return payload
 
 
 def sample_findings(findings: list[dict[str, Any]], *, issue_type: str | None = None, limit: int = 3) -> list[dict[str, Any]]:
@@ -416,11 +422,8 @@ def build_all(
     source_hash: str,
     requested_scope: str,
     output_files: list[str],
-    source_fidelity: str,
-    html_source: str,
-    visible_scope: str,
     source_integrity_check: str = "skipped",
-    render_mode: str = "paper-reader-with-global-findings",
+    render_mode: str = "pdf-overlay",
     phase_a_status_path: Path | None = None,
     phase_b_context_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -448,9 +451,6 @@ def build_all(
         output_files=output_files,
         source_artifact=source_artifact,
         source_hash=source_hash,
-        source_fidelity=source_fidelity,
-        html_source=html_source,
-        visible_scope=visible_scope,
         source_integrity_check=source_integrity_check,
         deferred_findings=[finding_id for finding_id in artifact_only_finding_ids if finding_id],
         rendered_sections=rendered_sections,
@@ -471,13 +471,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-hash", default="")
     parser.add_argument("--requested-scope", default="compiled Ariadne review")
     parser.add_argument("--output-file", action="append", default=[])
-    parser.add_argument("--source-fidelity", default="deterministic", choices=("deterministic", "limited-scope", "fixture"))
-    parser.add_argument("--html-source", default="pandoc", choices=("latexml", "ar5iv", "pandoc", "extracted-text", "manual-fixture"))
-    parser.add_argument("--visible-scope", default="")
     parser.add_argument("--source-integrity-check", default="skipped", choices=("verified", "mismatch", "skipped"))
     parser.add_argument(
         "--render-mode",
-        default="paper-reader-with-global-findings",
+        default="pdf-overlay",
         choices=tuple(RENDER_MODES),
         help="Sections expected in the final HTML render.",
     )
@@ -497,9 +494,6 @@ def main(argv: list[str] | None = None) -> int:
         source_hash=args.source_hash,
         requested_scope=args.requested_scope,
         output_files=args.output_file,
-        source_fidelity=args.source_fidelity,
-        html_source=args.html_source,
-        visible_scope=args.visible_scope,
         source_integrity_check=args.source_integrity_check,
         render_mode=args.render_mode,
     )

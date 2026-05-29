@@ -1,6 +1,6 @@
 {
-  "source_artifact": "/Users/ofey/Research/ariadne-cs-paper-notes/ariadne-cs-paper-notes/tests/fixtures/source_paper_reader.html",
-  "source_hash": "sha256:24e173a44214b49fab4cf9b54c3e4d484f3732098dfe1c3043a0d4db4038d81d",
+  "source_artifact": "/Users/ofey/Research/ariadne-cs-paper-notes/ariadne-cs-paper-notes/tests/fixtures/main.tex",
+  "source_hash": "sha256:a1b010a23da8ba9357adca0a97a7c61f716a74a08a7c0fb17c7e7cee245692eb",
   "annotation_schema": "anchor-only",
   "annotations": [
     {

@@ -1,0 +1,5 @@
+{
+  "devDependencies": {
+    "pdfjs-dist": "^3.11.174"
+  }
+}

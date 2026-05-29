@@ -106,6 +106,7 @@ def run_specialist(
             "Do not read raw *_audit.json unless the packet is explicitly extended by a future workflow.",
             "Write a valid ariadne_issue_artifact JSON file with the same domain and context_policy.",
             "Preserve evidence_refs/source issue provenance when revising or grouping issues.",
+            "For every sentence- or paragraph-anchored issue, include evidence_snippet: a verbatim 3-15 word quote from the anchored review unit.",
         ],
     }
     packet_path = out_path.with_suffix(".packet.json")

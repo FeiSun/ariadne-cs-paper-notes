@@ -152,14 +152,14 @@ def build_pdf(entry: Path, timeout: int) -> tuple[bool, Path, str, list[str]]:
 
     latexmk = shutil.which("latexmk")
     if latexmk:
-        result = run_command([latexmk, "-pdf", "-interaction=nonstopmode", "-halt-on-error", entry.name], cwd, timeout)
+        result = run_command([latexmk, "-pdf", "-synctex=1", "-interaction=nonstopmode", "-halt-on-error", entry.name], cwd, timeout)
         logs.append(result.stdout[-4000:] + result.stderr[-4000:])
         return result.returncode == 0 and output.exists(), output, "latexmk", logs
 
     pdflatex = shutil.which("pdflatex")
     if pdflatex:
         commands: list[tuple[list[str], bool]] = [
-            ([pdflatex, "-interaction=nonstopmode", entry.name], True),
+            ([pdflatex, "-synctex=1", "-interaction=nonstopmode", entry.name], True),
         ]
         bib_tool = bibliography_tool(entry)
         tool_name = "pdflatex"
@@ -171,8 +171,8 @@ def build_pdf(entry: Path, timeout: int) -> tuple[bool, Path, str, list[str]]:
             logs.append("No bibtex or biber found on PATH; citations may remain unresolved.")
         commands.extend(
             [
-                ([pdflatex, "-interaction=nonstopmode", entry.name], True),
-                ([pdflatex, "-interaction=nonstopmode", entry.name], True),
+                ([pdflatex, "-synctex=1", "-interaction=nonstopmode", entry.name], True),
+                ([pdflatex, "-synctex=1", "-interaction=nonstopmode", entry.name], True),
             ]
         )
 

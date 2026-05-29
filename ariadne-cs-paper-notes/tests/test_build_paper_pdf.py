@@ -131,6 +131,8 @@ def test_pdflatex_fallback_runs_bibtex_between_latex_passes() -> None:
     command_names = [Path(call[0]).name for call in calls]
     if command_names != ["pdflatex", "bibtex", "pdflatex", "pdflatex"]:
         raise AssertionError(f"Unexpected command order: {command_names}")
+    if not all("-synctex=1" in call for call in calls if Path(call[0]).name == "pdflatex"):
+        raise AssertionError(f"Expected all pdflatex passes to enable SyncTeX, got {calls}")
     if pdf.name != "main.pdf":
         raise AssertionError(f"Expected main.pdf, got {pdf}")
 
@@ -180,6 +182,8 @@ def test_pdflatex_fallback_uses_biber_for_biblatex() -> None:
     command_names = [Path(call[0]).name for call in calls]
     if command_names != ["pdflatex", "biber", "pdflatex", "pdflatex"]:
         raise AssertionError(f"Unexpected command order: {command_names}")
+    if not all("-synctex=1" in call for call in calls if Path(call[0]).name == "pdflatex"):
+        raise AssertionError(f"Expected all pdflatex passes to enable SyncTeX, got {calls}")
 
 
 def test_pdflatex_fallback_detects_biblatex_in_input_preamble() -> None:
@@ -230,6 +234,8 @@ def test_pdflatex_fallback_detects_biblatex_in_input_preamble() -> None:
     command_names = [Path(call[0]).name for call in calls]
     if command_names != ["pdflatex", "biber", "pdflatex", "pdflatex"]:
         raise AssertionError(f"Unexpected command order: {command_names}")
+    if not all("-synctex=1" in call for call in calls if Path(call[0]).name == "pdflatex"):
+        raise AssertionError(f"Expected all pdflatex passes to enable SyncTeX, got {calls}")
 
 
 def test_tool_detection_uses_project_root_for_src_entry_parent_inputs() -> None:

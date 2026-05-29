@@ -7,39 +7,39 @@ Use this file when the user asks for HTML, 网页, 可视化报告, 批注报告
 - Write review content in Chinese by default.
 - Keep precise technical terms in English when clearer: claim, evidence, baseline, ablation, caption, limitation, coverage.
 - Produce a self-contained `.html` unless the user asks otherwise.
-- The HTML is a teaching annotation interface, not merely a report. Put the paper text first and attach comments directly to the sentences that need attention.
-- When the user asks specifically for a paper-HTML annotation page, default to a paper-reader deliverable: set `data-report-kind="paper-reader-only"` for overlay plus coverage, or `data-report-kind="paper-reader-with-global-findings"` when explicitly adding independent whole-paper findings. Keep `#paper-reader`, `#annotation-panel`, provenance metadata, annotation cards, and a compact coverage receipt. Do not recreate the legacy full workbench tables.
+- The HTML is a teaching annotation interface, not merely a report. Put the PDF page view first and attach comments directly to the mapped sentence/paragraph/section highlights that need attention.
+- When the user asks for a paper annotation page, default to the PDF overlay deliverable: set `data-report-kind="pdf-overlay"` with `#paper-reader`, `#annotation-panel`, `#bbox-diagnostics`, provenance metadata, annotation cards, and a compact coverage receipt. Use `data-report-kind="issue-report-only"` only when the user asks for a findings report without displaying the paper body. Do not recreate the legacy full workbench tables.
 - Do not require external network assets, remote fonts, CDN scripts, or CSS frameworks.
 - Inline JavaScript is allowed for self-contained filters/toggles.
 - Do not claim live PDF synchronization, clickable PDF jumping, embedded PDF annotations, or written PDF comments unless implemented and checked.
 - When trigger text includes `批注`, include article-ordered diagnostic section/paragraph/sentence notes.
-- When TeX source is available, the paper text shown in `#paper-reader` must come from a deterministic paper-to-HTML pass, not from LLM-authored prose. Prefer a LaTeXML/ar5iv-style paper HTML view that preserves sections, paragraphs, equations, figures, tables, citations, and references as faithfully as feasible.
-- If deterministic TeX-to-HTML is unavailable, render only the explicitly requested visible scope from extracted source/PDF text. Mark the scope limitation in the HTML and `render_manifest.json`; do not present the paper-reader as full-paper coverage.
+- When TeX source is available, review units must come from deterministic TeX parsing and the paper view must come from the compiled PDF rendered by bundled PDF.js. Do not re-render TeX into an HTML paper body for the default report.
+- If a compiled PDF is unavailable, render `issue-report-only` and make the missing PDF explicit in coverage/diagnostics; do not present the paper-reader as full-paper visual coverage.
 
 ## Required Sections
 
-Paper-reader-only annotation pages use `#paper-reader` and `#coverage-receipt`:
+PDF overlay annotation pages use `#paper-reader`, `#bbox-diagnostics`, and `#coverage-receipt`:
 
 ```html
-<article class="review-report" data-report-kind="paper-reader-only">
+<article class="review-report" data-report-kind="pdf-overlay">
   <header>...</header>
   <nav aria-label="Review sections">...</nav>
   <section id="paper-reader">...</section>
   <main>
+    <section id="bbox-diagnostics">...</section>
     <section id="coverage-receipt">...</section>
   </main>
 </article>
 ```
 
-When the user asks for `--full-report` or an extra global diagnosis after the overlay, use only `#global-findings` between the paper reader and coverage receipt:
+Report-only pages use `#issue-report` and `#coverage-receipt`:
 
 ```html
-<article class="review-report" data-report-kind="paper-reader-with-global-findings">
+<article class="review-report" data-report-kind="issue-report-only">
   <header>...</header>
   <nav aria-label="Review sections">...</nav>
-  <section id="paper-reader">...</section>
   <main>
-    <section id="global-findings">...</section>
+    <section id="issue-report">...</section>
     <section id="coverage-receipt">...</section>
   </main>
 </article>
@@ -50,7 +50,8 @@ Use these Chinese section labels:
 | Section id | 中文标签 |
 |---|---|
 | `paper-reader` | 论文正文批注 |
-| `global-findings` | 全局重要问题 |
+| `bbox-diagnostics` | PDF 锚点诊断 |
+| `issue-report` | 批注问题报告 |
 | `coverage-receipt` | 覆盖回执 |
 
 Do not use legacy top-level note sections such as `executive-diagnosis`, `issue-index`, `claim-evidence-audit`, `deep-reading-notes`, `submission-readiness`, `local-comments`, `revision-plan`, `top-priorities`, `section-review`, `paragraph-surgery`, `margin-notes`, `keep-notes`, `section-comments`, or `section-reflections` in paper-reader reports.
@@ -64,9 +65,9 @@ Use a sober paper-annotation design:
 - top/sticky navigation;
 - readable paper column with advisor annotations beside it;
 - the first major viewport after the header must be the annotated paper, not a table-heavy report section;
-- use a two-pane layout on desktop: paper text on the left, sticky annotation panel on the right;
+- use a two-pane layout on desktop: PDF pages on the left, sticky annotation panel on the right;
 - collapse to paper-first single column on mobile, with selected annotation details opening below the sentence or as a top-of-section panel;
-- keep the paper pane visually close to a CS paper: clear section hierarchy, paragraphs, equations/tables/figures in place, and enough whitespace for sustained reading;
+- keep the paper pane visually faithful to the compiled PDF: PDF.js-rendered pages must not be cropped, stretched, or visually reordered;
 - repeated findings/notes may use cards; avoid decorative marketing layout;
 - tables are horizontally scrollable on small screens;
 - substantive tables have `<caption>` and `<th scope="col">`;
@@ -89,11 +90,9 @@ The saved HTML must contain an inspectable paper annotation workspace:
 ```html
 <section id="paper-reader" class="paper-reader" aria-label="Annotated paper">
   <div class="reader-shell">
-    <article class="paper-pane" data-paper-html-source="latexml|ar5iv|pandoc|extracted-text" data-source-fidelity="deterministic|limited-scope" data-source-artifact="..." data-source-hash="sha256:..." data-sentence-id-scheme="section-paragraph-sentence-v2" data-annotation-mode="overlay-only">
-      <p>
-        <span class="paper-sentence" data-sentence-id="s-intro-001">Clean sentence.</span>
-        <span class="paper-sentence has-annotation" data-sentence-id="s-intro-002" data-has-issue="true" data-issue-ids="F1" data-severity="major" data-issue-type="prose" tabindex="0" role="button" aria-describedby="ann-s-intro-002">Problem sentence.</span>
-      </p>
+    <article class="paper-pane pdf-paper-pane" data-paper-view="pdfjs-overlay" data-source-artifact="..." data-source-hash="sha256:..." data-sentence-id-scheme="section-paragraph-sentence-v2" data-annotation-mode="pdfjs-overlay">
+      <div id="pdfjs-viewer" class="pdfjs-viewer" data-pdf-src="paper.pdf"></div>
+      <script type="application/json" id="pdf-overlay-data">{"1":["<button class=\"pdf-highlight paper-sentence has-annotation\" data-sentence-id=\"s-intro-002\" data-has-issue=\"true\" data-issue-ids=\"F1\" data-severity=\"major\" data-issue-type=\"prose\" aria-describedby=\"ann-s-intro-002\" type=\"button\"></button>"]}</script>
     </article>
     <aside id="annotation-panel" class="annotation-panel" aria-label="批注详情">...</aside>
   </div>
@@ -102,17 +101,15 @@ The saved HTML must contain an inspectable paper annotation workspace:
 
 ### Source Fidelity Rules
 
-- The LLM must not rewrite, paraphrase, complete, or summarize the paper body inside `#paper-reader`. Deterministic renderers may only add annotation attributes, visual wrappers, annotation cards, `#global-findings` when requested, and `#coverage-receipt` around source-derived text.
-- `data-paper-html-source` identifies the conversion backend: `latexml`, `ar5iv`, `pandoc`, or `extracted-text`. Use `manual-fixture` only in tests or examples, never in delivered student reports.
-- `data-source-fidelity="deterministic"` is required for `latexml`, `ar5iv`, or `pandoc` paper panes. Include `data-source-artifact`, `data-source-hash`, `data-sentence-id-scheme`, and `data-annotation-mode="overlay-only"`.
-- `data-source-fidelity="limited-scope"` is allowed only when deterministic conversion is unavailable. Include `data-visible-scope`, `data-source-artifact`, and `data-source-hash`; state the limitation in the coverage receipt and `render_manifest.json`.
-- Stable sentence IDs must come from the paper-HTML generation pass, not from the review-writing pass. Until `scripts/render_paper_html.py` exists, use a documented deterministic scheme such as `section-slug + paragraph index + sentence index`, and record it in `data-sentence-id-scheme`.
-- `annotations.json` for overlay mode must record the current pre-annotation paper source as top-level `source_artifact` and `source_hash`, matching `render_manifest.paper_reader.source_artifact` / `source_hash`. Do not reuse prior review annotations as source content for a new manuscript revision; historical annotations may only be used for calibration or debugging and must not pass as a fresh full-paper review.
-- If a generated report uses a deterministic pre-annotation paper artifact, the final HTML should be auditable by normalizing the final `#paper-reader` after removing annotation-only attributes and comparing it with the source artifact hash. If this comparison was not run, record it as a QA warning, not as a silent success.
+- The LLM must not rewrite, paraphrase, complete, or summarize the paper body inside `#paper-reader`. Deterministic renderers may only show the PDF through bundled PDF.js, highlight controls from `sentence_bbox.json`, annotation cards, `#global-findings` when requested, and `#coverage-receipt`.
+- PDF overlay reports use `data-paper-view="pdfjs-overlay"` and must not declare `data-paper-html-source` or `data-source-fidelity`.
+- Include `data-source-artifact`, `data-source-hash`, `data-sentence-id-scheme`, and `data-annotation-mode="pdfjs-overlay"` on the PDF overlay pane. These bind the overlay to the current TeX-derived review units / bbox mapping, not to a re-rendered HTML paper body.
+- Stable sentence IDs must come from the TeX-derived review-unit generation pass and be mapped to PDF coordinates through `sentence_bbox.json`.
+- `annotations.json` for overlay mode must record the current source artifact and hash, matching `render_manifest.pdf_overlay.source_artifact` / `source_hash`. Do not reuse prior review annotations as source content for a new manuscript revision; historical annotations may only be used for calibration or debugging and must not pass as a fresh full-paper review.
 
-Paper-reader annotation requirements:
+PDF overlay annotation requirements:
 
-- Every sentence that has a substantive issue is wrapped in `.paper-sentence.has-annotation`.
+- Every sentence that has a substantive issue has a corresponding `.pdf-highlight.paper-sentence.has-annotation` control on the PDF page overlay.
 - Direct inline annotations are preferred for student-facing HTML: the marked sentence should carry the visible severity/type cue, and the full teaching explanation should appear in the adjacent annotation panel.
 - Each issue sentence has stable `data-sentence-id`, `data-has-issue="true"`, `data-issue-ids`, `data-severity`, and `data-issue-type`.
 - Each issue sentence has a matching annotation card in `#annotation-panel` with `data-target-sentence="<same id>"`.
@@ -131,7 +128,7 @@ Paper-reader annotation requirements:
 - Clicking or keyboard-activating an issue anchor highlights it and shows its matching annotation card. Provide `上一条` / `下一条` controls at least for issue-sentence navigation.
 - Severity and type filters must apply to both paper sentence markers and annotation cards. If filtering is absent, show a static legend instead of clickable controls.
 - `data-issue-ids` may contain multiple ids separated by spaces. Each id must exist either in the hidden `#finding-anchor-index`, an overlay annotation card, or a `#global-findings` card.
-- If the paper view is generated from LaTeXML/ar5iv-style HTML, preserve equations/tables/figures as much as possible and wrap prose sentences without breaking math, citations, or inline code.
+- The interactive paper view is PDF overlay only: render the PDF with bundled PDF.js and place highlight controls from `sentence_bbox.json` above each PDF.js page. Do not regenerate the manuscript body as LaTeXML/ar5iv/Pandoc-style HTML.
 - If a numeric signal in `numeric_audit.json` maps to a sentence or phrase in the paper pane, its annotation card must render the concrete `表中数值`, `可见复算值`, `差值`, and `口径说明`, and link to the canonical numeric finding id. If no exact sentence can be located, render it as an unanchored annotation card or a true global finding; do not invent a paper sentence anchor.
 
 ## Filters and Tags
@@ -191,20 +188,20 @@ Choose the stem from the reviewed PDF when available; otherwise from the entry `
 
 Save the artifact bundle beside the HTML as described in `report_contract.md`. If not writable, use a temp directory and report the fallback path.
 
-Only emit the canonical paper-reader HTML pair: `<stem>.source.html` and `<stem>.html`. Do not create `*.source_preview.html`, `*_preview.html`, plaintext paper dumps, or bundle-local generated helper scripts.
+Only emit the PDF overlay HTML bundle (`ariadne_review_pdf/index.html` plus `paper.pdf` and bundled `pdfjs/` assets) or the report-only HTML (`issue_report.html`). Do not create `*.source_preview.html`, `*_preview.html`, `.source.html` paper-text variants, plaintext paper dumps, or bundle-local generated helper scripts.
 
 ## HTML Audit
 
 Before delivery, run when feasible:
 
 ```bash
-scripts/audit_html_report.py <report.html> --source <paper-reader.source.html>
+scripts/audit_html_report.py <report.html>
 ```
 
 If JSON artifacts exist, also run:
 
 ```bash
-scripts/audit_review_artifacts.py --bundle <bundle>/ --html <report.html> --source <paper-reader.source.html>
+scripts/audit_review_artifacts.py --bundle <bundle>/ --html <report.html>
 ```
 
-`--source` should point to the pre-annotation paper-reader source artifact named in `data-source-artifact`; the audit recomputes `data-source-hash` and compares the final paper pane against that source after removing annotation-only markup. Fix every `ERROR` before delivery. Treat `WARNING` lines as caveats or calibration notes; a skipped source comparison must remain visible as a warning, never as silent success.
+For PDF overlay and report-only outputs, do not pass `--source`; source integrity is checked through compiled artifact hashes and bbox/review-unit audits. Fix every `ERROR` before delivery. Treat `WARNING` lines as caveats or calibration notes.

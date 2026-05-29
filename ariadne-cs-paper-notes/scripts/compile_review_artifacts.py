@@ -12,14 +12,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bs4 import BeautifulSoup, Tag
-
 
 SCHEMA_VERSION = 1
 ISSUE_ARTIFACT_TYPE = "ariadne_issue_artifact"
 COMPILED_INDEX_TYPE = "ariadne_compiled_issue_index"
 SEVERITY_ORDER = {"Polish": 0, "Minor": 1, "Major": 2, "Blocker": 3}
 DEFAULT_STUDENT_VISIBLE_DOMAINS = {"prose", "whole_paper", "layout", "numeric", "figure_caption"}
+RENDERER_NOISE_RE = re.compile(
+    r"("
+    r"当前\s*HTML\s*可读层|HTML\s*可读层|可读层|"
+    r"source-derived\s+paper-reader|generated\s+by\s+render_paper_html\.py|TeX-to-HTML|"
+    r"pass@\s+k\s+k|\bk\s+k\b|符号重复|抽取噪声|排版噪声"
+    r")",
+    re.IGNORECASE,
+)
 JSONL_DOMAINS = {
     "prose_issues": "prose",
     "whole_paper_findings": "whole_paper",
@@ -148,6 +154,31 @@ def source_only_identity_false_positive(row: dict[str, Any]) -> bool:
     return front_matter_visible_claim and (anonymous_context or "首页" in joined)
 
 
+def renderer_noise_false_positive(row: dict[str, Any]) -> bool:
+    joined = " ".join(
+        first_nonempty(row, key, max_chars=1200)
+        for key in (
+            "title",
+            "short",
+            "diagnosis",
+            "problem",
+            "reader_friction",
+            "writing_principle",
+            "self_check",
+            "next_draft_task",
+            "severity_rationale",
+            "snippet",
+            "evidence_snippet",
+        )
+    )
+    if not joined:
+        return False
+    if RENDERER_NOISE_RE.search(joined):
+        basis = compact_text(row.get("visibility_basis"), max_chars=80).lower()
+        return basis != "compiled_pdf"
+    return False
+
+
 def first_nonempty(mapping: dict[str, Any], *keys: str, max_chars: int = 1200) -> str:
     for key in keys:
         value = mapping.get(key)
@@ -178,7 +209,7 @@ def truthy(value: Any) -> bool:
 
 
 def visibility_for_group(group: list[SourceIssue]) -> str:
-    if any(source_only_identity_false_positive(issue.row) for issue in group):
+    if any(source_only_identity_false_positive(issue.row) or renderer_noise_false_positive(issue.row) for issue in group):
         return "artifact_only"
     for issue in group:
         explicit = compact_text(
@@ -317,100 +348,10 @@ def load_source_issues(issues_dir: Path) -> tuple[list[SourceIssue], list[dict[s
     return all_issues, normalized_jsonl, source_artifacts
 
 
-def load_source_soup(source_artifact: str) -> BeautifulSoup | None:
-    if not source_artifact:
-        return None
-    path = Path(source_artifact)
-    if not path.exists() or not path.is_file():
-        return None
-    return BeautifulSoup(path.read_text(encoding="utf-8", errors="replace"), "lxml")
-
-
-def source_anchor_node(soup: BeautifulSoup, anchor: str) -> Tag | None:
-    if not anchor:
-        return None
-    if anchor.startswith("s-"):
-        node = soup.find(attrs={"data-sentence-id": anchor})
-        return node if isinstance(node, Tag) else None
-    if anchor.startswith("p-"):
-        node = soup.find(attrs={"data-paragraph-id": anchor})
-        return node if isinstance(node, Tag) else None
-    node = soup.find(id=anchor)
-    return node if isinstance(node, Tag) else None
-
-
-def float_container_for_reference(target: Tag) -> Tag:
-    current: Tag | None = target
-    fallback = target
-    while current is not None:
-        if current.name in {"body", "html"}:
-            break
-        if current.name in {"figure", "table"}:
-            return current
-        classes = current.get("class", [])
-        if isinstance(classes, str):
-            classes = classes.split()
-        node_id = str(current.get("id") or "")
-        if any(str(item).startswith(("paper-float", "paper-table", "paper-figure")) for item in classes):
-            fallback = current
-        elif node_id.startswith(("fig:", "tab:")):
-            fallback = current
-        current = current.parent if isinstance(current.parent, Tag) else None
-    return fallback
-
-
-def caption_number_for_reference(soup: BeautifulSoup, ref: str) -> str:
-    target = soup.find(id=ref)
-    if not isinstance(target, Tag):
-        return ""
-    container = float_container_for_reference(target)
-    caption = container.find("figcaption") or container.find("caption")
-    if not isinstance(caption, Tag):
-        return ""
-    match = re.search(r"\b(?:Figure|Table)\s+(\d+)\s*:", caption.get_text(" ", strip=True))
-    return match.group(1) if match else ""
-
-
-def stale_resolved_float_reference_issue(issue: SourceIssue, soup: BeautifulSoup | None) -> bool:
-    if soup is None:
-        return False
-    issue_type = first_nonempty(issue.row, "issue_type", "type", max_chars=120).lower()
-    if issue_type not in {"figure_reference", "table_reference", "float_reference"}:
-        return False
-    node = source_anchor_node(soup, primary_anchor(issue.row))
-    if not isinstance(node, Tag):
-        return False
-    checked = 0
-    for link in node.find_all("a"):
-        if not isinstance(link, Tag):
-            continue
-        ref = str(link.get("data-reference") or "").strip()
-        href = str(link.get("href") or "").strip()
-        if not ref and href.startswith("#"):
-            ref = href[1:]
-        if not ref.startswith(("fig:", "tab:")):
-            continue
-        caption_number = caption_number_for_reference(soup, ref)
-        link_text = compact_text(link.get_text(" ", strip=True), max_chars=80)
-        if not caption_number or link_text != caption_number:
-            return False
-        checked += 1
-    return checked > 0
-
-
 def filter_stale_source_issues(
     issues: list[SourceIssue],
-    *,
-    source_soup: BeautifulSoup | None,
 ) -> tuple[list[SourceIssue], list[str]]:
-    kept: list[SourceIssue] = []
-    stale_ids: list[str] = []
-    for issue in issues:
-        if stale_resolved_float_reference_issue(issue, source_soup):
-            stale_ids.append(issue.source_id)
-            continue
-        kept.append(issue)
-    return kept, stale_ids
+    return issues, []
 
 
 def evidence_refs(row: dict[str, Any]) -> list[Any]:
@@ -641,8 +582,7 @@ def compile_artifacts(
     start_index: int = 1,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     source_issues, normalized_jsonl, source_artifacts = load_source_issues(issues_dir)
-    source_soup = load_source_soup(source_artifact)
-    source_issues, stale_source_issue_ids = filter_stale_source_issues(source_issues, source_soup=source_soup)
+    source_issues, stale_source_issue_ids = filter_stale_source_issues(source_issues)
     groups = deduplicate(source_issues)
     findings: list[dict[str, Any]] = []
     source_to_finding: dict[str, str] = {}
@@ -702,8 +642,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--findings-out", required=True, type=Path, help="Output compiled findings.json path")
     parser.add_argument("--annotations-out", required=True, type=Path, help="Output compiled annotations.json path")
     parser.add_argument("--index-out", type=Path, help="Output compiled issue index path")
-    parser.add_argument("--source-artifact", default="", help="Optional current paper-reader source artifact for annotations")
-    parser.add_argument("--source-hash", default="", help="Optional current paper-reader source hash for annotations")
+    parser.add_argument("--source-artifact", default="", help="Optional current manuscript source artifact for overlay annotations")
+    parser.add_argument("--source-hash", default="", help="Optional current manuscript source hash for overlay annotations")
     parser.add_argument("--start-index", type=int, default=1, help="First generated finding number")
     args = parser.parse_args(argv)
 

@@ -31,28 +31,29 @@ def write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def tiny_source_html(path: Path) -> None:
+def tiny_tex(path: Path) -> None:
     path.write_text(
-        """
-<!doctype html>
-<html><body>
-<h1 id="intro">Intro</h1>
-<p data-paragraph-id="p-intro-001">
-  <span data-sentence-id="s-intro-p001-s001">A compact test sentence.</span>
-</p>
-</body></html>
-""",
+        "\n".join(
+            [
+                r"\documentclass{article}",
+                r"\begin{document}",
+                r"\section{Intro}",
+                "Hello.",
+                r"\end{document}",
+            ]
+        ),
         encoding="utf-8",
     )
 
 
-def base_args(root: Path, tex: Path, bundle: Path, source: Path, **overrides):
+def base_args(root: Path, tex: Path, bundle: Path, **overrides):
     values = {
         "input": tex,
         "bundle": bundle,
         "pdf": None,
-        "source_html": source,
         "report_html": bundle / "report.html",
+        "review_units_source": "tex",
+        "paper_view": "pdf-overlay",
         "domains": "all",
         "pages": "all",
         "force_specialists": False,
@@ -75,14 +76,18 @@ def base_args(root: Path, tex: Path, bundle: Path, source: Path, **overrides):
         "prose_shard_threshold": 40_000,
         "prose_shard_size": 35_000,
         "skip_pdf_build": True,
-        "skip_render": True,
         "prepare_only": False,
         "allow_partial_compile": False,
         "full_report": False,
         "skip_final_render": True,
         "skip_audit": True,
-        "inline_images": False,
-        "paper_layout": "source",
+        "pdf_overlay_dpi": 150,
+        "bbox_timeout": 30,
+        "evidence_threshold": 0.80,
+        "rendered_text_warn_threshold": 0.72,
+        "rendered_text_error_threshold": 0.45,
+        "force_rebuild": [],
+        "export_annotated_pdf": False,
         "pdf_timeout": 30,
         "render_timeout": 30,
         "specialist_timeout": 30,
@@ -96,11 +101,9 @@ def test_pipeline_prepare_checkpoint_writes_resume_packets() -> None:
     with tempfile.TemporaryDirectory() as tempdir:
         root = Path(tempdir)
         tex = root / "main.tex"
-        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        tiny_tex(tex)
         bundle = root / "bundle"
-        source = root / "main.source.html"
-        tiny_source_html(source)
-        result = module.run_pipeline(base_args(root, tex, bundle, source, prepare_only=True))
+        result = module.run_pipeline(base_args(root, tex, bundle, prepare_only=True))
         status = json.loads((bundle / "pipeline_status.json").read_text(encoding="utf-8"))
         resume = json.loads((bundle / "phase_a_resume_status.json").read_text(encoding="utf-8"))
         next_step = json.loads((bundle / "phase_a_next_step.json").read_text(encoding="utf-8"))
@@ -128,10 +131,8 @@ def test_pipeline_partial_compile_uses_available_specialist_issues() -> None:
     with tempfile.TemporaryDirectory() as tempdir:
         root = Path(tempdir)
         tex = root / "main.tex"
-        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        tiny_tex(tex)
         bundle = root / "bundle"
-        source = root / "main.source.html"
-        tiny_source_html(source)
         write_json(
             bundle / "issue_artifacts" / "polish_issues.json",
             {
@@ -159,7 +160,7 @@ def test_pipeline_partial_compile_uses_available_specialist_issues() -> None:
                 ],
             },
         )
-        result = module.run_pipeline(base_args(root, tex, bundle, source, allow_partial_compile=True))
+        result = module.run_pipeline(base_args(root, tex, bundle, allow_partial_compile=True))
         findings = json.loads((bundle / "findings.json").read_text(encoding="utf-8"))
         status = json.loads((bundle / "pipeline_status.json").read_text(encoding="utf-8"))
 
@@ -177,10 +178,8 @@ def test_pipeline_writes_phase_b_packet_when_phase_a_artifacts_exist() -> None:
     with tempfile.TemporaryDirectory() as tempdir:
         root = Path(tempdir)
         tex = root / "main.tex"
-        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        tiny_tex(tex)
         bundle = root / "bundle"
-        source = root / "main.source.html"
-        tiny_source_html(source)
         (bundle / "issue_artifacts").mkdir(parents=True)
         write_json(bundle / "cold_skim_frame.json", {"problem": "P", "gap": "G", "idea": "I", "evidence": "E", "boundary": "B"})
         write_json(
@@ -192,7 +191,7 @@ def test_pipeline_writes_phase_b_packet_when_phase_a_artifacts_exist() -> None:
             json.dumps({"paragraph_id": "p-intro-001", "section_id": "intro", "decision": "keep", "all_sentences_reviewed": True}) + "\n",
             encoding="utf-8",
         )
-        result = module.run_pipeline(base_args(root, tex, bundle, source, prepare_only=True))
+        result = module.run_pipeline(base_args(root, tex, bundle, prepare_only=True))
         phase_b_context = json.loads((bundle / "phase_b_context.json").read_text(encoding="utf-8"))
         phase_b_packet = json.loads((bundle / "phase_b_prompt_packet.json").read_text(encoding="utf-8"))
 
@@ -209,27 +208,23 @@ def test_pipeline_builds_shard_manifest_when_review_units_exceed_threshold() -> 
     with tempfile.TemporaryDirectory() as tempdir:
         root = Path(tempdir)
         tex = root / "main.tex"
-        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
-        bundle = root / "bundle"
-        source = root / "main.source.html"
-        source.write_text(
-            """
-<!doctype html>
-<html><body>
-<h1 id="intro">Intro</h1>
-<p data-paragraph-id="p-intro-001"><span data-sentence-id="s-intro-p001-s001">"""
-            + ("Long sentence. " * 200)
-            + """</span></p>
-<h1 id="method">Method</h1>
-<p data-paragraph-id="p-method-001"><span data-sentence-id="s-method-p001-s001">"""
-            + ("Another long sentence. " * 200)
-            + """</span></p>
-</body></html>
-""",
+        tex.write_text(
+            "\n".join(
+                [
+                    r"\documentclass{article}",
+                    r"\begin{document}",
+                    r"\section{Intro}",
+                    "Long sentence. " * 200,
+                    r"\section{Method}",
+                    "Another long sentence. " * 200,
+                    r"\end{document}",
+                ]
+            ),
             encoding="utf-8",
         )
+        bundle = root / "bundle"
         result = module.run_pipeline(
-            base_args(root, tex, bundle, source, prepare_only=True, prose_shard_threshold=10, prose_shard_size=50)
+            base_args(root, tex, bundle, prepare_only=True, prose_shard_threshold=10, prose_shard_size=50)
         )
         manifest = json.loads((bundle / "phase_a_shard_manifest.json").read_text(encoding="utf-8"))
 
@@ -246,16 +241,13 @@ def test_pipeline_can_invoke_prose_agent_dry_run() -> None:
     with tempfile.TemporaryDirectory() as tempdir:
         root = Path(tempdir)
         tex = root / "main.tex"
-        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        tiny_tex(tex)
         bundle = root / "bundle"
-        source = root / "main.source.html"
-        tiny_source_html(source)
         result = module.run_pipeline(
             base_args(
                 root,
                 tex,
                 bundle,
-                source,
                 prepare_only=True,
                 prose_agent_cmd="not-a-real-agent",
                 prose_dry_run=True,
@@ -275,10 +267,8 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
     with tempfile.TemporaryDirectory() as tempdir:
         root = Path(tempdir)
         tex = root / "main.tex"
-        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        tiny_tex(tex)
         bundle = root / "bundle"
-        source = root / "main.source.html"
-        tiny_source_html(source)
         fake_agent = root / "fake_prose_agent.py"
         fake_agent.write_text(
             textwrap.dedent(
@@ -406,7 +396,7 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
                     write_json(
                         bundle / "salvageable_core.json",
                         {
-                            "core": "The fixture keeps a clean minimal paper-reader path.",
+                            "core": "The fixture keeps a clean minimal PDF overlay path.",
                             "must_fix": ["Make the first claim self-contained."],
                         },
                     )
@@ -437,7 +427,6 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
                 root,
                 tex,
                 bundle,
-                source,
                 prose_agent_cmd=f"{sys.executable} {fake_agent}",
                 prose_max_iterations=3,
                 skip_final_render=False,
@@ -457,29 +446,29 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
     if len(annotations.get("annotations", [])) != 2:
         raise AssertionError(f"Expected two annotations, got {annotations}")
     step_names = [step["name"] for step in status["steps"]]
-    for required in ("run_prose_agent", "compile_review_artifacts", "render_final_report", "audit_html_report", "audit_review_artifacts"):
+    for required in ("run_prose_agent", "compile_review_artifacts", "audit_html_report", "audit_review_artifacts"):
         if required not in step_names:
             raise AssertionError(f"Pipeline did not run {required}: {step_names}")
+    if not ({"render_pdf_overlay_report", "render_issue_report"} & set(step_names)):
+        raise AssertionError(f"Pipeline did not run a final HTML renderer: {step_names}")
     if "The paper-level contribution is not yet self-contained" not in html:
         raise AssertionError("Final report did not render the fake whole-paper finding")
-    if 'data-report-kind="paper-reader-only"' not in html:
-        raise AssertionError("Default pipeline render should be paper-reader-only")
+    if 'data-report-kind="issue-report-only"' not in html:
+        raise AssertionError("Default no-PDF pipeline render should fall back to issue-report-only")
     if 'id="issue-index"' in html:
-        raise AssertionError("Default paper-reader render should not append workbench issue tables")
+        raise AssertionError("Default PDF overlay render should not append workbench issue tables")
     section_ids = [section["id"] for section in manifest.get("sections", []) if section.get("status") == "rendered"]
-    if section_ids != ["paper-reader", "coverage-receipt"]:
-        raise AssertionError(f"Paper-reader manifest should only declare rendered overlay sections, got {section_ids}")
+    if section_ids != ["issue-report", "coverage-receipt"]:
+        raise AssertionError(f"Report-only manifest should declare issue report sections, got {section_ids}")
 
 
-def test_full_report_flag_is_opt_in_for_final_render() -> None:
+def test_report_only_render_uses_issue_report_renderer() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tempdir:
         root = Path(tempdir)
         tex = root / "main.tex"
-        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        tiny_tex(tex)
         bundle = root / "bundle"
-        source = root / "main.source.html"
-        tiny_source_html(source)
         (bundle / "annotations.json").parent.mkdir(parents=True, exist_ok=True)
         write_json(bundle / "annotations.json", {"annotations": []})
         write_json(bundle / "findings.json", {"findings": []})
@@ -492,9 +481,10 @@ def test_full_report_flag_is_opt_in_for_final_render() -> None:
             issue_artifacts=bundle / "issue_artifacts",
             pdf=None,
             report_html=bundle / "report.html",
-            source_html=source,
             review_units_jsonl=bundle / "main.review_units.jsonl",
             review_units_md=bundle / "main.review_units.md",
+            sentence_bbox=bundle / "sentence_bbox.json",
+            pdf_overlay_html=bundle / "ariadne_review_pdf" / "index.html",
         )
         calls: list[list[str]] = []
 
@@ -505,14 +495,11 @@ def test_full_report_flag_is_opt_in_for_final_render() -> None:
         original_run_command = module.run_command
         module.run_command = fake_run_command
         try:
-            module.render_final(ctx, base_args(root, tex, bundle, source, skip_final_render=False, full_report=False))
-            if "--full-report" in calls[-1]:
-                raise AssertionError("Default final render should not pass --full-report")
-            if "--paper-layout" not in calls[-1] or calls[-1][calls[-1].index("--paper-layout") + 1] != "source":
-                raise AssertionError(f"Default final render should pass source paper layout, got {calls[-1]}")
-            module.render_final(ctx, base_args(root, tex, bundle, source, skip_final_render=False, full_report=True))
-            if "--full-report" not in calls[-1]:
-                raise AssertionError("Explicit full_report=True should pass --full-report")
+            module.render_final(ctx, base_args(root, tex, bundle, skip_final_render=False, paper_view="report-only"))
+            if "render_issue_report_html.py" not in calls[-1][1]:
+                raise AssertionError(f"Report-only final render should use issue renderer, got {calls[-1]}")
+            if "render_paper_html.py" in " ".join(calls[-1]):
+                raise AssertionError(f"Report-only final render must not use legacy paper HTML renderer: {calls[-1]}")
         finally:
             module.run_command = original_run_command
 
@@ -550,9 +537,10 @@ Hello \citep{demo}.
             issue_artifacts=bundle / "issue_artifacts",
             pdf=pdf,
             report_html=bundle / "report.html",
-            source_html=root / "main.source.html",
             review_units_jsonl=bundle / "main.review_units.jsonl",
             review_units_md=bundle / "main.review_units.md",
+            sentence_bbox=bundle / "sentence_bbox.json",
+            pdf_overlay_html=bundle / "ariadne_review_pdf" / "index.html",
         )
         calls: list[list[str]] = []
 
@@ -569,7 +557,7 @@ Hello \citep{demo}.
         original_run_command = module.run_command
         module.run_command = fake_run_command
         try:
-            module.build_pdf_if_needed(ctx, base_args(root, tex, bundle, root / "main.source.html", skip_pdf_build=False))
+            module.build_pdf_if_needed(ctx, base_args(root, tex, bundle, skip_pdf_build=False))
         finally:
             module.run_command = original_run_command
 
@@ -615,7 +603,7 @@ def test_build_pdf_parses_full_stdout_not_truncated_tail() -> None:
     with tempfile.TemporaryDirectory() as tempdir:
         root = Path(tempdir)
         tex = root / "main.tex"
-        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        tiny_tex(tex)
         pdf = tex.with_suffix(".pdf")
         pdf.write_bytes(b"%PDF-1.4\n")
         bundle = root / "bundle"
@@ -626,9 +614,10 @@ def test_build_pdf_parses_full_stdout_not_truncated_tail() -> None:
             issue_artifacts=bundle / "issue_artifacts",
             pdf=None,
             report_html=bundle / "report.html",
-            source_html=root / "main.source.html",
             review_units_jsonl=bundle / "main.review_units.jsonl",
             review_units_md=bundle / "main.review_units.md",
+            sentence_bbox=bundle / "sentence_bbox.json",
+            pdf_overlay_html=bundle / "ariadne_review_pdf" / "index.html",
         )
 
         def fake_run_command(name, cmd, *, outputs=None, timeout=300):
@@ -645,7 +634,7 @@ def test_build_pdf_parses_full_stdout_not_truncated_tail() -> None:
         original_run_command = module.run_command
         module.run_command = fake_run_command
         try:
-            module.build_pdf_if_needed(ctx, base_args(root, tex, bundle, root / "main.source.html", skip_pdf_build=False))
+            module.build_pdf_if_needed(ctx, base_args(root, tex, bundle, skip_pdf_build=False))
         finally:
             module.run_command = original_run_command
 
@@ -658,7 +647,7 @@ def test_stale_layout_audit_is_refreshed_against_current_pdf() -> None:
     with tempfile.TemporaryDirectory() as tempdir:
         root = Path(tempdir)
         tex = root / "main.tex"
-        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        tiny_tex(tex)
         pdf = tex.with_suffix(".pdf")
         pdf.write_bytes(b"%PDF-1.4\ncurrent")
         bundle = root / "bundle"
@@ -699,9 +688,10 @@ def test_stale_layout_audit_is_refreshed_against_current_pdf() -> None:
             issue_artifacts=issue_artifacts,
             pdf=pdf,
             report_html=bundle / "report.html",
-            source_html=root / "main.source.html",
             review_units_jsonl=bundle / "main.review_units.jsonl",
             review_units_md=bundle / "main.review_units.md",
+            sentence_bbox=bundle / "sentence_bbox.json",
+            pdf_overlay_html=bundle / "ariadne_review_pdf" / "index.html",
         )
         calls: list[str] = []
 
@@ -751,7 +741,7 @@ def test_stale_layout_audit_is_refreshed_against_current_pdf() -> None:
         module.run_command = fake_run_command
         module.shutil.which = lambda name: "/usr/bin/pdftotext-test" if name == "pdftotext" else original_which(name)
         try:
-            module.refresh_stale_layout_artifacts(ctx, base_args(root, tex, bundle, root / "main.source.html"))
+            module.refresh_stale_layout_artifacts(ctx, base_args(root, tex, bundle))
         finally:
             module.run_command = original_run_command
             module.shutil.which = original_which
@@ -771,6 +761,148 @@ def test_stale_layout_audit_is_refreshed_against_current_pdf() -> None:
         raise AssertionError(f"Expected refresh warning, got {ctx.warnings}")
 
 
+def test_pdf_overlay_path_uses_tex_units_and_overlay_renderer() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        tex = root / "main.tex"
+        tiny_tex(tex)
+        pdf = tex.with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF-1.4\n")
+        bundle = root / "bundle"
+        calls: list[str] = []
+
+        def fake_run_command(name, cmd, *, outputs=None, timeout=300):  # noqa: ARG001
+            calls.append(name)
+            for output in outputs or []:
+                path = Path(output)
+                if path.suffix:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    if path.name.endswith(".jsonl"):
+                        path.write_text(
+                            json.dumps(
+                                {
+                                    "kind": "paragraph",
+                                    "paragraph_id": "p-front-matter-001",
+                                    "section_id": "front-matter",
+                                    "sentences": [
+                                        {
+                                            "sentence_id": "s-front-matter-001-s001",
+                                            "unit_kind": "prose",
+                                            "text": "Hello.",
+                                            "rendered_text_initial": "Hello.",
+                                            "source_file": str(tex),
+                                            "line_start": 1,
+                                            "line_end": 1,
+                                            "text_hash": "sha256:11111111",
+                                        }
+                                    ],
+                                }
+                            )
+                            + "\n",
+                            encoding="utf-8",
+                        )
+                    elif path.name.endswith(".md"):
+                        path.write_text("{s-front-matter-001-s001} Hello.\n", encoding="utf-8")
+                    elif path.name == "findings.json":
+                        write_json(path, {"findings": []})
+                    elif path.name == "annotations.json":
+                        write_json(path, {"annotations": []})
+                    elif path.name == "sentence_bbox.json":
+                        write_json(path, {"anchors": {}})
+                    elif path.name.endswith(".html"):
+                        path.write_text(
+                            '<article class="review-report" data-report-kind="pdf-overlay"><section id="paper-reader"><div class="paper-pane pdf-paper-pane" data-paper-view="pdfjs-overlay" data-source-artifact="x" data-source-hash="sha256:11111111" data-sentence-id-scheme="section-paragraph-sentence-v2" data-annotation-mode="pdfjs-overlay"></div><aside id="annotation-panel"></aside></section><section id="bbox-diagnostics"></section><section id="coverage-receipt"></section></article>',
+                            encoding="utf-8",
+                        )
+                    else:
+                        write_json(path, {})
+            return module.PipelineStep(name, "completed", command=cmd, outputs=[str(path) for path in outputs or []])
+
+        original_run_command = module.run_command
+        module.run_command = fake_run_command
+        try:
+            result = module.run_pipeline(
+                base_args(
+                    root,
+                    tex,
+                    bundle,
+                    pdf=pdf,
+                    review_units_source="tex",
+                    paper_view="pdf-overlay",
+                    allow_partial_compile=True,
+                    skip_specialists=True,
+                    skip_final_render=False,
+                    skip_audit=True,
+                )
+            )
+        finally:
+            module.run_command = original_run_command
+
+    if result["state"] != "complete":
+        raise AssertionError(f"Expected complete pdf-overlay run, got {result}")
+    if "extract_tex_review_units" not in calls:
+        raise AssertionError(f"Expected TeX review-unit extraction, got {calls}")
+    if "render_pdf_overlay_report" not in calls:
+        raise AssertionError(f"Expected PDF overlay renderer, got {calls}")
+
+
+def test_tex_review_units_source_artifact_is_entry_tex() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        tex = root / "main.tex"
+        tiny_tex(tex)
+        bundle = root / "bundle"
+        args = base_args(root, tex, bundle, review_units_source="tex")
+        ctx = module.initialize_context(args)
+
+    if module.current_source_artifact(ctx, args) != tex.resolve():
+        raise AssertionError("TeX review-unit mode should bind audits to the entry .tex source")
+
+
+def test_prepare_layout_audit_runs_before_tex_review_units_when_pdf_exists() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        tex = root / "main.tex"
+        tiny_tex(tex)
+        pdf = tex.with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF-1.4\n")
+        bundle = root / "bundle"
+        ctx = module.initialize_context(base_args(root, tex, bundle, pdf=pdf))
+        calls: list[str] = []
+
+        def fake_run_command(name, cmd, *, outputs=None, timeout=300):  # noqa: ARG001
+            calls.append(name)
+            for output in outputs or []:
+                path = Path(output)
+                write_json(
+                    path,
+                    {
+                        "pdf_hash": module.sha256_path(pdf),
+                        "pages_total": 1,
+                        "pages_checked": [1],
+                        "page_summaries": [],
+                        "observations": [],
+                    },
+                )
+            return module.PipelineStep(name, "completed", command=cmd, outputs=[str(path) for path in outputs or []])
+
+        original_run_command = module.run_command
+        original_which = module.shutil.which
+        module.run_command = fake_run_command
+        module.shutil.which = lambda name: "/usr/bin/pdftotext-test" if name == "pdftotext" else original_which(name)
+        try:
+            module.prepare_layout_audit_for_review_units(ctx, base_args(root, tex, bundle, pdf=pdf))
+        finally:
+            module.run_command = original_run_command
+            module.shutil.which = original_which
+
+    if calls != ["prepare_layout_audit_for_review_units"]:
+        raise AssertionError(f"Expected layout audit prep call, got {calls}")
+
+
 if __name__ == "__main__":
     test_pipeline_prepare_checkpoint_writes_resume_packets()
     test_pipeline_partial_compile_uses_available_specialist_issues()
@@ -778,9 +910,12 @@ if __name__ == "__main__":
     test_pipeline_builds_shard_manifest_when_review_units_exceed_threshold()
     test_pipeline_can_invoke_prose_agent_dry_run()
     test_pipeline_fake_agent_end_to_end_compile_render_audit()
-    test_full_report_flag_is_opt_in_for_final_render()
+    test_report_only_render_uses_issue_report_renderer()
     test_existing_pdf_with_missing_bibliography_is_rebuilt()
     test_biblatex_with_optional_resource_marks_existing_pdf_incomplete()
     test_build_pdf_parses_full_stdout_not_truncated_tail()
     test_stale_layout_audit_is_refreshed_against_current_pdf()
+    test_pdf_overlay_path_uses_tex_units_and_overlay_renderer()
+    test_tex_review_units_source_artifact_is_entry_tex()
+    test_prepare_layout_audit_runs_before_tex_review_units_when_pdf_exists()
     print("run_review_pipeline regression tests passed")

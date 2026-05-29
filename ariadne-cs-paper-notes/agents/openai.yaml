@@ -8,4 +8,11 @@ interface:
     numeric, reference, symbol, source-hygiene, figure-caption, and polish
     checks to conditional specialist agents, then compile JSON artifacts and
     render/audit the final report with local tools rather than hand-written
-    HTML.
+    HTML. The default full-paper HTML output is the PDF overlay reader:
+    run_review_pipeline.py <main.tex-or-project> --paper-view pdf-overlay.
+    For cross-template release validation, use
+    run_pdf_overlay_full_review_matrix.py with a real --prose-agent-cmd.
+    For stdin-based CLIs, bridge packets with run_agent_command.py
+    --env CODEX_HOME=.ariadne_codex_home --stdin-prompt --command '<cli command>'.
+    Use --paper-view report-only only when the user asks for a findings
+    report without displaying the paper body, or when no PDF is available.
