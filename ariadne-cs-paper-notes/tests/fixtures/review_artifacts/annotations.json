@@ -23,11 +23,17 @@
       "sentence_id": "s-1-introduction-p002-s001",
       "severity": "minor",
       "issue_type": "prose",
-      "title": "Fixture sentence note",
-      "problem": "Sentence-level fixture issue.",
-      "why": "Reader needs the issue to be explicit.",
-      "principle": "reader-first",
-      "self_check": "Can the sentence be read without guessing?"
+      "title": "句子任务不清",
+      "problem": "这个句子没有说明自己要推进哪个 claim。",
+      "why": "读者必须自己猜这句话和中心主张的关系。",
+      "reader_friction": "读者必须自己猜这句话和中心主张的关系。",
+      "principle": "显式逻辑，不让读者猜",
+      "writing_principle": "显式逻辑，不让读者猜",
+      "self_check": "下一稿能否让读者不靠脑补就说出这句话服务哪个 claim？",
+      "confidence": "medium",
+      "evidence_refs": [{"source_artifact": "source_paper_reader.html", "anchor": "s-1-introduction-p002-s001"}],
+      "severity_rationale": "该句削弱局部阅读路径，但不改变整篇证据判断。",
+      "downgrade_condition": "句子明确接上前后 claim 后可降级。"
     },
     {
       "issue_id": "A4",

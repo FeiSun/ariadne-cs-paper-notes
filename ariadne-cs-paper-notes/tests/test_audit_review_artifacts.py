@@ -53,15 +53,17 @@ def valid_finding(**overrides: object) -> dict[str, object]:
         "id": "F1",
         "severity": "Blocker",
         "location": "Abstract",
-        "diagnosis": "Abstract missing.",
-        "reader_friction": "Reader cannot recover the paper story.",
-        "writing_principle": "first-page reader test",
-        "next_draft_task": "Add problem/gap/idea/evidence/boundary.",
+        "domain": "layout",
+        "diagnosis": "摘要缺少问题、缺口、核心想法和证据边界。",
+        "reader_friction": "读者无法从第一页恢复这篇论文想让自己相信什么。",
+        "writing_principle": "低认知负担 / reader-first",
+        "self_check": "下一稿能否让读者只看摘要就说出问题、缺口、想法、证据和边界？",
+        "next_draft_task": "补齐 problem/gap/idea/evidence/boundary。",
         "evidence_basis": "rendered PDF",
         "verification_method": "PDF visual pass",
         "confidence": "high",
-        "severity_rationale": "First-page recoverability fails.",
-        "downgrade_condition": "Complete abstract added.",
+        "severity_rationale": "第一页无法恢复主线会直接影响审稿人是否继续相信后文。",
+        "downgrade_condition": "摘要补齐主线闭环后可降级。",
     }
     payload.update(overrides)
     return payload
@@ -116,6 +118,42 @@ def test_high_risk_finding_requires_downgrade_condition() -> None:
         path.unlink(missing_ok=True)
     if not any("downgrade_condition" in error for error in errors):
         raise AssertionError(f"Expected downgrade_condition error, got {errors}")
+
+
+def test_visible_prose_finding_rejects_english_or_fallback_contract() -> None:
+    module = load_module()
+    finding = valid_finding(
+        domain="prose",
+        diagnosis="The opening overclaims without an evidence boundary.",
+        reader_friction="The reader cannot recover the boundary.",
+        writing_principle="reader-first prose",
+        self_check="Can the next draft clarify the boundary?",
+    )
+    path = write_json({"findings": [finding]})
+    try:
+        errors, _ = module.audit_artifacts(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("Chinese" in error or "closed Ariadne principle" in error for error in errors):
+        raise AssertionError(f"Expected visible Prose language/principle errors, got {errors}")
+
+    fallback = valid_finding(domain="whole_paper", compiler_fallback_fields=["reader_friction"])
+    path = write_json({"findings": [fallback]})
+    try:
+        errors, _ = module.audit_artifacts(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("compiler fallback" in error for error in errors):
+        raise AssertionError(f"Expected compiler fallback error, got {errors}")
+
+    issue_type_fallback = valid_finding(domain="", issue_type="prose", compiler_fallback_fields=["self_check"])
+    path = write_json({"findings": [issue_type_fallback]})
+    try:
+        errors, _ = module.audit_artifacts(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not any("compiler fallback" in error for error in errors):
+        raise AssertionError(f"Expected issue_type-only compiler fallback error, got {errors}")
 
 
 def test_json_finding_must_render_or_be_deferred() -> None:
@@ -423,6 +461,91 @@ def test_full_paper_annotations_must_not_be_top_issue_sample() -> None:
         raise AssertionError(f"Expected sampled annotation-density error, got {errors}")
 
 
+def test_full_paper_receipts_allow_sparse_visible_annotations() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        bundle = Path(tempdir)
+        (bundle / "issue_artifacts").mkdir()
+        review_units = bundle / "paper.review_units.jsonl"
+        review_units.write_text(
+            "\n".join(
+                json.dumps({"kind": "paragraph", "paragraph_id": f"p{idx}", "section_id": "intro"})
+                for idx in range(1, 101)
+            )
+            + "\n"
+            + json.dumps({"kind": "section", "section_id": "intro", "text": "Intro"})
+            + "\n",
+            encoding="utf-8",
+        )
+        (bundle / "paragraph_decisions.jsonl").write_text(
+            "\n".join(
+                json.dumps(
+                    {
+                        "paragraph_id": f"p{idx}",
+                        "section_id": "intro",
+                        "decision": "keep",
+                        "paragraph_job": "完成局部论证任务。",
+                        "next_draft_task": "保持即可。",
+                        "all_sentences_reviewed": True,
+                    },
+                    ensure_ascii=False,
+                )
+                for idx in range(1, 101)
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (bundle / "section_reflections.json").write_text(
+            json.dumps(
+                {"sections": [{"section_id": "intro", "one_line": "已深读。", "role_in_argument": "铺垫。", "unresolved_questions": []}]},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        coverage = write_json(
+            {
+                "requested_scope": "Full main.tex full-paper 逐句 review",
+                "units": [
+                    {"unit": "sentences", "total": 520, "reviewed": 520, "with_issues": 1, "clean": 519, "skipped": 0},
+                    {"unit": "paragraphs", "total": 100, "reviewed": 100, "with_issues": 0, "clean": 100, "skipped": 0},
+                    {"unit": "sections/headings", "total": 1, "reviewed": 1, "with_issues": 0, "clean": 1, "skipped": 0},
+                ],
+                "reader_journey_passes": [{"pass": f"Pass {idx}", "status": "done"} for idx in range(7)],
+            }
+        )
+        annotations = write_json(
+            {
+                "annotations": [
+                    {
+                        "issue_id": "A1",
+                        "target_level": "sentence",
+                        "sentence_id": "s-intro-001",
+                        "severity": "major",
+                        "issue_type": "claim",
+                        "problem": "有一个可见问题。",
+                        "why": "读者会卡住。",
+                        "principle": "显式逻辑，不让读者猜",
+                        "self_check": "下一稿能否补齐逻辑桥？",
+                    }
+                ]
+            }
+        )
+        try:
+            errors, warnings = module.audit_artifacts(
+                ARTIFACTS / "findings.json",
+                coverage_path=coverage,
+                annotations_path=annotations,
+                bundle_path=bundle,
+            )
+        finally:
+            coverage.unlink(missing_ok=True)
+            annotations.unlink(missing_ok=True)
+    if any("top-issue sampling" in error or "paragraph coverage" in error for error in errors):
+        raise AssertionError(f"Complete Phase A receipts should allow sparse visible annotations, got errors={errors}")
+    if any("50 or fewer annotations" in warning for warning in warnings):
+        raise AssertionError(f"Complete Phase A receipts should suppress sparse annotation warning, got warnings={warnings}")
+
+
 def test_annotations_must_match_current_source_hash() -> None:
     module = load_module()
     payload = json.loads((ARTIFACTS / "annotations.json").read_text(encoding="utf-8"))
@@ -619,6 +742,139 @@ def test_sharded_phase_a_requires_phase_b_synthesis_for_full_audit() -> None:
         raise AssertionError(f"Completed sharded Phase B should pass guard, got errors={errors}, warnings={warnings}")
 
 
+def test_strict_provenance_requires_agent_receipt() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        bundle = Path(tempdir)
+        findings = bundle / "findings.json"
+        findings.write_text(json.dumps({"findings": [valid_finding()]}), encoding="utf-8")
+        errors, _warnings = module.audit_artifacts(findings, bundle_path=bundle, strict_provenance=True)
+    if not any("agent_provenance.json" in error for error in errors):
+        raise AssertionError(f"Expected missing provenance error, got {errors}")
+
+
+def test_strict_claim_links_are_errors() -> None:
+    module = load_module()
+    finding = write_json({"findings": [valid_finding(id="F1")]})
+    claims = write_json(
+        {
+            "claims": [
+                {
+                    "claim_id": "C1",
+                    "claim_text": "Claim",
+                    "location": "Intro",
+                    "claim_type": "fixture",
+                    "strength": "strong",
+                    "required_evidence": "Evidence",
+                    "visible_evidence": "Evidence",
+                    "status": "supported",
+                    "next_draft_task": "None",
+                    "linked_findings": ["WB001"],
+                }
+            ]
+        }
+    )
+    try:
+        errors, _warnings = module.audit_artifacts(finding, claims_path=claims, strict_provenance=True)
+    finally:
+        finding.unlink(missing_ok=True)
+        claims.unlink(missing_ok=True)
+    if not any("WB001" in error for error in errors):
+        raise AssertionError(f"Expected broken claim link as strict error, got {errors}")
+
+
+def test_strict_claim_links_accept_compiled_source_mapping() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        bundle = Path(tempdir)
+        issues = bundle / "issue_artifacts"
+        issues.mkdir()
+        findings = bundle / "findings.json"
+        claims = bundle / "claims.json"
+        findings.write_text(json.dumps({"findings": [valid_finding(id="F7")]}), encoding="utf-8")
+        claims.write_text(
+            json.dumps(
+                {
+                    "claims": [
+                        {
+                            "claim_id": "C1",
+                            "claim_text": "Claim",
+                            "location": "Intro",
+                            "claim_type": "fixture",
+                            "strength": "strong",
+                            "required_evidence": "Evidence",
+                            "visible_evidence": "Evidence",
+                            "status": "supported",
+                            "next_draft_task": "None",
+                            "linked_findings": ["whole_paper:WB001"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (issues / "compiled_issue_index.json").write_text(
+            json.dumps(
+                {
+                    "artifact_type": "ariadne_compiled_issue_index",
+                    "schema_version": 1,
+                    "source_to_finding_id": {"whole_paper:WB001": "F7"},
+                    "normalized_jsonl_shards": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        errors, _warnings = module.audit_artifacts(findings, claims_path=claims, bundle_path=bundle, strict_provenance=True)
+    if any("whole_paper:WB001" in error for error in errors):
+        raise AssertionError(f"Mapped source claim link should pass, got {errors}")
+
+
+def test_coverage_requires_blind_spot_for_zero_effective_specialist() -> None:
+    module = load_module()
+    coverage = {
+        "units": [{"unit": "Specialist issue artifacts", "total": 0, "reviewed": 0, "with_issues": 0, "clean": 0, "skipped": 0}],
+        "issue_artifact_coverage": [
+            {"domain": "numeric", "status": "completed_no_signals", "checked": 0, "issues": 0, "skip_reason": "no signals"}
+        ],
+        "known_blind_spots": [],
+    }
+    errors, _warnings = module.audit_specialist_blind_spots(coverage)
+    if not any("known_blind_spots" in error and "numeric" in error for error in errors):
+        raise AssertionError(f"Expected missing numeric blind spot error, got {errors}")
+
+
+def test_phase_a_receipts_reject_nonmonotonic_and_unanchored_issues() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        bundle = Path(tempdir)
+        issues = bundle / "issue_artifacts"
+        issues.mkdir()
+        (bundle / "main.review_units.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps({"kind": "paragraph", "paragraph_id": "p1", "section_id": "intro"}),
+                    json.dumps({"kind": "paragraph", "paragraph_id": "p2", "section_id": "intro"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (bundle / "paragraph_decisions.jsonl").write_text(
+            json.dumps({"paragraph_id": "p2", "section_id": "intro"}) + "\n"
+            + json.dumps({"paragraph_id": "p1", "section_id": "intro"}) + "\n",
+            encoding="utf-8",
+        )
+        (bundle / "section_reflections.json").write_text(
+            json.dumps({"sections": [{"section_id": "intro"}]}),
+            encoding="utf-8",
+        )
+        (issues / "prose_issues.jsonl").write_text(json.dumps({"local_id": "P1", "section_id": "intro"}) + "\n", encoding="utf-8")
+        coverage = {"requested_scope": "full paper main.tex"}
+        errors, _warnings = module.audit_phase_a_receipts(bundle, coverage, strict=True)
+    if not any("monotonic" in error for error in errors) or not any("missing anchor" in error for error in errors):
+        raise AssertionError(f"Expected monotonic and anchor errors, got {errors}")
+
+
 def test_issue_artifact_source_hash_is_recomputed_when_source_exists() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tempdir:
@@ -666,7 +922,29 @@ def test_compiled_issue_index_suppresses_jsonl_warning() -> None:
     with tempfile.TemporaryDirectory() as tempdir:
         issues_dir = Path(tempdir)
         shard = issues_dir / "prose_issues.jsonl"
-        shard.write_text(json.dumps({"local_id": "P1", "title": "Issue"}) + "\n", encoding="utf-8")
+        shard.write_text(
+            json.dumps(
+                {
+                    "local_id": "P1",
+                    "severity": "Minor",
+                    "issue_type": "claim_boundary",
+                    "title": "开头主张缺少证据边界",
+                    "diagnosis": "这个句子给出主张，但没有说明对象、范围和证据边界。",
+                    "reader_friction": "读者还不知道证据边界，就被要求接受这个主张。",
+                    "writing_principle": "文字精确性先于 flow",
+                    "self_check": "下一稿能否在这里写清对象、范围和证据边界？",
+                    "confidence": "high",
+                    "evidence_refs": [{"source_artifact": "review_units.jsonl", "anchor": "s1"}],
+                    "severity_rationale": "该问题影响读者判断 claim 的可信度。",
+                    "downgrade_condition": "补齐范围和证据边界后可降级。",
+                    "section_id": "intro",
+                    "target_anchors": ["s1"],
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         (issues_dir / "compiled_issue_index.json").write_text(
             json.dumps(
                 {
@@ -924,12 +1202,18 @@ def main() -> int:
     test_pass_5_layout_observation_requires_explicit_provenance()
     test_forbidden_duplicate_artifacts_are_rejected()
     test_full_paper_annotations_must_not_be_top_issue_sample()
+    test_full_paper_receipts_allow_sparse_visible_annotations()
     test_annotations_must_match_current_source_hash()
     test_issue_artifact_schema_accepts_valid_payload()
     test_issue_artifact_schema_rejects_missing_required_fields()
     test_legacy_bundle_without_issue_artifacts_warns_only()
     test_issue_artifacts_cli_can_run_without_findings()
     test_sharded_phase_a_requires_phase_b_synthesis_for_full_audit()
+    test_strict_provenance_requires_agent_receipt()
+    test_strict_claim_links_are_errors()
+    test_strict_claim_links_accept_compiled_source_mapping()
+    test_coverage_requires_blind_spot_for_zero_effective_specialist()
+    test_phase_a_receipts_reject_nonmonotonic_and_unanchored_issues()
     test_issue_artifact_source_hash_is_recomputed_when_source_exists()
     test_issue_artifact_source_hash_mismatch_is_error()
     test_compiled_issue_index_suppresses_jsonl_warning()

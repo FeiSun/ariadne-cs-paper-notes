@@ -57,6 +57,20 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def path_receipt(path: Path) -> dict[str, Any]:
+    receipt: dict[str, Any] = {"path": str(path), "exists": path.exists()}
+    if path.exists() and path.is_file():
+        receipt["hash"] = sha256_path(path)
+        data = path.read_bytes()
+        receipt["bytes"] = len(data)
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = ""
+        receipt["estimated_tokens"] = max(1, (len(text) + 3) // 4) if text else 0
+    return receipt
+
+
 @dataclass
 class PipelineStep:
     name: str
@@ -565,9 +579,49 @@ def run_vision_figure_agent(ctx: PipelineContext, args: argparse.Namespace) -> N
     append_step(ctx, step)
 
 
+def validate_prose_artifacts(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    if args.allow_partial_compile:
+        ctx.steps.append(PipelineStep("validate_prose_artifacts", "skipped", message="partial compile skips strict prose artifact validation"))
+        return
+    cmd = [
+        sys.executable,
+        script("validate_prose_artifacts.py"),
+        "--review-units",
+        str(ctx.review_units_jsonl),
+        "--prose-issues",
+        str(ctx.issue_artifacts / "prose_issues.jsonl"),
+        "--paragraph-decisions",
+        str(ctx.bundle / "paragraph_decisions.jsonl"),
+        "--section-reflections",
+        str(ctx.bundle / "section_reflections.json"),
+        "--out",
+        str(ctx.bundle / "prose_artifact_validation.json"),
+    ]
+    step = run_command(
+        "validate_prose_artifacts",
+        cmd,
+        outputs=[ctx.bundle / "prose_artifact_validation.json"],
+        timeout=120,
+    )
+    append_step(ctx, step)
+    if step.status != "completed":
+        raise RuntimeError("Prose artifact validation failed; inspect prose_artifact_validation.json")
+
+
 def run_prose_agent(ctx: PipelineContext, args: argparse.Namespace) -> None:
     if not args.prose_agent_cmd:
-        ctx.steps.append(PipelineStep("run_prose_agent", "skipped", message="no prose agent command provided"))
+        ctx.steps.append(
+            PipelineStep(
+                "run_prose_agent",
+                "skipped",
+                message=(
+                    "single-agent artifact mode explicitly allowed; no prose agent command provided; "
+                    "code-level rule_refs resolution did not run"
+                    if args.allow_single_agent
+                    else "no prose agent command provided; code-level rule_refs resolution did not run"
+                ),
+            )
+        )
         return
     cmd = [
         sys.executable,
@@ -596,10 +650,49 @@ def run_prose_agent(ctx: PipelineContext, args: argparse.Namespace) -> None:
     step = run_command(
         "run_prose_agent",
         cmd,
-        outputs=[ctx.bundle / "prose_agent_summary.json"],
+        outputs=[ctx.bundle / "prose_agent_summary.json", ctx.bundle / "agent_provenance.json"],
         timeout=max(args.prose_agent_timeout * max(1, args.prose_max_iterations), args.prose_agent_timeout + 60),
     )
     append_step(ctx, step)
+
+
+def write_single_agent_provenance(ctx: PipelineContext, args: argparse.Namespace) -> None:
+    payload = {
+        "schema_version": 1,
+        "context_policy": "model_readable_agent_provenance_only",
+        "generated_by": "scripts/run_review_pipeline.py",
+        "bundle": str(ctx.bundle),
+        "single_agent": True,
+        "mode": "single_agent",
+        "context_receipt": {
+            "orchestrator_read_full_review_units": True,
+            "review_units_md": path_receipt(ctx.review_units_md),
+            "review_units_jsonl": path_receipt(ctx.review_units_jsonl),
+            "shard_manifest": path_receipt(ctx.bundle / "phase_a_shard_manifest.json"),
+        },
+        "agents": [
+            {
+                "kind": "prose",
+                "phase": args.prose_phase,
+                "command": [],
+                "dry_run": False,
+                "summary": "",
+                "message": "External prose agent was not invoked; caller explicitly allowed single-agent artifact authoring.",
+                "expected_artifacts": {
+                    "phase_a_packet": path_receipt(ctx.bundle / "phase_a_prompt_packet.json"),
+                    "phase_b_packet": path_receipt(ctx.bundle / "phase_b_prompt_packet.json"),
+                    "prose_issues": path_receipt(ctx.issue_artifacts / "prose_issues.jsonl"),
+                    "paragraph_decisions": path_receipt(ctx.bundle / "paragraph_decisions.jsonl"),
+                    "section_reflections": path_receipt(ctx.bundle / "section_reflections.json"),
+                    "cold_skim_frame": path_receipt(ctx.bundle / "cold_skim_frame.json"),
+                    "claim_candidates": path_receipt(ctx.bundle / "claim_candidates.json"),
+                    "whole_paper_findings": path_receipt(ctx.issue_artifacts / "whole_paper_findings.jsonl"),
+                    "claims": path_receipt(ctx.bundle / "claims.json"),
+                },
+            }
+        ],
+    }
+    write_json(ctx.bundle / "agent_provenance.json", payload)
 
 
 def phase_a_status(ctx: PipelineContext) -> dict[str, Any]:
@@ -721,6 +814,31 @@ def can_compile(ctx: PipelineContext, phase_a: dict[str, Any], *, allow_partial:
     return True, ""
 
 
+def prose_provenance_allows_compile(ctx: PipelineContext, args: argparse.Namespace) -> tuple[bool, str]:
+    if args.allow_partial_compile or args.allow_single_agent:
+        return True, ""
+    provenance = ctx.bundle / "agent_provenance.json"
+    summary = ctx.bundle / "prose_agent_summary.json"
+    if not args.prose_agent_cmd:
+        return False, "needs_prose_agent"
+    if not provenance.exists() or not summary.exists():
+        return False, "needs_prose_agent"
+    try:
+        payload = read_json(provenance)
+    except (OSError, json.JSONDecodeError):
+        return False, "needs_prose_agent"
+    agents = payload.get("agents") if isinstance(payload, dict) else None
+    if not isinstance(agents, list) or not agents:
+        return False, "needs_prose_agent"
+    calls = []
+    for agent in agents:
+        if isinstance(agent, dict) and agent.get("kind") == "prose" and isinstance(agent.get("calls"), list):
+            calls.extend(item for item in agent["calls"] if isinstance(item, dict))
+    if not calls or not all(call.get("prompt_file") and call.get("prompt_hash") and call.get("resolved_rule_refs") for call in calls):
+        return False, "needs_prose_agent"
+    return True, ""
+
+
 def compile_artifacts(ctx: PipelineContext) -> None:
     source_hash = sha256_path(ctx.source_html) if ctx.source_html.exists() else ""
     step = run_command(
@@ -834,6 +952,8 @@ def run_audits(ctx: PipelineContext, args: argparse.Namespace) -> None:
     cmd = [
         sys.executable,
         script("audit_review_artifacts.py"),
+        "--bundle",
+        str(ctx.bundle),
         "--findings",
         str(ctx.bundle / "findings.json"),
         "--annotations",
@@ -854,6 +974,8 @@ def run_audits(ctx: PipelineContext, args: argparse.Namespace) -> None:
     claims = ctx.bundle / "claims.json"
     if claims.exists():
         cmd.extend(["--claims", str(claims)])
+    if not args.allow_partial_compile:
+        cmd.append("--strict-provenance")
     layout_audit = usable_layout_audit_path(ctx)
     if layout_audit is not None:
         cmd.extend(["--layout-audit", str(layout_audit)])
@@ -878,6 +1000,12 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         phase_a = phase_a_status(ctx)
         maybe_build_phase_b_context(ctx)
         allowed, blocked_state = can_compile(ctx, phase_a, allow_partial=args.allow_partial_compile)
+        if allowed:
+            provenance_allowed, provenance_state = prose_provenance_allows_compile(ctx, args)
+            if not provenance_allowed:
+                allowed, blocked_state = False, provenance_state
+            elif args.allow_single_agent and not args.allow_partial_compile:
+                write_single_agent_provenance(ctx, args)
         if args.prepare_only or not allowed:
             ctx.state = "prepared" if args.prepare_only else blocked_state
             if ctx.state == "needs_prose_phase_a":
@@ -888,6 +1016,11 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
                     ctx.next_action = f"Run Prose Phase A using `{ctx.bundle / 'phase_a_prompt_packet.json'}`."
             elif ctx.state == "needs_prose_phase_b":
                 ctx.next_action = f"Run Prose Phase B using `{ctx.bundle / 'phase_b_prompt_packet.json'}`."
+            elif ctx.state == "needs_prose_agent":
+                ctx.next_action = (
+                    "Run the pipeline with `--prose-agent-cmd` so rule_refs are resolved into prompt receipts, "
+                    "or pass `--allow-single-agent` to explicitly mark single-agent artifact mode."
+                )
             else:
                 shard_manifest = ctx.bundle / "phase_a_shard_manifest.json"
                 if shard_manifest.exists():
@@ -897,6 +1030,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             status_path = record_status(ctx)
             return {"status_path": status_path, "state": ctx.state, "next_action": ctx.next_action}
         requested_scope = "partial compiled Ariadne review" if args.allow_partial_compile else "full compiled Ariadne review"
+        validate_prose_artifacts(ctx, args)
         compile_artifacts(ctx)
         build_derivatives(ctx, requested_scope=requested_scope, full_report=args.full_report)
         render_final(ctx, args)
@@ -935,6 +1069,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vision-figure-agent-timeout", type=int, default=1200)
     parser.add_argument("--vision-figure-dry-run", action="store_true")
     parser.add_argument("--prose-agent-cmd", help="Optional external agent command for run_prose_agent.py")
+    parser.add_argument("--allow-single-agent", action="store_true", help="Explicitly allow compiling full-paper prose artifacts without an external prose agent provenance receipt")
     parser.add_argument("--prose-phase", default="all", choices=("phase_a", "phase_b", "all"), help="Prose phase(s) to run when --prose-agent-cmd is provided")
     parser.add_argument("--prose-max-iterations", type=int, default=200, help="Maximum Phase A agent iterations")
     parser.add_argument("--prose-agent-timeout", type=int, default=1800, help="Timeout per prose agent command call")

@@ -4,19 +4,37 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 
-def sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return f"sha256:{digest.hexdigest()}"
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from prose_rule_refs import SHARD_BASE_PHASE_A_RULES, shard_rule_refs, sha256_path  # noqa: E402
+from review_language_contract import CHINESE_OUTPUT_INSTRUCTIONS, TEACHING_FIELDS  # noqa: E402
+
+
+PROSE_ISSUE_MINIMUM_FIELDS = [
+    "local_id",
+    "severity",
+    "issue_type",
+    "title",
+    "diagnosis",
+    "reader_friction",
+    "writing_principle",
+    "self_check",
+    "confidence",
+    "evidence_refs",
+    "severity_rationale",
+    "downgrade_condition",
+    "target_anchors",
+    "section_id",
+]
 
 
 def compact_text(value: Any, *, max_chars: int = 240) -> str:
@@ -118,6 +136,7 @@ def packet_for_shard(*, bundle: Path, review_units_md: Path, review_units_jsonl:
         "generated_by": "scripts/build_prose_shards.py",
         "phase": "phase_a_shard",
         "objective": "Run Ariadne Prose Phase A on this explicit shard, preserving cross-section notes for the later mandatory synthesis pass.",
+        "rule_refs": shard_rule_refs(shard),
         "read_inputs": [
             {
                 "path": str(review_units_md),
@@ -158,11 +177,33 @@ def packet_for_shard(*, bundle: Path, review_units_md: Path, review_units_jsonl:
                 "required": True,
             },
         },
+        "output_contract": {
+            "prose_issues_jsonl": {
+                "minimum_fields": PROSE_ISSUE_MINIMUM_FIELDS,
+                "teaching_fields": list(TEACHING_FIELDS),
+                "cross_section_fields": ["target_anchors", "spans_sections", "related_issue_ids"],
+            },
+            "paragraph_decisions_jsonl": {
+                "minimum_fields": [
+                    "paragraph_id",
+                    "section_id",
+                    "decision",
+                    "paragraph_job",
+                    "next_draft_task",
+                    "reviewed_sentence_ids or sentence_checks or all_sentences_reviewed",
+                ],
+            },
+            "section_reflections_json": {
+                "minimum_fields": ["section_id", "one_line", "role_in_argument", "top_issue_ids", "unresolved_questions"],
+            },
+        },
         "instructions": [
-            "Review only the sections listed in shard.section_ids at full sentence/paragraph depth.",
-            "Record cross-section questions as tentative signals, not final whole-paper judgments.",
-            "After all shards complete, a mandatory Phase B synthesis pass must read phase_b_context.json before final report compilation.",
-            "Do not write HTML.",
+            "把 rule_refs 当作可执行 Prose shard 规则；run_prose_agent.py 或其他 prompt wrapper 必须在模型调用前解析这些规则。",
+            *CHINESE_OUTPUT_INSTRUCTIONS,
+            "只对 shard.section_ids 中列出的章节做完整句子/段落深读。",
+            "跨章节疑问只能记录为 tentative signals，不要当作最终整篇判断。",
+            "所有 shard 完成后，必须由 Phase B 综合 pass 读取 phase_b_context.json，再进入最终报告编译。",
+            "不要写 HTML。",
         ],
     }
 

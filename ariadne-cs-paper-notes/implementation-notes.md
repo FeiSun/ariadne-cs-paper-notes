@@ -2,6 +2,28 @@
 
 This file records implementation decisions, tradeoffs, and spec clarifications made while optimizing the Ariadne paper-review skill architecture.
 
+## 2026-05-29: Role-Specific Rule Loading
+
+- Assumptions/decisions:
+  - Prose rules are executable: Phase A/B packets expose `rule_refs`, and provider wrappers resolve those files into prompt text.
+  - Specialist rules are maintenance-only for now; default specialist packets do not receive `rule_refs`.
+- Tradeoffs/deviations:
+  - `review_lenses.md` is retained as a legacy compact reference instead of being deleted.
+  - Specialist rule docs avoid re-encoding deterministic detection logic to reduce doc/code drift with `check_*.py`.
+- Implementation notes:
+  - Added role-specific reviewer-facing rule files under `references/rules/`, derived from the short/full writing tips but rewritten for review execution.
+  - Added Prose `rule_refs` to Phase A, Phase B, and sharded Phase A packets.
+  - Updated `run_agent_command.py` to resolve `rule_refs`, verify optional hashes, and inject rule text into generated prompt files before model invocation.
+- Follow-up quality pass:
+  - Expanded rules with a closed source-principle index, paper-type evidence contracts, weak/strong examples, and self-check question banks from the full writing tips.
+  - Split executable sentence/paragraph guidance into `prose_style_rules.md` so Prose packets no longer load maintenance-only `polish_rules.md`.
+  - Kept specialist docs in maintenance-only mode and added judgment boundaries without duplicating checker detection logic.
+  - `run_prose_agent.py` now renders `ARIADNE_PROMPT_FILE` with resolved rule text before invoking external agents, closing the gap where external `--agent-cmd` providers could otherwise see only rule-ref metadata.
+- Tests:
+  - Focused regression tests cover Phase A/B rule refs, sharded rule selection, prompt rule resolution, missing-rule failure, and specialist packets staying rule-free by default.
+- Follow-ups:
+  - Upgrade individual specialist domains from maintenance docs to executable LLM refinement rules only after a real refinement need appears.
+
 ## 2026-05-23 -- Three-Role Architecture
 
 - Split the old "main reviewer" role into three responsibilities:
@@ -201,7 +223,81 @@ This file records implementation decisions, tradeoffs, and spec clarifications m
   - HTML audit and review artifact audit pass for the compiled and auto-compiled reports.
 - Dry-run artifacts under `debug/Hidden_Knowledge_with_RL2/ariadne_notes_main_20260523/` are validation outputs, not canonical source code.
 
+## 2026-05-30: Prose Rule-Refs Residual Audit
+
+- Assumptions/decisions:
+  - The no-`--prose-agent-cmd` pipeline path remains a checkpoint/native-skill handoff path; it should not pretend code-level prompt rendering occurred.
+- Tradeoffs/deviations:
+  - Introduced a tiny shared `scripts/prose_rule_refs.py` instead of a broader rules package, keeping the change scoped to executable Prose rule metadata.
+- Implementation notes:
+  - Moved Phase A, Phase B, shard-base, and section-specific executable Prose rule lists into `prose_rule_refs.py`.
+  - `build_prose_phase_packet.py` and `build_prose_shards.py` now import shared rule records and hash handling, eliminating the duplicated rule-list drift risk.
+  - `run_review_pipeline.py` now records an explicit skipped step message when no prose agent command is supplied: code-level `rule_refs` resolution did not run.
+- Tests:
+  - Focused packet, shard, prompt wrapper, Prose runner, specialist runner, and pipeline tests passed after the cleanup.
+- Follow-ups:
+  - Keep specialist rule docs maintenance-only until an explicit future workflow upgrades a domain to executable LLM refinement rules.
+
+## 2026-05-30: Full-Paper Provenance Gates and Table Fidelity
+
+- Assumptions/decisions:
+  - Strict full-paper runs must prove external Prose Agent provenance by default; single-agent hand-written Phase A/B artifacts remain available only through explicit `--allow-single-agent`.
+  - Deterministic specialists still do not claim to read maintenance-only specialist rule docs.
+- Tradeoffs/deviations:
+  - Numeric table arithmetic is not fully OCR-certified yet. When no numeric signals are found despite table/booktabs-like source evidence, the pipeline now exposes a visible blind spot instead of silently passing.
+  - Single-agent provenance records the explicit opt-in mode and expected artifacts, but does not fabricate prompt receipts.
+- Implementation notes:
+  - Added agent provenance receipts for external Prose calls, strict provenance/artifact audit checks, Phase A receipt coverage checks, strict broken-claim-link failures, and status-aware specialist coverage.
+  - Normalized Phase B cold-skim fields to `problem`, `gap`, `idea`, `evidence`, `boundary`, and `first_reader_breaks`, with one-time legacy recovery for old `*_recoverable` fields.
+  - Updated paper-reader table rendering to preserve booktabs rule positions, split multi-row headers using `\midrule`, and render tables without per-cell grid borders.
+- Tests:
+  - Focused provenance, Prose runner, prompt wrapper, Phase B input, specialist coverage, derivative coverage, artifact audit, pipeline, renderer, compile, HTML contract, packet, and shard tests passed.
+- Follow-ups:
+  - Improve numeric extraction beyond blind-spot surfacing, especially for PDF/table arithmetic certification.
+  - Add executable LLM specialist provenance only when a concrete specialist-agent workflow is introduced.
+
+## 2026-05-30: Remaining Workflow Coverage Fixes
+
+- Assumptions/decisions:
+  - Numeric source fallback should stay conservative: surface visible summary-column/row recomputation signals and coverage counts, but do not claim full PDF OCR certification.
+  - Inline/local Prose artifact creation remains agent-authored; deterministic code now validates and blocks malformed artifacts before compile instead of generating review prose.
+- Tradeoffs/deviations:
+  - Added a validator rather than a full prose artifact writer. This closes the silent malformed-artifact path while leaving real prose judgment with the Prose Agent.
+  - Context receipts use a simple byte and 4-char token estimate for budgeting. They are provenance/cost signals, not tokenizer-exact accounting.
+- Implementation notes:
+  - `extract_paper_text.py --numeric-json` now supports LaTeX tabular inputs and records numeric coverage even when no actionable recomputation signal is found.
+  - `validate_prose_artifacts.py` validates paragraph decisions, issue anchors, linked local issue ids, section reflections, sentence receipts, and monotonic traversal; `run_review_pipeline.py` runs it before strict full-paper compile.
+  - `audit_review_artifacts.py` now accepts claim links through `compiled_issue_index.source_to_finding_id`, enforces visible blind spots for zero-effective specialists, and checks Phase A ordering/traceability in strict full-paper audit.
+  - `run_prose_agent.py` provenance now includes measured context receipts for packets, prompts, rules, and read inputs; single-agent provenance records that the orchestrator has full review-unit context exposure.
+  - Added `check_runtime_deps.py` to report missing Python/PDF extraction dependencies and one supported install command.
+- Tests:
+  - Focused numeric, specialist, derivative, audit, P1 runner, validator, dependency self-check, Prose runner, pipeline, compiler, prompt wrapper, renderer, Phase B, packet, shard, and HTML contract tests passed.
+- Follow-ups:
+  - Full PDF table OCR/structure certification remains future work.
+
 ## Open Implementation Items
 
 - Add optional vision-enabled figure semantics checks for whether the visual content supports the caption/claim. The current implementation covers source hygiene, rendered-caption geometry, and raster/PDF-preview asset quality signals.
 - Add provider-specific convenience adapters if needed (for example a local Codex/Claude/OpenAI CLI wrapper). The architecture now has provider-neutral runners, but no vendor-specific command is bundled.
+
+## 2026-05-31: 修复中文导师式批注合同退化
+
+- Assumptions/decisions:
+  - `references/rules/` 采用中文主体规则；保留 JSON key、脚本名、必要英文 CS 术语和论文原文片段。
+  - 中文硬门禁只强制 student-visible Prose/whole-paper 批注；deterministic specialist metadata 仍可保留英文字段名和少量英文证据。
+- Tradeoffs/deviations:
+  - 端到端验收使用 `/private/tmp/ariadne_zh_prose_adapter.py` 作为外部 Prose Agent stub，验证 prompt/contract/provenance/render/audit 全链路，不把该临时适配器纳入仓库。
+  - 本机 bundled Python 缺少 `beautifulsoup4`，验收命令通过 `PYTHONPATH=/private/tmp/ariadne-python-deps` 使用临时安装依赖。
+- Implementation notes:
+  - 新增 `scripts/review_language_contract.py`，集中维护中文可见批注合同、闭合写作原则表、教学字段和审计辅助函数。
+  - `run_agent_command.py` 在实际 agent prompt 中硬注入中文导师式输出要求；Phase A/B packet 和 shard packet 把 `reader_friction`, `writing_principle`, `self_check`, `confidence`, `evidence_refs`, `severity_rationale`, `downgrade_condition` 设为必填。
+  - compiler 默认教学字段改为中文，并标记 visible Prose/whole-paper finding 的 compiler fallback；validator/audit 在 strict/full-paper 模式下拒绝英文主体、缺教学字段、非闭合原则和 compiler fallback 伪通过。
+  - renderer 层剩余可见 fallback 文案改为中文；specialist 默认高风险文案和 rule ref purpose 同步中文化。
+- Tests:
+  - 通过脚本式回归测试：`test_run_agent_command.py`, `test_build_prose_phase_packet.py`, `test_build_prose_shards.py`, `test_validate_prose_artifacts.py`, `test_compile_review_artifacts.py`, `test_render_paper_html.py`, `test_audit_review_artifacts.py`, `test_run_review_pipeline.py`, `test_run_prose_agent.py`, `test_build_specialist_issues.py`, `test_run_p1_specialists.py`, `test_build_review_derivatives.py`, `test_html_report_contract.py`, `test_check_runtime_deps.py`, `test_extract_paper_text.py`, `test_build_phase_b_input.py`。
+  - `py_compile` 通过本次修改的核心脚本。
+  - 端到端 bundle `/Users/ofey/Research/ariadne-cs-paper-notes/ariadne-cs-paper-notes/debug/multi_bit_wm/ariadne_notes_acl_latex_zh_acceptance_final` pipeline 状态为 `complete`；HTML audit 和 artifact audit 均通过。
+  - 抽查最终 `findings.json`：41 条可见 Prose/whole-paper finding、22 条 Blocker/Major；缺教学字段、非闭合原则、英文主体、visible compiler fallback 均为 0。HTML 42 个可见卡片全部含中文且无旧英文兜底命中。
+- Follow-ups:
+  - Numeric specialist 在该验收论文上无可操作表格重算信号，bundle 已记录 blind spot；完整 PDF OCR/table-structure certification 仍是未来工作。
+  - HTML audit 保留 warning：paper-reader source text complete but reordered by paged/floating layout；artifact audit 保留 warning：paper_reader source integrity comparison was skipped。

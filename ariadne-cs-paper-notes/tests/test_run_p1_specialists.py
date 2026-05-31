@@ -164,13 +164,13 @@ def test_runner_uses_existing_raw_audits_and_builds_issue_artifacts() -> None:
         raise AssertionError(f"Missing expected issue ids: {ids}")
     statuses = {item["domain"]: item["status"] for item in summary["results"]}
     if statuses != {
-        "layout": "completed",
-        "numeric": "skipped",
-        "reference": "completed",
-        "source_hygiene": "completed",
-        "polish": "completed",
-        "symbol": "completed",
-        "figure_caption": "completed",
+        "layout": "completed_with_issues",
+        "numeric": "completed_no_signals",
+        "reference": "completed_with_issues",
+        "source_hygiene": "completed_with_issues",
+        "polish": "completed_with_issues",
+        "symbol": "completed_with_issues",
+        "figure_caption": "completed_with_issues",
     }:
         raise AssertionError(f"Unexpected runner statuses: {statuses}")
 
@@ -194,8 +194,45 @@ def test_runner_writes_skipped_stubs_without_inputs() -> None:
 
     if errors or warnings:
         raise AssertionError(f"Skipped stubs should audit cleanly, errors={errors}, warnings={warnings}")
-    if any(item["status"] != "skipped" for item in summary["results"]):
+    if any(item["status"] != "skipped_not_requested" for item in summary["results"]):
         raise AssertionError(f"Expected all skipped, got {summary}")
+
+
+def test_numeric_uses_tex_when_pdf_is_absent() -> None:
+    module = load_module(SCRIPT, "run_p1_specialists")
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        bundle = root / "bundle"
+        tex = root / "main.tex"
+        tex.write_text(
+            "\n".join(
+                [
+                    r"\documentclass{article}",
+                    r"\begin{document}",
+                    r"\begin{tabular}{lcccc}",
+                    r"Method & A & B & C & Avg \\",
+                    r"Model & 10.0 & 20.0 & 30.0 & 50.0 \\",
+                    r"\end{tabular}",
+                    r"\end{document}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        summary = module.run_specialists(
+            bundle=bundle,
+            tex=tex,
+            pdf=None,
+            aux=None,
+            bbl=None,
+            domains=["numeric"],
+            force=True,
+            pages="all",
+        )
+        raw = json.loads((bundle / "numeric_audit.json").read_text(encoding="utf-8"))
+    if summary["results"][0]["status"] != "completed_with_issues":
+        raise AssertionError(f"Expected numeric issue from TeX fallback, got {summary}")
+    if raw["coverage"]["source"] != "latex-tabular" or raw["signal_count"] != 1:
+        raise AssertionError(f"Expected LaTeX numeric audit coverage, got {raw}")
 
 
 def test_runner_refreshes_stale_layout_audit_for_current_pdf() -> None:
@@ -248,7 +285,7 @@ def test_runner_refreshes_stale_layout_audit_for_current_pdf() -> None:
                         "schema_version": 1,
                         "domain": "layout",
                         "context_policy": "model_readable_issue_only",
-                        "status": "skipped",
+                        "status": "completed_no_issues",
                         "source_artifacts": [
                             {
                                 "path": str(raw),
@@ -256,7 +293,7 @@ def test_runner_refreshes_stale_layout_audit_for_current_pdf() -> None:
                                 "context_policy": "tool_output_hash_only",
                             }
                         ],
-                        "coverage": {"checked": 1, "issues": 0, "skipped": 1},
+                        "coverage": {"checked": 1, "issues": 0, "skipped": 0},
                         "issues": [],
                     },
                 )
@@ -294,7 +331,7 @@ def test_runner_refreshes_stale_layout_audit_for_current_pdf() -> None:
         raise AssertionError(f"Expected stale layout audit to refresh before issue build, got {command_names}")
     if refreshed["pdf_hash"] != expected_pdf_hash:
         raise AssertionError(f"Refreshed layout audit should bind to current PDF, got {refreshed}")
-    if summary["results"][0]["status"] != "skipped":
+    if summary["results"][0]["status"] != "completed_no_issues":
         raise AssertionError(f"Expected refreshed empty layout issue artifact to be skipped, got {summary}")
 
 
@@ -337,15 +374,15 @@ def test_runner_passes_pdf_to_figure_caption_audit() -> None:
                 "schema_version": 1,
                 "domain": domain,
                 "context_policy": "model_readable_issue_only",
-                "status": "skipped",
+                "status": "completed_no_issues",
                 "source_artifacts": [],
-                "coverage": {"checked": 1, "issues": 0, "skipped": 1},
+                "coverage": {"checked": 1, "issues": 0, "skipped": 0},
                 "issues": [],
             }
             write_json(out, payload)
             return {
                 "domain": domain,
-                "status": "skipped",
+                "status": "completed_no_issues",
                 "raw_audit": str(raw_audit),
                 "issues": str(out),
                 "issue_count": 0,
@@ -373,13 +410,14 @@ def test_runner_passes_pdf_to_figure_caption_audit() -> None:
         raise AssertionError(f"Runner did not pass PDF/page options to figure caption audit: {command}")
     if "--pdftoppm" not in command or "/usr/bin/pdftoppm-test" not in command:
         raise AssertionError(f"Runner did not pass pdftoppm option to figure caption audit: {command}")
-    if summary["results"][0]["status"] != "skipped":
+    if summary["results"][0]["status"] != "completed_no_issues":
         raise AssertionError(f"Empty figure/caption issue artifact should be skipped, got {summary}")
 
 
 if __name__ == "__main__":
     test_runner_uses_existing_raw_audits_and_builds_issue_artifacts()
     test_runner_writes_skipped_stubs_without_inputs()
+    test_numeric_uses_tex_when_pdf_is_absent()
     test_runner_refreshes_stale_layout_audit_for_current_pdf()
     test_runner_passes_pdf_to_figure_caption_audit()
     print("run_p1_specialists regression tests passed")

@@ -11,6 +11,8 @@ JSON/JSONL artifacts named in the packet.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
 import os
 import shlex
@@ -39,6 +41,34 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def estimate_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4) if text else 0
+
+
+def text_stats(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists() or not path.is_file():
+        return {"bytes": 0, "estimated_tokens": 0}
+    data = path.read_bytes()
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = ""
+    return {"bytes": len(data), "estimated_tokens": estimate_tokens(text)}
+
+
 def compact_tail(value: str, *, max_chars: int = 2000) -> str:
     if len(value) <= max_chars:
         return value
@@ -50,6 +80,43 @@ def command_parts(agent_cmd: str) -> list[str]:
     if not parts:
         raise ValueError("--agent-cmd cannot be empty")
     return parts
+
+
+def load_agent_command_module() -> Any:
+    path = SCRIPT_DIR / "run_agent_command.py"
+    spec = importlib.util.spec_from_file_location("ariadne_run_agent_command", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load prompt renderer: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def rule_receipts(packet: dict[str, Any]) -> list[dict[str, str]]:
+    renderer = load_agent_command_module()
+    resolved = renderer.resolve_rule_refs(packet)
+    if hasattr(renderer, "rule_receipts"):
+        return renderer.rule_receipts(resolved)
+    return [
+        {
+            "id": rule["id"],
+            "path": rule["path"],
+            "hash": rule["hash"],
+            **text_stats(Path(rule["path"])),
+            "purpose": rule.get("purpose", ""),
+        }
+        for rule in resolved
+    ]
+
+
+def build_prompt_file(packet_path: Path) -> Path:
+    packet = read_json(packet_path)
+    if not isinstance(packet, dict):
+        raise RuntimeError(f"packet is not valid JSON object: {packet_path}")
+    renderer = load_agent_command_module()
+    prompt_path = packet_path.with_suffix(packet_path.suffix + ".prompt.md")
+    write_text(prompt_path, renderer.render_prompt(packet))
+    return prompt_path
 
 
 def packet_target(packet: dict[str, Any], key: str) -> Path | None:
@@ -88,11 +155,81 @@ def count_json_target(path: Path | None) -> int:
     return 1 if payload else 0
 
 
+def path_receipt(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {"path": "", "exists": False}
+    receipt: dict[str, Any] = {"path": str(path), "exists": path.exists()}
+    if path.exists() and path.is_file():
+        receipt["hash"] = sha256_path(path)
+        receipt.update(text_stats(path))
+        receipt["rows"] = count_json_target(path)
+    return receipt
+
+
+def input_receipts(packet: dict[str, Any]) -> list[dict[str, Any]]:
+    receipts: list[dict[str, Any]] = []
+    inputs = packet.get("read_inputs")
+    if not isinstance(inputs, list):
+        return receipts
+    for item in inputs:
+        if not isinstance(item, dict):
+            continue
+        path_text = str(item.get("path") or "")
+        receipt = path_receipt(Path(path_text) if path_text else None)
+        if item.get("hash"):
+            receipt["declared_hash"] = str(item.get("hash"))
+        if item.get("context_policy"):
+            receipt["context_policy"] = str(item.get("context_policy"))
+        receipts.append(receipt)
+    return receipts
+
+
+def output_receipts(packet: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    receipts: dict[str, dict[str, Any]] = {}
+    targets = packet.get("write_targets") if isinstance(packet, dict) else None
+    if not isinstance(targets, dict):
+        return receipts
+    for key in targets:
+        receipts[key] = path_receipt(packet_target(packet, key))
+    return receipts
+
+
+def context_receipt(packet_path: Path, prompt_path: Path, packet: dict[str, Any], rules: list[dict[str, Any]], inputs: list[dict[str, Any]]) -> dict[str, Any]:
+    rule_tokens = sum(int(item.get("estimated_tokens") or 0) for item in rules)
+    input_tokens = sum(int(item.get("estimated_tokens") or 0) for item in inputs)
+    packet_stats = text_stats(packet_path)
+    prompt_stats = text_stats(prompt_path)
+    shard_count = 0
+    if packet.get("phase") == "phase_a":
+        shard = packet.get("shard") if isinstance(packet.get("shard"), dict) else None
+        shard_count = 1 if shard else 0
+    return {
+        "packet_bytes": packet_stats["bytes"],
+        "packet_estimated_tokens": packet_stats["estimated_tokens"],
+        "prompt_bytes": prompt_stats["bytes"],
+        "prompt_estimated_tokens": prompt_stats["estimated_tokens"],
+        "rule_bytes": sum(int(item.get("bytes") or 0) for item in rules),
+        "rule_estimated_tokens": rule_tokens,
+        "input_bytes": sum(int(item.get("bytes") or 0) for item in inputs),
+        "input_estimated_tokens": input_tokens,
+        "read_input_count": len(inputs),
+        "shard_count": shard_count,
+        "orchestrator_read_full_review_units": False,
+    }
+
+
 @dataclass
 class AgentCall:
     phase: str
     status: str
     packet: str
+    packet_hash: str = ""
+    prompt_file: str = ""
+    prompt_hash: str = ""
+    resolved_rule_refs: list[dict[str, str]] = field(default_factory=list)
+    read_inputs: list[dict[str, Any]] = field(default_factory=list)
+    output_artifacts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    context_receipt: dict[str, Any] = field(default_factory=dict)
     command: list[str] = field(default_factory=list)
     returncode: int | None = None
     stdout_tail: str = ""
@@ -107,6 +244,20 @@ class AgentCall:
             "status": self.status,
             "packet": self.packet,
         }
+        if self.prompt_file:
+            payload["prompt_file"] = self.prompt_file
+        if self.packet_hash:
+            payload["packet_hash"] = self.packet_hash
+        if self.prompt_hash:
+            payload["prompt_hash"] = self.prompt_hash
+        if self.resolved_rule_refs:
+            payload["resolved_rule_refs"] = self.resolved_rule_refs
+        if self.read_inputs:
+            payload["read_inputs"] = self.read_inputs
+        if self.output_artifacts:
+            payload["output_artifacts"] = self.output_artifacts
+        if self.context_receipt:
+            payload["context_receipt"] = self.context_receipt
         if self.command:
             payload["command"] = self.command
         if self.returncode is not None:
@@ -291,9 +442,14 @@ def call_agent(
         raise RuntimeError(f"packet is not valid JSON object: {packet_path}")
     before = target_counts(packet)
     cmd = command_parts(agent_cmd)
+    prompt_path = build_prompt_file(packet_path)
+    rules = rule_receipts(packet)
+    inputs = input_receipts(packet)
+    context = context_receipt(packet_path, prompt_path, packet, rules, inputs)
     env = {
         "ARIADNE_PROSE_PHASE": phase,
         "ARIADNE_PROMPT_PACKET": str(packet_path),
+        "ARIADNE_PROMPT_FILE": str(prompt_path),
         "ARIADNE_BUNDLE": str(bundle),
         "ARIADNE_ISSUE_ARTIFACTS": str(bundle / "issue_artifacts"),
     }
@@ -302,10 +458,17 @@ def call_agent(
             phase=phase,
             status="dry_run",
             packet=str(packet_path),
+            packet_hash=sha256_path(packet_path),
+            prompt_file=str(prompt_path),
+            prompt_hash=sha256_path(prompt_path),
+            resolved_rule_refs=rules,
+            read_inputs=inputs,
+            output_artifacts=output_receipts(packet),
+            context_receipt=context,
             command=cmd,
             before_rows=before,
             after_rows=before,
-            message="agent command not executed",
+            message="agent command not executed; prompt file rendered with resolved rule_refs",
         )
     result = run_command(cmd, env=env, timeout=timeout)
     after_packet = read_json(packet_path)
@@ -314,6 +477,13 @@ def call_agent(
         phase=phase,
         status="completed" if result.returncode == 0 else "error",
         packet=str(packet_path),
+        packet_hash=sha256_path(packet_path),
+        prompt_file=str(prompt_path),
+        prompt_hash=sha256_path(prompt_path),
+        resolved_rule_refs=rules,
+        read_inputs=inputs,
+        output_artifacts=output_receipts(after_packet if isinstance(after_packet, dict) else packet),
+        context_receipt=context,
         command=cmd,
         returncode=result.returncode,
         stdout_tail=compact_tail(result.stdout),
@@ -487,6 +657,30 @@ def build_summary(args: argparse.Namespace, calls: list[AgentCall], *, phase_a_d
     }
 
 
+def build_agent_provenance(args: argparse.Namespace, summary: dict[str, Any]) -> dict[str, Any]:
+    calls = summary.get("calls") if isinstance(summary.get("calls"), list) else []
+    return {
+        "schema_version": 1,
+        "context_policy": "model_readable_agent_provenance_only",
+        "generated_by": "scripts/run_prose_agent.py",
+        "bundle": str(args.bundle),
+        "single_agent": False,
+        "mode": "dry_run" if args.dry_run else "external_agent",
+        "agents": [
+            {
+                "kind": "prose",
+                "phase": args.phase,
+                "command": command_parts(args.agent_cmd),
+                "dry_run": args.dry_run,
+                "summary": str(args.summary_out or args.bundle / "prose_agent_summary.json"),
+                "phase_a_complete": summary.get("phase_a_complete", False),
+                "phase_b_complete": summary.get("phase_b_complete", False),
+                "calls": calls,
+            }
+        ],
+    }
+
+
 def next_action(args: argparse.Namespace, *, phase_a_done: bool, phase_b_done: bool) -> str:
     if args.dry_run:
         return "Dry run only; inspect packets and run again without --dry-run to invoke the agent command."
@@ -501,7 +695,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", required=True, type=Path, help="Ariadne artifact bundle")
     parser.add_argument("--phase", default="all", choices=("phase_a", "phase_b", "all"))
-    parser.add_argument("--agent-cmd", required=True, help="External agent command. It receives ARIADNE_PROMPT_PACKET env var.")
+    parser.add_argument("--agent-cmd", required=True, help="External agent command. It receives ARIADNE_PROMPT_FILE with resolved rule text plus ARIADNE_PROMPT_PACKET for structured metadata.")
     parser.add_argument("--review-units-md", type=Path, help="Phase A review_units Markdown path")
     parser.add_argument("--review-units-jsonl", type=Path, help="Phase A review_units JSONL path")
     parser.add_argument("--phase-b-context", type=Path, help="Existing phase_b_context.json")
@@ -511,6 +705,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="Build packets and summary without invoking --agent-cmd")
     parser.add_argument("--allow-incomplete", action="store_true", help="Return success even when prose phases remain pending")
     parser.add_argument("--summary-out", type=Path, help="Default: <bundle>/prose_agent_summary.json")
+    parser.add_argument("--provenance-out", type=Path, help="Default: <bundle>/agent_provenance.json")
     return parser
 
 
@@ -537,12 +732,16 @@ def main(argv: list[str] | None = None) -> int:
         summary["error"] = str(exc)
         out = args.summary_out or args.bundle / "prose_agent_summary.json"
         write_json(out, summary)
+        provenance_out = args.provenance_out or args.bundle / "agent_provenance.json"
+        write_json(provenance_out, build_agent_provenance(args, summary))
         print(f"ERROR: {exc}", file=sys.stderr)
         print(f"Summary: {out}", file=sys.stderr)
         return 1
     out = args.summary_out or args.bundle / "prose_agent_summary.json"
     summary = build_summary(args, calls, phase_a_done=phase_a_done, phase_b_done=phase_b_done)
     write_json(out, summary)
+    provenance_out = args.provenance_out or args.bundle / "agent_provenance.json"
+    write_json(provenance_out, build_agent_provenance(args, summary))
     print(
         "Prose agent runner: "
         f"phase_a={'complete' if phase_a_done else 'pending'}, "
@@ -550,6 +749,7 @@ def main(argv: list[str] | None = None) -> int:
         f"calls={len(calls)}"
     )
     print(f"Summary: {out}")
+    print(f"Provenance: {provenance_out}")
     print(f"Next action: {summary['next_action']}")
     complete = phase_a_done and (args.phase == "phase_a" or phase_b_done or args.phase != "all")
     return 0 if complete or args.allow_incomplete else 1

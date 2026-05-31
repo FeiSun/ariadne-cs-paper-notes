@@ -11,7 +11,10 @@ import sys
 from html.parser import HTMLParser
 from pathlib import Path
 
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except ModuleNotFoundError:  # pragma: no cover - exercised when optional deps are absent.
+    BeautifulSoup = None
 
 
 PAPER_READER_ONLY_SECTIONS = {
@@ -95,6 +98,137 @@ def compact_text(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+class StrippedTextParser(HTMLParser):
+    def __init__(self, *, final_html: bool) -> None:
+        super().__init__()
+        self.final_html = final_html
+        self.parts: list[str] = []
+        self.body_depth = 0
+        self.paper_pane_depth = 0
+        self.skip_depth = 0
+        self.stack: list[tuple[bool, bool, bool]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr = {key: value or "" for key, value in attrs}
+        class_names = attr.get("class", "").split()
+        starts_body = tag == "body"
+        starts_paper_pane = self.final_html and "paper-pane" in class_names
+        include_context = self.paper_pane_depth > 0 if self.final_html else (self.body_depth > 0 or tag == "body")
+        starts_skip = include_context and (
+            tag in {"script", "style"}
+            or attr.get("id") in {"annotation-panel", "paper-overview-annotations"}
+            or bool({"annotation-card", "annotation-bubble"} & set(class_names))
+        )
+        if starts_body:
+            self.body_depth += 1
+        if starts_paper_pane:
+            self.paper_pane_depth += 1
+        elif self.paper_pane_depth > 0:
+            self.paper_pane_depth += 1
+        if starts_skip:
+            self.skip_depth += 1
+        elif self.skip_depth > 0:
+            self.skip_depth += 1
+        self.stack.append((starts_body, self.paper_pane_depth > 0, self.skip_depth > 0))
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.stack:
+            return
+        starts_body, in_paper_pane, in_skip = self.stack.pop()
+        if in_skip and self.skip_depth > 0:
+            self.skip_depth -= 1
+        if in_paper_pane and self.paper_pane_depth > 0:
+            self.paper_pane_depth -= 1
+        if starts_body and self.body_depth > 0:
+            self.body_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        include_context = self.paper_pane_depth > 0 if self.final_html else self.body_depth > 0 or not self.stack
+        if include_context and self.skip_depth == 0:
+            self.parts.append(data)
+
+
+class PaperReaderCardCopyParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stack: list[dict[str, bool]] = []
+        self.paper_reader_depth = 0
+        self.annotation_panel_depth = 0
+        self.card_depth = 0
+        self.label_depth = 0
+        self.current_card: dict[str, object] | None = None
+        self.current_label_parts: list[str] = []
+        self.cards: list[dict[str, object]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr = {key: value or "" for key, value in attrs}
+        class_names = attr.get("class", "").split()
+        starts_paper_reader = attr.get("id") == "paper-reader"
+        starts_annotation_panel = self.paper_reader_depth > 0 and attr.get("id") == "annotation-panel"
+        starts_card = self.annotation_panel_depth > 0 and "annotation-card" in class_names
+        starts_label = self.card_depth > 0 and tag in {"dt", "strong", "b", "th"}
+        if starts_paper_reader:
+            self.paper_reader_depth += 1
+        elif self.paper_reader_depth > 0:
+            self.paper_reader_depth += 1
+        if starts_annotation_panel:
+            self.annotation_panel_depth += 1
+        elif self.annotation_panel_depth > 0:
+            self.annotation_panel_depth += 1
+        if starts_card:
+            self.card_depth += 1
+            self.current_card = {
+                "id": attr.get("id") or attr.get("data-issue-ids") or "<unknown annotation card>",
+                "text_parts": [],
+                "labels": [],
+            }
+        elif self.card_depth > 0:
+            self.card_depth += 1
+        if starts_label:
+            self.label_depth += 1
+            self.current_label_parts = []
+        elif self.label_depth > 0:
+            self.label_depth += 1
+        self.stack.append(
+            {
+                "paper_reader": self.paper_reader_depth > 0,
+                "annotation_panel": self.annotation_panel_depth > 0,
+                "card": self.card_depth > 0,
+                "label": self.label_depth > 0,
+                "starts_card": starts_card,
+            }
+        )
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.stack:
+            return
+        state = self.stack.pop()
+        if state.get("label") and self.label_depth == 1 and self.current_card is not None:
+            labels = self.current_card.get("labels")
+            if isinstance(labels, list):
+                labels.append(compact_text("".join(self.current_label_parts)).rstrip("：:"))
+            self.current_label_parts = []
+        if state.get("label") and self.label_depth > 0:
+            self.label_depth -= 1
+        if state.get("starts_card") and self.current_card is not None:
+            self.cards.append(self.current_card)
+            self.current_card = None
+        if state.get("card") and self.card_depth > 0:
+            self.card_depth -= 1
+        if state.get("annotation_panel") and self.annotation_panel_depth > 0:
+            self.annotation_panel_depth -= 1
+        if state.get("paper_reader") and self.paper_reader_depth > 0:
+            self.paper_reader_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self.current_card is not None:
+            parts = self.current_card.get("text_parts")
+            if isinstance(parts, list):
+                parts.append(data)
+        if self.label_depth > 0:
+            self.current_label_parts.append(data)
+
+
 def parse_declared_hash(value: str) -> tuple[str, str] | None:
     match = HASH_RE.fullmatch(value.strip())
     if not match:
@@ -122,6 +256,10 @@ def validate_source_hash(source_path: Path, declared_hash: str, label: str) -> l
 
 
 def annotation_stripped_text(html_text: str, *, final_html: bool) -> str:
+    if BeautifulSoup is None:
+        parser = StrippedTextParser(final_html=final_html)
+        parser.feed(html_text)
+        return compact_text(" ".join(parser.parts))
     soup = BeautifulSoup(html_text, "html.parser")
     root = soup.select_one(".paper-pane") if final_html else None
     if root is None:
@@ -189,6 +327,27 @@ def audit_source_integrity(html_path: Path, parser: AriadneHTMLParser, source_pa
 
 
 def audit_paper_reader_card_copy(html_text: str) -> list[str]:
+    if BeautifulSoup is None:
+        parser = PaperReaderCardCopyParser()
+        parser.feed(html_text)
+        errors: list[str] = []
+        for card in parser.cards:
+            card_id = str(card.get("id") or "<unknown annotation card>")
+            labels = [str(label) for label in card.get("labels", []) if str(label)]
+            for label in labels:
+                if label in FORBIDDEN_PAPER_READER_CARD_LABELS:
+                    errors.append(
+                        f"paper-reader annotation card `{card_id}` must not show visible `{label}`; "
+                        "the active paper anchor already supplies location/source text"
+                    )
+            text = compact_text(" ".join(str(part) for part in card.get("text_parts", [])))
+            if MECHANICAL_CARD_PROVENANCE_RE.search(text):
+                errors.append(f"paper-reader annotation card `{card_id}` exposes mechanical renderer provenance")
+            if "核查依据" in labels and not MEANINGFUL_CARD_EVIDENCE_RE.search(text):
+                errors.append(
+                    f"paper-reader annotation card `{card_id}` shows `核查依据` without concrete manuscript-level evidence"
+                )
+        return errors
     soup = BeautifulSoup(html_text, "html.parser")
     errors: list[str] = []
     for card in soup.select("#paper-reader #annotation-panel .annotation-card"):

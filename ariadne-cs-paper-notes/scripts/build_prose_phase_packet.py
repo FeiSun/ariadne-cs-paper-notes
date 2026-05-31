@@ -4,23 +4,54 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from prose_rule_refs import PROSE_PHASE_A_RULES, PROSE_PHASE_B_RULES, prose_rule_refs, sha256_path  # noqa: E402
+from review_language_contract import CHINESE_OUTPUT_INSTRUCTIONS, TEACHING_FIELDS  # noqa: E402
+
+
 SCHEMA_VERSION = 1
 CONTEXT_POLICY = "model_readable_prose_phase_packet"
-
-
-def sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return f"sha256:{digest.hexdigest()}"
+PROSE_ISSUE_MINIMUM_FIELDS = [
+    "local_id",
+    "severity",
+    "issue_type",
+    "title",
+    "diagnosis",
+    "reader_friction",
+    "writing_principle",
+    "self_check",
+    "confidence",
+    "evidence_refs",
+    "severity_rationale",
+    "downgrade_condition",
+    "target_anchors",
+    "section_id",
+]
+WHOLE_PAPER_MINIMUM_FIELDS = [
+    "local_id",
+    "severity",
+    "issue_type",
+    "title",
+    "diagnosis",
+    "reader_friction",
+    "writing_principle",
+    "self_check",
+    "confidence",
+    "evidence_refs",
+    "severity_rationale",
+    "downgrade_condition",
+    "source_issue_ids",
+]
 
 
 def compact_text(value: Any, *, max_chars: int = 600) -> str:
@@ -104,6 +135,7 @@ def build_phase_a_packet(
         "generated_by": "scripts/build_prose_phase_packet.py",
         "phase": "phase_a",
         "objective": "Run Ariadne Prose Phase A: cold skim, linear sentence/paragraph deep read, and section reflection.",
+        "rule_refs": prose_rule_refs("phase_a"),
         "read_inputs": [
             source_record(review_units_md, context_policy="model_readable_full_prose_input"),
             source_record(review_units_jsonl, context_policy="model_readable_anchor_index"),
@@ -132,7 +164,8 @@ def build_phase_a_packet(
         },
         "output_contract": {
             "prose_issues_jsonl": {
-                "minimum_fields": ["local_id", "severity", "issue_type", "title", "diagnosis", "target_anchors", "section_id"],
+                "minimum_fields": PROSE_ISSUE_MINIMUM_FIELDS,
+                "teaching_fields": list(TEACHING_FIELDS),
                 "cross_section_fields": ["target_anchors", "spans_sections", "related_issue_ids"],
             },
             "paragraph_decisions_jsonl": {
@@ -150,11 +183,13 @@ def build_phase_a_packet(
             },
         },
         "instructions": [
-            "Read the full review_units Markdown for whole-paper continuity, but continue detailed work only from next_section when resuming.",
-            "Do not write HTML. Write JSON/JSONL artifacts only.",
-            "After each section, append prose issue and paragraph decision rows, then update section_reflections.json before continuing.",
-            "For every paragraph decision, record sentence review coverage with reviewed_sentence_ids, sentence_checks, or all_sentences_reviewed=true. Clean sentences should be counted in that receipt, not rendered as visible clean comments.",
-            "If next_section is null and coverage.phase_a_complete is true, Phase A is complete; build phase_b_context next.",
+            "把 rule_refs 当作可执行 Prose 深读规则；run_prose_agent.py 或其他 prompt wrapper 必须在模型调用前解析这些规则。",
+            *CHINESE_OUTPUT_INSTRUCTIONS,
+            "为了保持整篇连续性，可以读完整 review_units Markdown；resume 时只在 next_section 指定章节继续做细读。",
+            "不要写 HTML；只写 JSON/JSONL artifact。",
+            "每完成一个章节，追加 prose issue 和 paragraph decision 行，然后更新 section_reflections.json 再继续。",
+            "每个 paragraph decision 必须用 reviewed_sentence_ids、sentence_checks 或 all_sentences_reviewed=true 记录句子覆盖率；干净句子只进入覆盖 receipt，不渲染可见“没问题”评论。",
+            "如果 next_section 为 null 且 coverage.phase_a_complete 为 true，Phase A 已完成；下一步构建 phase_b_context。",
         ],
     }
 
@@ -175,6 +210,7 @@ def build_phase_b_packet(
         "generated_by": "scripts/build_prose_phase_packet.py",
         "phase": "phase_b",
         "objective": "Run Ariadne Prose Phase B: whole-paper argument red-team and cross-domain integration.",
+        "rule_refs": prose_rule_refs("phase_b"),
         "read_inputs": [source_record(phase_b_context, context_policy="model_readable_compact_synthesis_input")],
         "coverage": {
             "sections_summarized": coverage.get("sections_summarized", 0),
@@ -189,7 +225,8 @@ def build_phase_b_packet(
         },
         "output_contract": {
             "whole_paper_findings_jsonl": {
-                "minimum_fields": ["local_id", "severity", "issue_type", "title", "diagnosis", "source_issue_ids"],
+                "minimum_fields": WHOLE_PAPER_MINIMUM_FIELDS,
+                "teaching_fields": list(TEACHING_FIELDS),
                 "integration_fields": ["related_issue_ids", "claim_ids", "specialist_domains"],
             },
             "claims_json": {
@@ -198,10 +235,12 @@ def build_phase_b_packet(
             },
         },
         "instructions": [
-            "Read phase_b_context.json only; do not reread full review_units or raw specialist audits.",
-            "Integrate specialist issues only when they affect claim strength, reader trust, or acceptance risk.",
-            "Keep lower-level issues separate unless a whole-paper finding truly absorbs them; preserve source_issue_ids.",
-            "Do not write HTML. Write JSON/JSONL artifacts only.",
+            "把 rule_refs 当作可执行 Prose 综合规则；run_prose_agent.py 或其他 prompt wrapper 必须在模型调用前解析这些规则。",
+            *CHINESE_OUTPUT_INSTRUCTIONS,
+            "Phase B 只读 phase_b_context.json；不要重新读取完整 review_units 或 raw specialist audits。",
+            "只有当 specialist issue 影响 claim 强度、读者信任或录用风险时，才把它整合进全稿判断。",
+            "低层问题默认保持分离；只有真正被整篇 finding 吸收时才合并，并保留 source_issue_ids。",
+            "不要写 HTML；只写 JSON/JSONL artifact。",
         ],
     }
 

@@ -1354,8 +1354,8 @@ def mark_latex_float_widths(soup: BeautifulSoup, tex_path: Path) -> int:
     return marked
 
 
-def split_latex_table_rows(tabular: str) -> list[list[str]]:
-    rows: list[list[str]] = []
+def split_latex_table_rows(tabular: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
     current: list[str] = []
     cell: list[str] = []
     brace_depth = 0
@@ -1376,15 +1376,26 @@ def split_latex_table_rows(tabular: str) -> list[list[str]]:
             current.append("".join(cell).strip())
             cell = []
             if any(part.strip() for part in current):
-                rows.append(current)
+                rows.append({"kind": "row", "cells": current})
             current = []
             idx += 2
             continue
         char = tabular[idx]
         if char == "\\":
             command = re.match(r"\\[A-Za-z]+", tabular[idx:])
-            if command and command.group(0) in {"\\toprule", "\\midrule", "\\bottomrule"} and brace_depth == 0 and env_depth == 0:
+            if command and command.group(0) in {"\\toprule", "\\midrule", "\\bottomrule", "\\cmidrule"} and brace_depth == 0 and env_depth == 0:
+                if cell and "".join(cell).strip():
+                    current.append("".join(cell).strip())
+                    cell = []
+                if any(part.strip() for part in current):
+                    rows.append({"kind": "row", "cells": current})
+                    current = []
+                rows.append({"kind": command.group(0).lstrip("\\"), "cells": []})
                 idx += len(command.group(0))
+                if command.group(0) == "\\cmidrule" and idx < len(tabular) and tabular[idx] == "{":
+                    parsed = latex_braced_content(tabular, idx)
+                    if parsed is not None:
+                        idx = parsed[1]
                 continue
             cell.append(char)
             if idx + 1 < len(tabular):
@@ -1405,8 +1416,31 @@ def split_latex_table_rows(tabular: str) -> list[list[str]]:
     if trailing:
         current.append(trailing)
     if any(part.strip() for part in current):
-        rows.append(current)
+        rows.append({"kind": "row", "cells": current})
     return rows
+
+
+def split_latex_table_body(tabular: str) -> tuple[list[list[str]], list[list[str]], set[str]]:
+    entries = split_latex_table_rows(tabular)
+    rows: list[tuple[int, list[str]]] = [
+        (idx, entry.get("cells", []))
+        for idx, entry in enumerate(entries)
+        if entry.get("kind") == "row" and isinstance(entry.get("cells"), list) and any(str(cell).strip() for cell in entry.get("cells", []))
+    ]
+    rule_kinds = {str(entry.get("kind")) for entry in entries if entry.get("kind") in {"toprule", "midrule", "bottomrule", "cmidrule"}}
+    if not rows:
+        return [], [], rule_kinds
+    midrule_indices = [idx for idx, entry in enumerate(entries) if entry.get("kind") == "midrule"]
+    if midrule_indices:
+        first_midrule = midrule_indices[0]
+        header = [cells for idx, cells in rows if idx < first_midrule]
+        body = [cells for idx, cells in rows if idx > first_midrule]
+    else:
+        header = [rows[0][1]]
+        body = [cells for _, cells in rows[1:]]
+    if not header and body:
+        header, body = [body[0]], body[1:]
+    return header, body, rule_kinds
 
 
 def strip_latex_environment_begin(text: str, env: str) -> str:
@@ -1436,7 +1470,7 @@ def strip_latex_environment_begin(text: str, env: str) -> str:
 def latex_inline_to_html(soup: BeautifulSoup, value: str) -> list[object]:
     text = strip_latex_environment_begin(value.strip(), "tabular")
     text = text.replace("\\end{tabular}", "")
-    text = text.replace("\\toprule", "").replace("\\midrule", "").replace("\\bottomrule", "")
+    text = re.sub(r"\\(?:toprule|midrule|bottomrule|cmidrule)(?:\{[^{}]*\})?", "", text)
     text = text.replace("\\textwidth", "")
     text = re.sub(r"@\{\}", "", text)
     text = re.sub(r"L\{[^{}]*\}", "", text)
@@ -1511,9 +1545,8 @@ def append_latex_inline(soup: BeautifulSoup, tag: Tag, value: str) -> None:
 
 def rebuilt_table_from_latex(soup: BeautifulSoup, unit: dict[str, object], table_number: int) -> Tag | None:
     tabular = str(unit.get("tabular") or "")
-    rows = split_latex_table_rows(tabular)
-    rows = [row for row in rows if any(cell.strip() for cell in row)]
-    if not rows:
+    header_rows, body_rows, rule_kinds = split_latex_table_body(tabular)
+    if not header_rows and not body_rows:
         return None
     wrapper = soup.new_tag("div")
     wrapper["class"] = ["table*" if unit.get("wide") else "table", "paper-table", "paper-table-rebuilt"]
@@ -1525,7 +1558,9 @@ def rebuilt_table_from_latex(soup: BeautifulSoup, unit: dict[str, object], table
     if label:
         wrapper["id"] = label
     table = soup.new_tag("table")
-    table["class"] = "paper-rebuilt-table"
+    table["class"] = ["paper-rebuilt-table", "paper-booktabs-table"]
+    if rule_kinds:
+        table["data-booktabs-rules"] = " ".join(sorted(rule_kinds))
     caption_text = str(unit.get("caption") or "").strip()
     if caption_text:
         caption = soup.new_tag("caption")
@@ -1534,15 +1569,16 @@ def rebuilt_table_from_latex(soup: BeautifulSoup, unit: dict[str, object], table
         caption.append(strong)
         append_latex_inline(soup, caption, caption_text)
         table.append(caption)
-    header, body_rows = rows[0], rows[1:]
     thead = soup.new_tag("thead")
-    tr = soup.new_tag("tr")
-    for cell_text in header:
-        th = soup.new_tag("th")
-        append_latex_inline(soup, th, cell_text)
-        tr.append(th)
-    thead.append(tr)
-    table.append(thead)
+    for header in header_rows:
+        tr = soup.new_tag("tr")
+        for cell_text in header:
+            th = soup.new_tag("th")
+            append_latex_inline(soup, th, cell_text)
+            tr.append(th)
+        thead.append(tr)
+    if header_rows:
+        table.append(thead)
     tbody = soup.new_tag("tbody")
     for row in body_rows:
         tr = soup.new_tag("tr")
@@ -1852,8 +1888,12 @@ def table_match_tokens_from_text(value: str) -> Counter[str]:
 
 
 def latex_table_unit_counter(unit: dict[str, object]) -> Counter[str]:
-    rows = split_latex_table_rows(str(unit.get("tabular") or ""))
-    return table_match_tokens_from_text(" ".join(cell for row in rows for cell in row))
+    rows = [
+        entry.get("cells", [])
+        for entry in split_latex_table_rows(str(unit.get("tabular") or ""))
+        if entry.get("kind") == "row" and isinstance(entry.get("cells"), list)
+    ]
+    return table_match_tokens_from_text(" ".join(str(cell) for row in rows for cell in row))
 
 
 def html_table_target_counter(target: Tag) -> Counter[str]:
@@ -3694,8 +3734,8 @@ def render_global_findings(findings: list[dict[str, object]]) -> str:
         <dl>
           <dt>问题是什么</dt><dd>{display_text(finding.get('diagnosis'), fallback='未填写')}</dd>
           <dt>为什么有问题</dt><dd>{display_text(finding.get('reader_friction'), fallback='未填写')}</dd>
-          <dt>违反原则</dt><dd>{display_text(finding.get('writing_principle'), fallback='claim-evidence alignment')}</dd>
-          <dt>下一稿任务</dt><dd>{display_text(finding.get('next_draft_task') or finding.get('self_check'), fallback='收束全稿主张与证据边界。')}</dd>
+          <dt>违反原则</dt><dd>{display_text(finding.get('writing_principle'), fallback='改变读者理解状态')}</dd>
+          <dt>自改问题</dt><dd>{display_text(finding.get('self_check') or finding.get('next_draft_task'), fallback='下一稿能否把全稿主张、证据和边界收束到同一个中心更新？')}</dd>
         </dl>
       </article>"""
             )
@@ -3957,8 +3997,9 @@ def report_shell(
     .paper-pane blockquote {{ margin:1em 0 1em 1.7em; padding-left:1em; border-left:2px solid #e6e6e6; color:#606060; }}
     .paper-pane .abstract {{ margin:2em 2em; text-align:left; font-size:85%; }}
     .paper-pane .abstract-title {{ font-weight:700; text-align:center; margin-bottom:.5em; }}
-    .paper-pane table {{ width:auto; max-width:100%; margin-left:auto; margin-right:auto; border-collapse:collapse; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:14px; }}
-    .paper-pane th, .paper-pane td {{ border:1px solid var(--line); padding:6px; vertical-align:top; }}
+    .paper-pane table {{ width:auto; max-width:100%; margin-left:auto; margin-right:auto; border-collapse:collapse; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",Arial,sans-serif; font-size:14px; border-top:2px solid #4b5563; border-bottom:2px solid #4b5563; }}
+    .paper-pane th, .paper-pane td {{ border:0; padding:6px 8px; vertical-align:top; }}
+    .paper-pane thead tr:last-child th {{ border-bottom:1.5px solid #6b7280; }}
     .paper-pane img, .paper-pane svg {{ max-width:100%; height:auto; }}
     .paper-pane embed {{ display:block; width:100%; max-width:100%; min-height:240px; margin:10px auto; border:1px solid var(--line); }}
     .paper-pane .paper-asset-image {{ display:block; width:100%; max-width:100%; height:auto; margin:8px auto; border:1px solid var(--line); background:#fff; }}

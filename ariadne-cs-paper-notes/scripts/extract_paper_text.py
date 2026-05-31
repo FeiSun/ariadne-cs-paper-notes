@@ -483,8 +483,8 @@ def table_blank_positions(cells: list[str]) -> list[int]:
     ]
 
 
-def table_numeric_signals(table_idx: int, rows: list[tuple[int, list[str]]]) -> list[str]:
-    signals: list[str] = []
+def latex_table_numeric_audit(table_idx: int, rows: list[tuple[int, list[str]]], max_items: int = MAX_DEFAULT_ITEMS) -> list[dict[str, object]]:
+    signals: list[dict[str, object]] = []
     latest_header: list[str] | None = None
     prior_numeric_rows: list[tuple[int, list[str], list[ParsedNumber | None]]] = []
 
@@ -517,16 +517,42 @@ def table_numeric_signals(table_idx: int, rows: list[tuple[int, list[str]]]) -> 
                 component_cols = ", ".join(str(idx + 1) for idx, component in enumerate(parsed[:col_idx]) if idx > 0 and component is not None)
                 tier, gap_abs, gap_rel = classify_arithmetic_gap(number.value, visible_mean)
                 signals.append(
-                    f"Signal ({tier} gap {gap_abs:.2f}pp / {gap_rel:.2f}%): "
-                    f"Table {table_idx}, row {row_idx} ({row_label!r}), column {col_idx + 1} ({header!r}): "
-                    f"reported {number.text}; visible arithmetic mean of column(s) {component_cols} = "
-                    f"{format_number(visible_mean, number.decimals)}; delta {delta:+.{max(2, min(number.decimals, 4))}f}. "
-                    + (
-                        "Rendered finding must be Blocker. Gap exceeds the broad plausible aggregation range; render as a directive numeric finding unless the manuscript gives a specific denominator/weighting explanation."
-                        if tier == "deterministic"
-                        else "Rendered finding must be Blocker and state the concrete reported value, visible computed value, and delta; if weighted/micro aggregation could explain it, name that as the rebuttal instead of using vague 'needs checking' language."
-                    )
+                    {
+                        "signal_id": f"LN{len(signals) + 1}",
+                        "source": "latex-tabular",
+                        "table_id": f"Table {table_idx}",
+                        "row_number": row_idx,
+                        "row_label": row_label,
+                        "column_number": col_idx + 1,
+                        "column_label": header,
+                        "reported_value": number.text,
+                        "visible_computed_value": format_number(visible_mean, number.decimals),
+                        "delta": f"{delta:+.{max(2, min(number.decimals, 4))}f}",
+                        "gap_tier": tier,
+                        "gap_abs": round(gap_abs, 4),
+                        "gap_rel_percent": round(gap_rel, 4),
+                        "component_columns": component_cols,
+                        "component_values": [
+                            component.text
+                            for idx, component in enumerate(parsed[:col_idx])
+                            if idx > 0 and component is not None
+                        ],
+                        "component_count": len(component_numbers),
+                        "formula": "header_summary_mean",
+                        "render_required": True,
+                        "required_severity": "Blocker",
+                        "aggregation_caveat": (
+                            "LaTeX table audit treats a visible summary column as the arithmetic mean of printed component columns "
+                            f"{component_cols}. If the paper uses weighted, micro, grouped, or hidden-decimal aggregation, it must state the denominator/weights."
+                        ),
+                        "rendering_instruction": (
+                            "Rendered finding must be Blocker and state table/row, reported value, visible recomputed value, and delta. "
+                            "Do not collapse this into vague wording such as 'average differs' or 'needs checking'."
+                        ),
+                    }
                 )
+                if len(signals) >= max_items:
+                    return signals
 
         row_label = cells[0].strip().lower() if cells else ""
         if SUMMARY_ROW_RE.fullmatch(row_label or "") and len(prior_numeric_rows) >= 2:
@@ -547,20 +573,78 @@ def table_numeric_signals(table_idx: int, rows: list[tuple[int, list[str]]]) -> 
                 col_label = latest_header[col_idx] if latest_header and col_idx < len(latest_header) else f"column {col_idx + 1}"
                 tier, gap_abs, gap_rel = classify_arithmetic_gap(number.value, visible_mean)
                 signals.append(
-                    f"Signal ({tier} gap {gap_abs:.2f}pp / {gap_rel:.2f}%): "
-                    f"Table {table_idx}, row {row_idx} ({cells[0]!r}), column {col_idx + 1} ({col_label!r}): "
-                    f"reported {number.text}; visible arithmetic mean of previous data rows = "
-                    f"{format_number(visible_mean, number.decimals)}; delta {delta:+.{max(2, min(number.decimals, 4))}f}. "
-                    + (
-                        "Rendered finding must be Blocker. Gap exceeds the broad plausible aggregation range; render as a directive numeric finding unless the manuscript gives a specific denominator/weighting explanation."
-                        if tier == "deterministic"
-                        else "Rendered finding must be Blocker and state the concrete reported value, visible computed value, and delta; if weighted/micro aggregation could explain it, name that as the rebuttal instead of using vague 'needs checking' language."
-                    )
+                    {
+                        "signal_id": f"LN{len(signals) + 1}",
+                        "source": "latex-tabular",
+                        "table_id": f"Table {table_idx}",
+                        "row_number": row_idx,
+                        "row_label": cells[0],
+                        "column_number": col_idx + 1,
+                        "column_label": col_label,
+                        "reported_value": number.text,
+                        "visible_computed_value": format_number(visible_mean, number.decimals),
+                        "delta": f"{delta:+.{max(2, min(number.decimals, 4))}f}",
+                        "gap_tier": tier,
+                        "gap_abs": round(gap_abs, 4),
+                        "gap_rel_percent": round(gap_rel, 4),
+                        "component_values": [
+                            prev_parsed[col_idx].text
+                            for _, prev_cells, prev_parsed in prior_numeric_rows
+                            if col_idx < len(prev_parsed) and prev_parsed[col_idx] is not None and prev_cells
+                        ],
+                        "component_count": len(components),
+                        "formula": "summary_row_mean",
+                        "render_required": True,
+                        "required_severity": "Blocker",
+                        "aggregation_caveat": (
+                            "LaTeX table audit treats a visible summary row as the arithmetic mean of previous printed data rows. "
+                            "If the paper uses weighted, micro, grouped, or hidden-decimal aggregation, it must state the denominator/weights."
+                        ),
+                        "rendering_instruction": (
+                            "Rendered finding must be Blocker and state table/row, reported value, visible recomputed value, and delta. "
+                            "Do not collapse this into vague wording such as 'average differs' or 'needs checking'."
+                        ),
+                    }
                 )
+                if len(signals) >= max_items:
+                    return signals
 
         if numeric_count >= 2 and (not cells or not SUMMARY_ROW_RE.fullmatch(row_label or "")):
             prior_numeric_rows.append((row_idx, cells, parsed))
     return signals
+
+
+def format_latex_numeric_signal(signal: dict[str, object]) -> str:
+    tier = str(signal["gap_tier"])
+    gap_abs = float(signal["gap_abs"])
+    gap_rel = float(signal["gap_rel_percent"])
+    table_id = str(signal["table_id"])
+    row_number = signal.get("row_number", "?")
+    row_label = str(signal["row_label"])
+    col_number = signal.get("column_number", "?")
+    col_label = str(signal["column_label"])
+    reported = str(signal["reported_value"])
+    computed = str(signal["visible_computed_value"])
+    delta = str(signal["delta"])
+    component_columns = signal.get("component_columns")
+    if component_columns:
+        component_text = f"column(s) {component_columns}"
+    else:
+        component_text = "previous data rows"
+    return (
+        f"Signal ({tier} gap {gap_abs:.2f}pp / {gap_rel:.2f}%): "
+        f"{table_id}, row {row_number} ({row_label!r}), column {col_number} ({col_label!r}): "
+        f"reported {reported}; visible arithmetic mean of {component_text} = {computed}; delta {delta}. "
+        + (
+            "Rendered finding must be Blocker. Gap exceeds the broad plausible aggregation range; render as a directive numeric finding unless the manuscript gives a specific denominator/weighting explanation."
+            if tier == "deterministic"
+            else "Rendered finding must be Blocker and state the concrete reported value, visible computed value, and delta; if weighted/micro aggregation could explain it, name that as the rebuttal instead of using vague 'needs checking' language."
+        )
+    )
+
+
+def table_numeric_signals(table_idx: int, rows: list[tuple[int, list[str]]]) -> list[str]:
+    return [format_latex_numeric_signal(signal) for signal in latex_table_numeric_audit(table_idx, rows)]
 
 
 def source_text_from_line(line: str, first_number_start: int | None) -> str:
@@ -1446,6 +1530,40 @@ def summarize_table_sanity(raw: str, max_items: int) -> list[str]:
     return lines
 
 
+def latex_numeric_audit(raw: str, max_items: int) -> tuple[list[dict[str, object]], dict[str, object]]:
+    signals: list[dict[str, object]] = []
+    table_count = 0
+    numeric_rows = 0
+    numeric_cells = 0
+    summary_signal_rows = 0
+    for table_idx, match in enumerate(TABULAR_ENV_RE.finditer(raw), 1):
+        table_count += 1
+        rows = visible_table_rows(match.group(2))
+        for _row_idx, cells in rows:
+            parsed = [parse_visible_number(cell) for cell in cells]
+            row_numeric_count = sum(1 for number in parsed if number is not None)
+            if row_numeric_count:
+                numeric_rows += 1
+                numeric_cells += row_numeric_count
+            if cells and any(SUMMARY_COLUMN_RE.search(cell) for cell in cells):
+                summary_signal_rows += 1
+            elif cells and SUMMARY_ROW_RE.fullmatch(cells[0].strip().lower()):
+                summary_signal_rows += 1
+        remaining = max_items - len(signals)
+        if remaining <= 0:
+            break
+        table_signals = latex_table_numeric_audit(table_idx, rows, remaining)
+        signals.extend(table_signals)
+    coverage = {
+        "source": "latex-tabular",
+        "tables_seen": table_count,
+        "numeric_rows_seen": numeric_rows,
+        "numeric_cells_seen": numeric_cells,
+        "summary_signal_rows_seen": summary_signal_rows,
+    }
+    return signals, coverage
+
+
 def summarize_latex(raw: str, plain_text: str, source: Path, state: ExtractionState, max_items: int) -> list[str]:
     lines = ["# Review Signals", ""]
     active_raw = strip_latex_comments(raw)
@@ -1670,6 +1788,7 @@ def main() -> int:
         raw_all = "\n\n".join(combined_raw)
         plain_all = "\n\n".join(chunk.split("\n\n", 1)[-1] for chunk in chunks)
         signals = summarize_latex(raw_all, plain_all, source, state, args.max_items)
+        numeric_json_signals, numeric_coverage = latex_numeric_audit(raw_all, args.max_items)
         output = "\n".join(signals) + "\n\n# Extracted LaTeX Text\n\n" + "\n\n".join(chunks).strip() + "\n"
 
     if args.numeric_json:
@@ -1677,6 +1796,7 @@ def main() -> int:
             "input": str(source),
             "signal_count": len(numeric_json_signals),
             "signals": numeric_json_signals,
+            "coverage": numeric_coverage if source.suffix.lower() != ".pdf" else {"source": "pdf-layout-text"},
             "note": "Signals only. Rendered reports must cite reported_value, visible_computed_value, and delta. Table-number discrepancies are required-severity Blocker unless a signal is explicitly marked render_required=false with a parser-false-positive reason.",
         }
         write_private_text(args.numeric_json, json.dumps(payload, ensure_ascii=False, indent=2) + "\n", force=args.force)

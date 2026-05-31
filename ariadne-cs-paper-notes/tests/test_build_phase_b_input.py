@@ -164,8 +164,56 @@ def test_phase_b_context_compacts_phase_and_specialist_artifacts() -> None:
         raise AssertionError("all source artifacts should carry hashes")
 
 
+def test_phase_b_context_accepts_legacy_cold_skim_recoverable_fields() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        issues = root / "issue_artifacts"
+        issues.mkdir()
+        cold = root / "cold_skim_frame.json"
+        sections = root / "section_reflections.json"
+        claims = root / "claim_candidates.json"
+        output = root / "phase_b_context.json"
+        write_json(
+            cold,
+            {
+                "problem_recoverable": "Legacy problem field.",
+                "gap_recoverable": "Legacy gap field.",
+                "idea_recoverable": "Legacy idea field.",
+                "evidence_recoverable": "Legacy evidence field.",
+                "boundary_recoverable": "Legacy boundary field.",
+                "skim_breaks": [{"id": "B1"}, "B2"],
+            },
+        )
+        write_json(sections, {"sections": [{"section_id": "intro", "one_line": "done"}]})
+        write_json(claims, {"claim_candidates": [{"id": "C1", "text": "Claim"}]})
+        status = module.main(
+            [
+                "--cold-skim",
+                str(cold),
+                "--section-reflections",
+                str(sections),
+                "--claim-candidates",
+                str(claims),
+                "--issues-dir",
+                str(issues),
+                "--out",
+                str(output),
+            ]
+        )
+        payload = json.loads(output.read_text(encoding="utf-8"))
+    if status != 0:
+        raise AssertionError("build_phase_b_input returned nonzero")
+    skim = payload["cold_skim"]
+    if skim["problem"] != "Legacy problem field." or skim["gap"] != "Legacy gap field.":
+        raise AssertionError(f"Legacy cold skim fields were not normalized: {skim}")
+    if skim["first_reader_breaks"] != ["B1", "B2"]:
+        raise AssertionError(f"Legacy skim breaks were not normalized: {skim}")
+
+
 def main() -> int:
     test_phase_b_context_compacts_phase_and_specialist_artifacts()
+    test_phase_b_context_accepts_legacy_cold_skim_recoverable_fields()
     print("build_phase_b_input regression tests passed")
     return 0
 

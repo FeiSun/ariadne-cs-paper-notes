@@ -247,12 +247,56 @@ def test_derivatives_use_phase_artifacts_for_coverage_and_defer_artifact_only_fi
         raise AssertionError(f"Expected sentence coverage from Phase A status, got {units}")
     if passes["Pass 1"] != "done" or passes["Pass 2"] != "done" or passes["Pass 4"] != "done":
         raise AssertionError(f"Expected concrete pass status from artifacts, got {passes}")
-    if passes["Pass 6"] != "pending":
-        raise AssertionError(f"Derivative builder should not pre-certify audit pass, got {passes}")
+    if passes["Pass 6"] != "done":
+        raise AssertionError(f"Derivative builder should mark output calibration receipt present, got {passes}")
     if payloads["render_manifest"]["deferred_findings"] != ["F2"]:
         raise AssertionError(f"Artifact-only finding should be deferred for HTML audit: {payloads['render_manifest']}")
     if payloads["render_manifest"].get("deferred_findings_with_reason") != [{"id": "F2", "reason": "artifact_only"}]:
         raise AssertionError(f"Deferred findings should include reasons: {payloads['render_manifest']}")
+
+
+def test_derivatives_surface_numeric_no_signal_blind_spot() -> None:
+    module = load_module(SCRIPT, "build_review_derivatives")
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        findings = root / "findings.json"
+        annotations = root / "annotations.json"
+        issues_dir = root / "issue_artifacts"
+        issues_dir.mkdir()
+        findings.write_text(json.dumps({"findings": []}), encoding="utf-8")
+        annotations.write_text(json.dumps({"annotations": []}), encoding="utf-8")
+        (issues_dir / "numeric_issues.json").write_text(
+            json.dumps(
+                {
+                    "artifact_type": "ariadne_issue_artifact",
+                    "schema_version": 1,
+                    "domain": "numeric",
+                    "context_policy": "model_readable_issue_only",
+                    "status": "completed_no_signals",
+                    "skip_reason": "numeric_audit.signal_count == 0",
+                    "source_artifacts": [],
+                    "coverage": {"checked": 0, "issues": 0, "skipped": 0},
+                    "issues": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        payloads = module.build_all(
+            findings_path=findings,
+            annotations_path=annotations,
+            issues_dir=issues_dir,
+            layout_audit_path=None,
+            source_artifact=SOURCE,
+            source_hash="",
+            requested_scope="full compiled Ariadne review",
+            output_files=[str(HTML)],
+            source_fidelity="fixture",
+            html_source="manual-fixture",
+            visible_scope="",
+        )
+    blind_spots = payloads["coverage"]["known_blind_spots"]
+    if not any("Numeric specialist found no actionable table-number recomputation signals" in item for item in blind_spots):
+        raise AssertionError(f"Expected numeric blind spot, got {blind_spots}")
 
 
 if __name__ == "__main__":
@@ -261,4 +305,5 @@ if __name__ == "__main__":
     test_derivatives_manifest_can_match_paper_reader_only_render()
     test_derivatives_manifest_can_match_global_findings_render()
     test_derivatives_use_phase_artifacts_for_coverage_and_defer_artifact_only_findings()
+    test_derivatives_surface_numeric_no_signal_blind_spot()
     print("build_review_derivatives regression tests passed")

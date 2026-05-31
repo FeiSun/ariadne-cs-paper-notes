@@ -61,6 +61,18 @@ def test_phase_a_packet_names_next_section_and_write_targets() -> None:
         raise AssertionError(f"Unexpected next section: {packet}")
     if packet["write_targets"]["prose_issues"]["mode"] != "append_jsonl_by_section":
         raise AssertionError(f"Unexpected prose target: {packet['write_targets']}")
+    rule_ids = [item["id"] for item in packet["rule_refs"]]
+    expected = [name for name, _purpose in module.PROSE_PHASE_A_RULES]
+    if rule_ids != expected:
+        raise AssertionError(f"Unexpected Phase A rule refs: {rule_ids}")
+    if any(not Path(item["path"]).exists() for item in packet["rule_refs"]):
+        raise AssertionError(f"Phase A rule ref path missing: {packet['rule_refs']}")
+    minimum_fields = packet["output_contract"]["prose_issues_jsonl"]["minimum_fields"]
+    for required in ("reader_friction", "writing_principle", "self_check", "confidence", "evidence_refs", "severity_rationale", "downgrade_condition"):
+        if required not in minimum_fields:
+            raise AssertionError(f"Phase A prose issue contract missing {required}: {minimum_fields}")
+    if not any("读者卡点 -> 单一违反原则 -> 自改问题" in instruction for instruction in packet["instructions"]):
+        raise AssertionError(f"Phase A instructions missing Chinese teaching contract: {packet['instructions']}")
 
 
 def test_phase_b_packet_uses_compact_context_only() -> None:
@@ -84,6 +96,16 @@ def test_phase_b_packet_uses_compact_context_only() -> None:
         raise AssertionError(f"Coverage did not propagate: {packet}")
     if len(packet["read_inputs"]) != 1 or packet["read_inputs"][0]["path"].endswith("review_units.md"):
         raise AssertionError(f"Phase B packet should read compact context only: {packet['read_inputs']}")
+    rule_ids = [item["id"] for item in packet["rule_refs"]]
+    expected = [name for name, _purpose in module.PROSE_PHASE_B_RULES]
+    if rule_ids != expected:
+        raise AssertionError(f"Unexpected Phase B rule refs: {rule_ids}")
+    minimum_fields = packet["output_contract"]["whole_paper_findings_jsonl"]["minimum_fields"]
+    for required in ("reader_friction", "writing_principle", "self_check", "confidence", "evidence_refs", "severity_rationale", "downgrade_condition"):
+        if required not in minimum_fields:
+            raise AssertionError(f"Phase B whole-paper contract missing {required}: {minimum_fields}")
+    if not any("可见给学生的批注意见默认必须用中文书写" in instruction for instruction in packet["instructions"]):
+        raise AssertionError(f"Phase B instructions missing Chinese output contract: {packet['instructions']}")
 
 
 if __name__ == "__main__":

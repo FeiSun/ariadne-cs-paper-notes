@@ -1,6 +1,6 @@
 # Ariadne Workflow
 
-Use this file for every substantive CS/AI paper critique. It defines how to run the review; use `review_lenses.md` for what to look for, `report_contract.md` for what to render/save, `html_contract.md` for HTML, and `numeric_contract.md` for strict table/number handling.
+Use this file for every substantive CS/AI paper critique. It defines how to run the review; use `references/rules/` for role-specific Prose review rules, `report_contract.md` for what to render/save, `html_contract.md` for HTML, and `numeric_contract.md` for strict table/number handling. `review_lenses.md` remains a legacy compact reference, but new Prose packets should rely on executable `rule_refs`.
 
 ## Scope, Not Depth
 
@@ -39,13 +39,19 @@ Full-paper Ariadne runs use three roles:
 
 Specialists are conditional. Skip a specialist when the input signal is absent, such as no rendered PDF for layout, `numeric_audit.signal_count == 0` for numeric, no `.bib`/`.bbl`/`.aux` for references, no figures/tables/captions for figure/caption, or no notation-heavy content for symbols. If downstream tooling expects a file, write an empty issue artifact with coverage and skip reason rather than making the orchestrator infer absence.
 
+Role-specific rule loading follows this boundary:
+
+- Prose rules are executable. Phase A/B packets include `rule_refs`; `run_prose_agent.py` resolves them into `ARIADNE_PROMPT_FILE` before invoking external agents.
+- Specialist rules are maintenance-only by default. They document judgment boundaries for deterministic issue artifacts, but specialist packets do not load them unless a future domain is explicitly upgraded to LLM refinement rules.
+- Output contracts, renderer behavior, artifact schemas, and deterministic `check_*.py` detection logic are unchanged by rule loading.
+
 ## Prose Review Phases
 
 The Prose Review Agent has two calls for full-paper work:
 
 ### Phase A -- Full-Prose Deep Read
 
-Input: complete `review_units.md` / `review_units.jsonl` plus workflow and review lenses.
+Input: complete `review_units.md` / `review_units.jsonl` plus workflow and executable `rule_refs` for `core_principles.md`, `prose_phase_a_rules.md`, `method_rules.md`, `experiment_rules.md`, `related_work_rules.md`, and `prose_style_rules.md`.
 
 Work: Pass 1 cold skim, Pass 2 linear sentence/paragraph deep read, and Pass 3 section reflections. Preserve whole-paper continuity; do not section-shard typical 30-50 page CS papers unless token estimates exceed the available context.
 
@@ -75,13 +81,15 @@ The orchestrator should read only `phase_a_resume_status.json` and, for the next
 
 If the full review units exceed the context threshold, use section-sharded Phase A and record the split in coverage. `scripts/build_prose_shards.py` writes `phase_a_shard_manifest.json` plus per-shard packets under `phase_a_shards/`. A later synthesis pass is mandatory; do not deliver independent section reviews as a substitute for whole-paper judgment.
 
-`scripts/run_prose_agent.py` is the optional execution wrapper for Phase A/B. It does not hard-code a model provider. Pass `--agent-cmd "<command>"`; the command receives `ARIADNE_PROMPT_PACKET`, `ARIADNE_BUNDLE`, and `ARIADNE_ISSUE_ARTIFACTS`, then writes the JSON/JSONL targets named in the packet. Use `--allow-incomplete` when it is called from the top-level pipeline so a pending Phase A checkpoint is not treated as a failed deterministic stage. The runner stops on `no_progress` when an agent exits successfully but does not advance resume status or write-target counts.
+`scripts/run_prose_agent.py` is the optional execution wrapper for Phase A/B. It does not hard-code a model provider. Pass `--agent-cmd "<command>"`; before each call it renders `ARIADNE_PROMPT_FILE` from the packet with resolved `rule_refs`. The command receives `ARIADNE_PROMPT_PACKET`, `ARIADNE_PROMPT_FILE`, `ARIADNE_BUNDLE`, and `ARIADNE_ISSUE_ARTIFACTS`, then writes the JSON/JSONL targets named in the packet. Use `--allow-incomplete` when it is called from the top-level pipeline so a pending Phase A checkpoint is not treated as a failed deterministic stage. The runner stops on `no_progress` when an agent exits successfully but does not advance resume status or write-target counts.
 
-For sharded Phase A, pass `--shard-manifest <bundle>/phase_a_shard_manifest.json` to `run_prose_agent.py`. The runner executes shard packets in manifest order and skips shards whose sections are already complete.
+`rule_refs` are file references, not embedded text. `run_prose_agent.py` resolves them into `ARIADNE_PROMPT_FILE` before invoking `--agent-cmd`; standalone packet execution should use `scripts/run_agent_command.py --packet <packet> --command "<provider command>"` or an equivalent provider wrapper. A packet with unresolved, missing, or hash-mismatched rule files should fail before model invocation.
+
+For sharded Phase A, pass `--shard-manifest <bundle>/phase_a_shard_manifest.json` to `run_prose_agent.py`. The runner executes shard packets in manifest order and skips shards whose sections are already complete. Shard packets always include core, Phase A, and prose-style rules; method/experiment/related-work rules are added only when shard section ids or titles indicate those section types.
 
 ### Phase B -- Whole-Paper Synthesis and Cross-Domain Integration
 
-Input: `phase_b_context.json`, not full review units. A deterministic compactor such as `build_phase_b_input.py` should build this file from `cold_skim_frame.json`, `section_reflections.json`, `claim_candidates.json`, and all curated `*_issues.json`. The schema is defined in `report_contract.md`; Phase B should not re-read full section reflections or raw specialist audits to make its own compact view.
+Input: `phase_b_context.json`, not full review units, plus executable `rule_refs` for `core_principles.md`, `prose_phase_b_rules.md`, `method_rules.md`, `experiment_rules.md`, and `related_work_rules.md`. A deterministic compactor such as `build_phase_b_input.py` should build this file from `cold_skim_frame.json`, `section_reflections.json`, `claim_candidates.json`, and all curated `*_issues.json`. The schema is defined in `report_contract.md`; Phase B should not re-read full section reflections or raw specialist audits to make its own compact view.
 
 Work: Pass 4 whole-paper argument red-team plus integration of specialist issues into the central claim/evidence story. Ask whether numeric, reference, layout, symbol, source-hygiene, figure/caption, or polish issues change acceptability, claim strength, or reader trust.
 
@@ -133,6 +141,8 @@ scripts/run_specialist_agent.py --issues-dir <bundle>/issue_artifacts --agent-cm
 ```
 
 The command receives `ARIADNE_SPECIALIST_PACKET`, `ARIADNE_SPECIALIST_DOMAIN`, `ARIADNE_SPECIALIST_INPUT`, and `ARIADNE_SPECIALIST_OUTPUT`. By default it reads only curated `*_issues.json` files, not raw audits. If a future specialist truly needs raw audit evidence, extend the packet explicitly and keep the raw audit isolated from the orchestrator.
+
+Specialist rule documents under `references/rules/` are maintenance documentation in the current workflow. They should not re-encode detection logic from `check_page_layout.py`, numeric extraction, `check_references.py`, `check_source_hygiene.py`, `check_polish.py`, `check_symbol.py`, or `check_figure_caption.py`.
 
 ## Top-Level Coordinator
 

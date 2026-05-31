@@ -464,6 +464,56 @@ RS+ECC & Payload space $2^{20}$; RS-coded segmented decoding. & $\delta\in\{1.0,
             raise AssertionError(f"Rebuilt table text is wrong: {text}")
         if table.find("caption") is None or "Table 1:" not in table.find("caption").get_text(" ", strip=True):
             raise AssertionError("Rebuilt table should include a numbered caption")
+        if "paper-booktabs-table" not in table.get("class", []):
+            raise AssertionError(f"Rebuilt table should use booktabs class: {table}")
+        if table.get("data-booktabs-rules") != "bottomrule midrule toprule":
+            raise AssertionError(f"Booktabs rule provenance missing: {table}")
+
+
+def test_booktabs_midrule_allows_multirow_header() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        tex = tmp / "paper.tex"
+        tex.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\begin{table}
+\caption{Two-line header table.}
+\label{tab:multi}
+\begin{tabular}{lcc}
+\toprule
+Method & \multicolumn{2}{c}{Accuracy} \\
+ & NQ & TQA \\
+\midrule
+Base & 10 & 20 \\
+RL & 15 & 25 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\end{document}
+""",
+            encoding="utf-8",
+        )
+        soup = BeautifulSoup(
+            """
+<html><body>
+  <div class="table paper-table" id="tab:multi"><div class="tabular"><p>Method & Accuracy</p></div></div>
+</body></html>
+""",
+            "lxml",
+        )
+        replaced = module.replace_broken_latex_tables(soup, tex)
+        table = soup.select_one("#tab\\:multi table")
+        if replaced != 1 or table is None:
+            raise AssertionError(f"Expected table to be rebuilt, got {soup}")
+        header_rows = table.select("thead tr")
+        body_rows = table.select("tbody tr")
+        if len(header_rows) != 2 or len(body_rows) != 2:
+            raise AssertionError(f"Expected two header rows split by midrule, got table={table}")
+        if "Base" in table.find("thead").get_text(" ", strip=True):
+            raise AssertionError(f"Body row leaked into header: {table}")
 
 
 def test_rebuilt_table_cells_clean_nested_tabular_linebreaks() -> None:
@@ -2212,6 +2262,9 @@ def main() -> int:
     test_sentence_wrapping_preserves_list_paragraph_structure()
     test_paragraph_ids_reset_at_section_boundaries()
     test_restore_latex_labels_for_wrapfigure_and_tables()
+    test_broken_adjustbox_table_is_rebuilt_from_latex_tabular()
+    test_booktabs_midrule_allows_multirow_header()
+    test_rebuilt_table_cells_clean_nested_tabular_linebreaks()
     test_restore_mathml_equation_labels_from_tex_annotations()
     test_table_labels_are_restored_by_content_when_pandoc_reorders_tables()
     test_commented_inputs_do_not_shift_float_numbers_or_references()

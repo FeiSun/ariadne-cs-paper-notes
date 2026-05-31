@@ -134,6 +134,35 @@ def issue_artifact_summary(artifacts: list[dict[str, Any]]) -> list[dict[str, An
     return rows
 
 
+def status_effective_coverage(status: str, checked: int) -> bool:
+    status = status.lower()
+    if status in {"completed", "partial", "completed_with_issues", "completed_no_issues"}:
+        return True
+    return checked > 0 and status not in {"skipped", "skipped_not_requested", "failed"}
+
+
+def blind_spots_from_issue_rows(issue_rows: list[dict[str, Any]]) -> list[str]:
+    blind_spots: list[str] = []
+    for row in issue_rows:
+        domain = compact_text(row.get("domain"))
+        status = compact_text(row.get("status")).lower()
+        checked = int(row.get("checked") or 0)
+        reason = compact_text(row.get("skip_reason"))
+        if domain == "numeric" and status == "completed_no_signals":
+            blind_spots.append(
+                "Numeric specialist found no actionable table-number recomputation signals; quantitative table arithmetic was not certified."
+            )
+            if checked > 0:
+                blind_spots.append(
+                    f"Numeric specialist inspected {checked} source/PDF numeric signal(s) but found no renderable arithmetic mismatch; claim-critical tables still need manual denominator/weighting review."
+                )
+        elif status in {"skipped", "skipped_not_requested", "failed"}:
+            blind_spots.append(f"{domain or 'specialist'} specialist status is {status}; {reason or 'coverage is not certified'}.")
+        elif status == "completed_no_signals" and checked == 0:
+            blind_spots.append(f"{domain or 'specialist'} specialist found no inspectable signals.")
+    return blind_spots
+
+
 def unit_row(unit: str, total: int, reviewed: int, with_issues: int, *, pending_in: str = "") -> dict[str, Any]:
     clean = max(reviewed - with_issues, 0)
     skipped = max(total - reviewed, 0)
@@ -167,7 +196,7 @@ def has_completed_specialist_artifact(issue_artifacts: list[dict[str, Any]]) -> 
         status = compact_text(artifact.get("status")).lower()
         coverage = artifact.get("coverage") if isinstance(artifact.get("coverage"), dict) else {}
         checked = int(coverage.get("checked", 0) or 0)
-        if status in {"completed", "partial"} or checked > 0:
+        if status_effective_coverage(status, checked):
             return True
     return False
 
@@ -205,7 +234,7 @@ def build_reader_journey_passes(
         if phase_b_coverage.get("sections_summarized") or "whole_paper" in source_domains
         else "pending",
         "Pass 5": "done" if has_completed_specialist_artifact(issue_artifacts) else "skipped",
-        "Pass 6": "pending",
+        "Pass 6": "done",
     }
     return [{"pass": pass_name, "status": pass_statuses[pass_name]} for pass_name in PASS_KEYS.values()]
 
@@ -273,7 +302,7 @@ def build_coverage(
         ),
         "issue_artifact_coverage": issue_rows,
         "severity_counts": dict(severity_counts(findings)),
-        "known_blind_spots": [],
+        "known_blind_spots": blind_spots_from_issue_rows(issue_rows),
     }
     if not phase_a:
         payload["known_blind_spots"].append("No phase_a_resume_status.json was provided; prose sentence/paragraph clean coverage is not certified.")

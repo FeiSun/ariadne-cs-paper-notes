@@ -14,6 +14,12 @@ from typing import Any
 
 from bs4 import BeautifulSoup, Tag
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from review_language_contract import is_student_visible_prose_issue  # noqa: E402
+
 
 SCHEMA_VERSION = 1
 ISSUE_ARTIFACT_TYPE = "ariadne_issue_artifact"
@@ -26,49 +32,76 @@ JSONL_DOMAINS = {
 }
 DOMAIN_DEFAULTS = {
     "prose": {
-        "reader_friction": "The prose makes the reader do extra reconstruction work before the claim is clear.",
-        "writing_principle": "reader-first prose",
-        "verification_method": "compiled from Prose Phase A issue shard",
+        "reader_friction": "读者需要额外重建这句话或段落和中心主张的关系，才能判断作者想让自己相信什么。",
+        "writing_principle": "显式逻辑，不让读者猜",
+        "self_check": "下一稿能否让陌生读者不靠脑补就说出这处文字服务哪个 claim？",
+        "severity_rationale": "严重度来自 Prose Phase A 源 issue；若源 issue 未给出具体理由，需要回到批注阶段补齐。",
+        "downgrade_condition": "当源 issue 补齐具体读者卡点、闭合原则、自改问题，并且下一稿消除该阅读摩擦后可降级。",
+        "verification_method": "由 Prose Phase A issue shard 编译",
     },
     "whole_paper": {
-        "reader_friction": "The paper-level argument leaves an important reviewer question unresolved.",
-        "writing_principle": "claim-evidence alignment",
-        "verification_method": "compiled from Prose Phase B finding shard",
+        "reader_friction": "读者在整篇层面仍无法判断中心主张、证据和边界是否对齐。",
+        "writing_principle": "改变读者理解状态",
+        "self_check": "如果不补新证据，下一稿必须收窄哪一个中心 claim 才诚实？",
+        "severity_rationale": "严重度来自 Prose Phase B 综合 finding；若源 finding 未给出具体理由，需要回到综合阶段补齐。",
+        "downgrade_condition": "当全稿 claim、证据和边界重新对齐，并且源 finding 不再出现时可降级。",
+        "verification_method": "由 Prose Phase B finding shard 编译",
     },
     "layout": {
-        "reader_friction": "The visual presentation makes the evidence harder to inspect or compare.",
-        "writing_principle": "low cognitive load",
-        "verification_method": "compiled from layout issue artifact",
+        "reader_friction": "版面呈现提高了读者检查或比较证据的成本。",
+        "writing_principle": "低认知负担 / reader-first",
+        "self_check": "正常 PDF zoom 下，审稿人能否快速看见并比较这处证据？",
+        "severity_rationale": "严重度来自 layout issue artifact。",
+        "downgrade_condition": "当版面核查不再报告该问题，或该对象不再影响主阅读路径时可降级。",
+        "verification_method": "由 layout issue artifact 编译",
     },
     "numeric": {
-        "reader_friction": "The reader cannot verify the reported quantitative evidence without extra reconciliation.",
-        "writing_principle": "auditable quantitative reporting",
-        "verification_method": "compiled from numeric issue artifact",
+        "reader_friction": "读者无法在不额外重算或猜测口径的情况下验证这处定量证据。",
+        "writing_principle": "不要让读者做翻译题/查字典题/算术题",
+        "self_check": "表中 reported value、可见复算值、delta 和 aggregation caveat 是否都写清？",
+        "severity_rationale": "严重度来自 numeric issue artifact。",
+        "downgrade_condition": "当 reported/computed/delta 对齐，或 aggregation caveat 解释差异后可降级。",
+        "verification_method": "由 numeric issue artifact 编译",
     },
     "reference": {
-        "reader_friction": "The bibliography makes cited evidence harder to verify cleanly.",
-        "writing_principle": "verifiable citation metadata",
-        "verification_method": "compiled from reference issue artifact",
+        "reader_friction": "参考文献元数据让读者更难干净地核验引用证据。",
+        "writing_principle": "特定读者共同体",
+        "self_check": "审稿人能否只凭渲染出的 bibliography 找到并核验该引用？",
+        "severity_rationale": "严重度来自 reference issue artifact。",
+        "downgrade_condition": "当参考文献元数据规范且渲染结果可核验后可降级。",
+        "verification_method": "由 reference issue artifact 编译",
     },
     "symbol": {
-        "reader_friction": "Notation drift forces the reader to infer whether terms still mean the same thing.",
-        "writing_principle": "stable terminology",
-        "verification_method": "compiled from symbol issue artifact",
+        "reader_friction": "符号或记号漂移迫使读者猜测两个形式是否仍表示同一对象。",
+        "writing_principle": "不要让读者做翻译题/查字典题/算术题",
+        "self_check": "读者能否不用猜就建立一张稳定符号表？",
+        "severity_rationale": "严重度来自 symbol issue artifact。",
+        "downgrade_condition": "当符号首次定义和跨处使用一致后可降级。",
+        "verification_method": "由 symbol issue artifact 编译",
     },
     "source_hygiene": {
-        "reader_friction": "Submission-source hygiene issues can distract reviewers or break venue expectations.",
-        "writing_principle": "submission readiness",
-        "verification_method": "compiled from source hygiene issue artifact",
+        "reader_friction": "投稿源文件卫生问题会分散 reviewer 注意力，或违反匿名/投稿预期。",
+        "writing_principle": "特定读者共同体",
+        "self_check": "这份 source package 能否直接通过匿名审稿和投稿卫生检查？",
+        "severity_rationale": "严重度来自 source_hygiene issue artifact。",
+        "downgrade_condition": "当 source hygiene audit 不再报告该问题后可降级。",
+        "verification_method": "由 source hygiene issue artifact 编译",
     },
     "figure_caption": {
-        "reader_friction": "The figure or table does not make its evidence easy to interpret at the point of use.",
-        "writing_principle": "self-contained evidence display",
-        "verification_method": "compiled from figure/caption issue artifact",
+        "reader_friction": "图表或 caption 没有在使用点帮助读者理解它支持的证据。",
+        "writing_principle": "caption 首句告诉读者该看见什么",
+        "self_check": "只看图表和 caption，读者能否说出它支持哪个 claim？",
+        "severity_rationale": "严重度来自 figure/caption issue artifact。",
+        "downgrade_condition": "当图表和 caption 能自解释其 takeaway、setting、metric 和 comparator 后可降级。",
+        "verification_method": "由 figure/caption issue artifact 编译",
     },
     "polish": {
-        "reader_friction": "Small consistency issues create unnecessary surface friction for the reader.",
-        "writing_principle": "consistent manuscript polish",
-        "verification_method": "compiled from polish issue artifact",
+        "reader_friction": "表面一致性问题给读者制造了不必要的阅读摩擦。",
+        "writing_principle": "文字精确性先于 flow",
+        "self_check": "这处表面问题是真实正文问题，还是表格/公式抽取噪声？",
+        "severity_rationale": "严重度来自 polish issue artifact。",
+        "downgrade_condition": "当 source polish audit 不再报告该问题，或确认是解析噪声后可降级。",
+        "verification_method": "由 polish issue artifact 编译",
     },
 }
 
@@ -522,21 +555,19 @@ def compile_finding(group: list[SourceIssue], final_id: str) -> dict[str, Any]:
     anchor = primary_anchor(primary.row) or (anchors[0] if anchors else "")
     location = merged_field(group, "location", max_chars=220) or anchor or domain.replace("_", " ")
     recommendation = merged_field(group, "recommendation", "next_draft_task", "task", max_chars=900)
-    self_check = (
-        merged_field(group, "self_check", "next_draft_question", "revision_question", max_chars=900)
-        or recommendation
-        or f"Can the next draft remove this {domain.replace('_', ' ')} friction point?"
-    )
+    self_check = merged_field(group, "self_check", "next_draft_question", "revision_question", max_chars=900) or recommendation or default_for(domain, "self_check")
     reader_friction = merged_field(group, "reader_friction", "why", max_chars=900) or default_for(domain, "reader_friction")
     writing_principle = merged_field(group, "writing_principle", "principle", max_chars=260) or default_for(domain, "writing_principle")
     confidence = merged_field(group, "confidence", max_chars=120) or "medium"
     severity_rationale = (
         merged_field(group, "severity_rationale", max_chars=700)
-        or f"Compiled severity is {severity} from source issue artifact severity."
+        or default_for(domain, "severity_rationale")
+        or f"严重度由源 issue artifact 的 {severity} 级别编译而来。"
     )
     downgrade_condition = (
         merged_field(group, "downgrade_condition", max_chars=700)
-        or "Downgrade after the next compiled artifacts no longer contain this source issue."
+        or default_for(domain, "downgrade_condition")
+        or "当下一轮编译 artifact 不再包含该源 issue 后可降级。"
     )
     source_issue_ids = [issue.source_id for issue in group]
     render_visibility = visibility_for_group(group)
@@ -563,6 +594,14 @@ def compile_finding(group: list[SourceIssue], final_id: str) -> dict[str, Any]:
         "evidence_refs": refs,
         "source_artifacts": merge_source_artifacts(group),
     }
+    if is_student_visible_prose_issue(finding, domain=domain):
+        fallback_fields = [
+            field
+            for field in ("reader_friction", "writing_principle", "self_check", "severity_rationale", "downgrade_condition")
+            if not merged_field(group, field, max_chars=80)
+        ]
+        if fallback_fields:
+            finding["compiler_fallback_fields"] = fallback_fields
     if anchors:
         finding["target_anchors"] = anchors
         finding["primary_anchor"] = anchor or anchors[0]

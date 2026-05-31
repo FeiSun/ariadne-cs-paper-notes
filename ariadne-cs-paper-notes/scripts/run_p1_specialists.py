@@ -60,7 +60,7 @@ def skipped_stub(domain: str, reason: str, checked: int = 0) -> dict[str, Any]:
         "schema_version": 1,
         "domain": domain,
         "context_policy": "model_readable_issue_only",
-        "status": "skipped",
+        "status": "skipped_not_requested",
         "skip_reason": reason,
         "source_artifacts": [],
         "coverage": {"checked": checked, "issues": 0, "skipped": 1},
@@ -122,11 +122,11 @@ def run_layout(pdf: Path | None, bundle: Path, issues_dir: Path, *, force: bool,
         return run_builder("layout", raw, out)
     if pdf is None:
         write_json(out, skipped_stub("layout", "no PDF provided for layout audit"))
-        return {"domain": "layout", "status": "skipped", "issues": str(out), "skip_reason": "no PDF provided"}
+        return {"domain": "layout", "status": "skipped_not_requested", "issues": str(out), "skip_reason": "no PDF provided"}
     if not raw.exists() or force or not layout_audit_matches_pdf(raw, pdf):
         if not shutil.which("pdftotext"):
             write_json(out, skipped_stub("layout", "pdftotext is unavailable"))
-            return {"domain": "layout", "status": "skipped", "issues": str(out), "skip_reason": "pdftotext unavailable"}
+            return {"domain": "layout", "status": "skipped_not_requested", "issues": str(out), "skip_reason": "pdftotext unavailable"}
         cmd = [
             sys.executable,
             script("check_page_layout.py"),
@@ -150,19 +150,20 @@ def run_layout(pdf: Path | None, bundle: Path, issues_dir: Path, *, force: bool,
     return run_builder("layout", raw, out)
 
 
-def run_numeric(pdf: Path | None, bundle: Path, issues_dir: Path, *, force: bool) -> dict[str, Any]:
+def run_numeric(pdf: Path | None, tex: Path | None, bundle: Path, issues_dir: Path, *, force: bool) -> dict[str, Any]:
     out = issues_dir / "numeric_issues.json"
     raw = bundle / "numeric_audit.json"
     if raw.exists() and not force:
         return run_builder("numeric", raw, out)
-    if pdf is None:
+    input_path = pdf or tex
+    if input_path is None:
         write_json(out, skipped_stub("numeric", "no PDF provided for numeric audit"))
-        return {"domain": "numeric", "status": "skipped", "issues": str(out), "skip_reason": "no PDF provided"}
+        return {"domain": "numeric", "status": "skipped_not_requested", "issues": str(out), "skip_reason": "no PDF or TeX source provided"}
     if not raw.exists() or force:
         cmd = [
             sys.executable,
             script("extract_paper_text.py"),
-            str(pdf),
+            str(input_path),
             "--numeric-json",
             str(raw),
             "--force",
@@ -188,7 +189,7 @@ def run_reference(tex: Path | None, bundle: Path, issues_dir: Path, *, force: bo
         return run_builder("reference", raw, out)
     if tex is None:
         write_json(out, skipped_stub("reference", "no TeX/BibTeX source provided for reference audit"))
-        return {"domain": "reference", "status": "skipped", "issues": str(out), "skip_reason": "no TeX/BibTeX source provided"}
+        return {"domain": "reference", "status": "skipped_not_requested", "issues": str(out), "skip_reason": "no TeX/BibTeX source provided"}
     if not raw.exists() or force:
         cmd = [sys.executable, script("check_references.py"), str(tex), "--out", str(raw)]
         if aux is not None:
@@ -216,7 +217,7 @@ def run_source_hygiene(tex: Path | None, pdf: Path | None, bundle: Path, issues_
         return run_builder("source_hygiene", raw, out)
     if tex is None:
         write_json(out, skipped_stub("source_hygiene", "no TeX source provided for source hygiene audit"))
-        return {"domain": "source_hygiene", "status": "skipped", "issues": str(out), "skip_reason": "no TeX source provided"}
+        return {"domain": "source_hygiene", "status": "skipped_not_requested", "issues": str(out), "skip_reason": "no TeX source provided"}
     if not raw.exists() or force:
         cmd = [sys.executable, script("check_source_hygiene.py"), str(tex), "--out", str(raw)]
         if pdf is not None:
@@ -242,7 +243,7 @@ def run_polish(tex: Path | None, bundle: Path, issues_dir: Path, *, force: bool)
         return run_builder("polish", raw, out)
     if tex is None:
         write_json(out, skipped_stub("polish", "no TeX source provided for polish audit"))
-        return {"domain": "polish", "status": "skipped", "issues": str(out), "skip_reason": "no TeX source provided"}
+        return {"domain": "polish", "status": "skipped_not_requested", "issues": str(out), "skip_reason": "no TeX source provided"}
     if not raw.exists() or force:
         cmd = [sys.executable, script("check_polish.py"), str(tex), "--out", str(raw)]
         result = run_command(cmd, timeout=180)
@@ -266,7 +267,7 @@ def run_symbol(tex: Path | None, bundle: Path, issues_dir: Path, *, force: bool)
         return run_builder("symbol", raw, out)
     if tex is None:
         write_json(out, skipped_stub("symbol", "no TeX source provided for symbol audit"))
-        return {"domain": "symbol", "status": "skipped", "issues": str(out), "skip_reason": "no TeX source provided"}
+        return {"domain": "symbol", "status": "skipped_not_requested", "issues": str(out), "skip_reason": "no TeX source provided"}
     if not raw.exists() or force:
         cmd = [sys.executable, script("check_symbol.py"), str(tex), "--out", str(raw)]
         result = run_command(cmd, timeout=180)
@@ -299,7 +300,7 @@ def run_figure_caption(
         return run_builder("figure_caption", raw, out)
     if tex is None:
         write_json(out, skipped_stub("figure_caption", "no TeX source provided for figure/caption audit"))
-        return {"domain": "figure_caption", "status": "skipped", "issues": str(out), "skip_reason": "no TeX source provided"}
+        return {"domain": "figure_caption", "status": "skipped_not_requested", "issues": str(out), "skip_reason": "no TeX source provided"}
     if not raw.exists() or force:
         cmd = [sys.executable, script("check_figure_caption.py"), str(tex), "--out", str(raw)]
         if pdf is not None:
@@ -360,7 +361,7 @@ def run_specialists(
     if "layout" in domains:
         results.append(run_layout(pdf, bundle, issues_dir, force=force, pages=pages))
     if "numeric" in domains:
-        results.append(run_numeric(pdf, bundle, issues_dir, force=force))
+        results.append(run_numeric(pdf, tex, bundle, issues_dir, force=force))
     if "reference" in domains:
         results.append(run_reference(tex, bundle, issues_dir, force=force, aux=aux, bbl=bbl))
     if "source_hygiene" in domains:

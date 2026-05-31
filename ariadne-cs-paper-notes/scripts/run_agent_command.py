@@ -14,8 +14,15 @@ import os
 import shlex
 import subprocess
 import sys
+import hashlib
 from pathlib import Path
 from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from review_language_contract import CHINESE_OUTPUT_INSTRUCTIONS  # noqa: E402
 
 
 def read_json(path: Path) -> Any:
@@ -31,14 +38,106 @@ def compact_json(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def resolve_rule_refs(packet: dict[str, Any]) -> list[dict[str, str]]:
+    refs = packet.get("rule_refs")
+    if refs is None:
+        return []
+    if not isinstance(refs, list):
+        raise ValueError("packet rule_refs must be a list")
+    resolved: list[dict[str, str]] = []
+    for index, ref in enumerate(refs, 1):
+        if not isinstance(ref, dict):
+            raise ValueError(f"packet rule_refs[{index}] must be an object")
+        raw_path = ref.get("path")
+        if not raw_path:
+            raise ValueError(f"packet rule_refs[{index}] is missing path")
+        path = Path(str(raw_path)).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"packet rule_refs[{index}] does not exist: {path}")
+        expected_hash = str(ref.get("hash") or "")
+        actual_hash = sha256_path(path)
+        if expected_hash and expected_hash != actual_hash:
+            raise ValueError(f"packet rule_refs[{index}] hash mismatch for {path}: expected {expected_hash}, got {actual_hash}")
+        resolved.append(
+            {
+                "id": str(ref.get("id") or path.stem),
+                "path": str(path),
+                "hash": actual_hash,
+                "purpose": str(ref.get("purpose") or ""),
+                "content": path.read_text(encoding="utf-8"),
+            }
+        )
+    return resolved
+
+
+def rule_receipts(resolved_rules: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [
+        {
+            "id": rule["id"],
+            "path": rule["path"],
+            "hash": rule["hash"],
+            "purpose": rule.get("purpose", ""),
+        }
+        for rule in resolved_rules
+    ]
+
+
+def render_rules(resolved_rules: list[dict[str, str]]) -> list[str]:
+    if not resolved_rules:
+        return []
+    lines = [
+        "## Resolved Rule References",
+        "",
+        "The following rule_refs are executable review rules for this packet. Apply them together with the packet contract.",
+        "",
+    ]
+    for rule in resolved_rules:
+        title = f"### {rule['id']}"
+        if rule["purpose"]:
+            title += f" -- {rule['purpose']}"
+        lines.extend(
+            [
+                title,
+                "",
+                f"Source: `{rule['path']}`",
+                f"Hash: `{rule['hash']}`",
+                "",
+                rule["content"].rstrip(),
+                "",
+            ]
+        )
+    return lines
+
+
+def render_language_contract() -> list[str]:
+    return [
+        "## 可见批注语言合同",
+        "",
+        *[f"- {instruction}" for instruction in CHINESE_OUTPUT_INSTRUCTIONS],
+        "",
+    ]
+
+
 def render_prompt(packet: dict[str, Any]) -> str:
     phase = packet.get("phase") or packet.get("domain") or "ariadne-agent"
+    resolved_rules = resolve_rule_refs(packet)
     lines = [
         f"# Ariadne Agent Packet: {phase}",
         "",
-        "You are executing an Ariadne packet. Read only the inputs named in the packet and write only the target artifacts named in the packet.",
-        "Do not write HTML. Preserve JSON/JSONL contracts exactly.",
+        "你正在执行一个 Ariadne packet。只读取 packet 中列出的输入，只写入 packet 中列出的目标 artifact。",
+        "如果 packet 包含 rule_refs，下方已解析的规则文本就是可执行指令的一部分。",
+        "不要写 HTML。严格保持 JSON/JSONL 合同。",
         "",
+        *render_language_contract(),
+        *render_rules(resolved_rules),
         "## Packet",
         "```json",
         compact_json(packet),
@@ -89,7 +188,12 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(packet, dict):
         parser.error("--packet must be a JSON object")
     prompt_path = args.prompt_out.expanduser().resolve() if args.prompt_out else packet_path.with_suffix(packet_path.suffix + ".prompt.md")
-    write_text(prompt_path, render_prompt(packet))
+    try:
+        resolved_rules = resolve_rule_refs(packet)
+        prompt_text = render_prompt(packet)
+    except Exception as exc:
+        parser.error(str(exc))
+    write_text(prompt_path, prompt_text)
     cmd = command_parts(args.command)
     summary: dict[str, Any] = {
         "schema_version": 1,
@@ -97,6 +201,8 @@ def main(argv: list[str] | None = None) -> int:
         "generated_by": "scripts/run_agent_command.py",
         "packet": str(packet_path),
         "prompt_file": str(prompt_path),
+        "prompt_hash": sha256_path(prompt_path),
+        "resolved_rule_refs": rule_receipts(resolved_rules),
         "command": cmd,
         "dry_run": args.dry_run,
     }

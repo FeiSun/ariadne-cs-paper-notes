@@ -72,6 +72,8 @@ def test_specialist_agent_dry_run_copies_artifact_and_writes_packet() -> None:
         raise AssertionError(f"Copied artifact changed unexpectedly: {copied}")
     if packet["context_policy"] != "model_readable_specialist_packet":
         raise AssertionError(f"Missing packet context policy: {packet}")
+    if "rule_refs" in packet:
+        raise AssertionError(f"Specialist packets should not load maintenance-only rules by default: {packet}")
     if summary["audit"]["status"] != "passed":
         raise AssertionError(f"Expected dry-run output audit to pass, got {summary}")
 

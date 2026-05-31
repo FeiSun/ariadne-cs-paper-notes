@@ -74,7 +74,7 @@ def base_artifact(
         "context_policy": CONTEXT_POLICY,
         "status": status,
         "source_artifacts": [source_record(raw_path)],
-        "coverage": {"checked": checked, "issues": len(issues), "skipped": 1 if status == "skipped" else 0},
+        "coverage": {"checked": checked, "issues": len(issues), "skipped": 1 if status == "skipped_not_requested" else 0},
         "issues": issues,
     }
     if skip_reason:
@@ -85,39 +85,39 @@ def base_artifact(
 def high_risk_fields(domain: str, recommendation: str = "") -> dict[str, str]:
     defaults = {
         "layout": (
-            "The visual presentation makes evidence harder to inspect at review speed.",
-            "low cognitive load",
-            "Can a reviewer inspect this page/table/figure without zooming or reconstructing layout intent?",
+            "版面呈现让审稿人难以按正常速度检查证据。",
+            "低认知负担 / reader-first",
+            "审稿人能否不放大、不重建版面意图就检查这一页/表/图？",
         ),
         "numeric": (
-            "The reader cannot verify the reported quantitative evidence without reconciling values manually.",
-            "auditable quantitative reporting",
-            "Does the manuscript state the aggregation/denominator that explains the reported number?",
+            "读者无法在不手工重算或猜测口径的情况下验证定量证据。",
+            "不要让读者做翻译题/查字典题/算术题",
+            "稿件是否写清解释该数字的 aggregation 和 denominator？",
         ),
         "reference": (
-            "The bibliography makes cited evidence harder to verify cleanly.",
-            "verifiable citation metadata",
-            "Do cited entries render identifiers, author names, years, and title capitalization consistently?",
+            "参考文献元数据让读者更难干净地核验引用证据。",
+            "特定读者共同体",
+            "引用条目是否一致渲染 identifiers、作者、年份和标题大小写？",
         ),
         "source_hygiene": (
-            "Submission-source hygiene issues can expose identity or leave draft artifacts in front of reviewers.",
-            "submission readiness",
-            "Would this source package satisfy double-blind and camera-ready hygiene expectations without manual cleanup?",
+            "投稿源文件卫生问题可能暴露身份信号，或把草稿痕迹留给 reviewer。",
+            "特定读者共同体",
+            "这个 source package 不经人工清理能否满足匿名审稿和投稿卫生预期？",
         ),
         "polish": (
-            "Mechanical style drift interrupts the reader and makes the manuscript feel less production-ready.",
-            "surface consistency",
-            "Can a reviewer read the manuscript without noticing avoidable copy-editing inconsistencies?",
+            "机械表面漂移会打断读者，让稿件显得不够投稿就绪。",
+            "文字精确性先于 flow",
+            "审稿人能否不被可避免的 copy-editing inconsistency 打断？",
         ),
         "symbol": (
-            "Notation drift forces the reader to infer whether similarly named symbols or macros still mean the same thing.",
-            "stable notation",
-            "Can a reader build one consistent notation registry from the manuscript without guessing?",
+            "记号漂移迫使读者猜测相近符号或宏是否仍表示同一对象。",
+            "不要让读者做翻译题/查字典题/算术题",
+            "读者能否不用猜就从稿件建立一致的 notation registry？",
         ),
         "figure_caption": (
-            "Figures and tables lose force when captions, labels, or assets do not carry evidence cleanly.",
-            "self-contained evidence display",
-            "Can a reviewer inspect each figure/table and recover its setup, metric, and takeaway without hunting?",
+            "当 caption、label 或资产不能清楚承载证据时，图表说服力会下降。",
+            "caption 首句告诉读者该看见什么",
+            "审稿人能否只看每个图/表就恢复 setup、metric 和 takeaway？",
         ),
     }
     friction, principle, self_check = defaults.get(domain, defaults["reference"])
@@ -125,8 +125,8 @@ def high_risk_fields(domain: str, recommendation: str = "") -> dict[str, str]:
         "reader_friction": friction,
         "writing_principle": principle,
         "self_check": recommendation or self_check,
-        "severity_rationale": f"Derived from deterministic {domain} audit severity signal.",
-        "downgrade_condition": f"Downgrade after the {domain} audit no longer reports this issue.",
+        "severity_rationale": f"严重度来自 deterministic {domain} audit 的信号。",
+        "downgrade_condition": f"当 {domain} audit 不再报告该问题后可降级。",
     }
 
 
@@ -183,7 +183,7 @@ def build_layout(raw_path: Path) -> dict[str, Any]:
         if issue["severity"] in {"Blocker", "Major"}:
             issue.update(high_risk_fields("layout", issue["recommendation"]))
         issues.append(issue)
-    status = "completed" if issues else "skipped"
+    status = "completed_with_issues" if issues else "completed_no_issues"
     return base_artifact(
         domain="layout",
         raw_path=raw_path,
@@ -227,14 +227,22 @@ def build_numeric(raw_path: Path) -> dict[str, Any]:
         }
         issue.update(high_risk_fields("numeric", issue["recommendation"]))
         issues.append(issue)
-    status = "completed" if issues else "skipped"
+    coverage = payload.get("coverage") if isinstance(payload, dict) and isinstance(payload.get("coverage"), dict) else {}
+    checked = checked_count(payload, "signal_count")
+    if not checked:
+        checked = checked_count(coverage, "numeric_cells_seen", "numeric_rows_seen", "tables_seen")
+    status = "completed_with_issues" if issues else "completed_no_signals"
+    source = compact_text(coverage.get("source"))
+    reason = "numeric_audit.signal_count == 0"
+    if source:
+        reason += f"; {source} coverage found no actionable recomputation signal"
     return base_artifact(
         domain="numeric",
         raw_path=raw_path,
         status=status,
         issues=issues,
-        checked=checked_count(payload, "signal_count"),
-        skip_reason="" if issues else "numeric_audit.signal_count == 0",
+        checked=checked,
+        skip_reason="" if issues else reason,
     )
 
 
@@ -261,7 +269,7 @@ def build_reference(raw_path: Path) -> dict[str, Any]:
         if issue["severity"] in {"Blocker", "Major"}:
             issue.update(high_risk_fields("reference", rec))
         issues.append(issue)
-    status = "completed" if issues else "skipped"
+    status = "completed_with_issues" if issues else "completed_no_issues"
     estimate = payload.get("reference_count_estimate") if isinstance(payload, dict) else {}
     return base_artifact(
         domain="reference",
@@ -298,7 +306,7 @@ def build_source_hygiene(raw_path: Path) -> dict[str, Any]:
         if issue["severity"] in {"Blocker", "Major"}:
             issue.update(high_risk_fields("source_hygiene", rec))
         issues.append(issue)
-    status = "completed" if issues else "skipped"
+    status = "completed_with_issues" if issues else "completed_no_issues"
     coverage = payload.get("coverage") if isinstance(payload, dict) else {}
     return base_artifact(
         domain="source_hygiene",
@@ -333,7 +341,7 @@ def build_polish(raw_path: Path) -> dict[str, Any]:
         if issue["severity"] in {"Blocker", "Major"}:
             issue.update(high_risk_fields("polish", rec))
         issues.append(issue)
-    status = "completed" if issues else "skipped"
+    status = "completed_with_issues" if issues else "completed_no_issues"
     coverage = payload.get("coverage") if isinstance(payload, dict) else {}
     checked = checked_count(coverage, "words_checked", "signals_checked") or int_sum(coverage)
     return base_artifact(
@@ -369,7 +377,7 @@ def build_symbol(raw_path: Path) -> dict[str, Any]:
         if issue["severity"] in {"Blocker", "Major"}:
             issue.update(high_risk_fields("symbol", rec))
         issues.append(issue)
-    status = "completed" if issues else "skipped"
+    status = "completed_with_issues" if issues else "completed_no_issues"
     coverage = payload.get("coverage") if isinstance(payload, dict) else {}
     checked = checked_count(coverage, "display_equations", "signals_checked") or int_sum(coverage)
     return base_artifact(
@@ -417,7 +425,7 @@ def build_figure_caption(raw_path: Path) -> dict[str, Any]:
         if issue["severity"] in {"Blocker", "Major"}:
             issue.update(high_risk_fields("figure_caption", rec))
         issues.append(issue)
-    status = "completed" if issues else "skipped"
+    status = "completed_with_issues" if issues else "completed_no_issues"
     coverage = payload.get("coverage") if isinstance(payload, dict) else {}
     checked = int_sum(coverage) or checked_count(coverage, "floats", "captions", "rendered_pages_checked", "signals_checked")
     return base_artifact(

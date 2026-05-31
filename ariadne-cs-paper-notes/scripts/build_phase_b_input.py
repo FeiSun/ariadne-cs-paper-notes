@@ -111,13 +111,14 @@ def normalize_cold_skim(payload: Any) -> dict[str, Any]:
             "first_reader_breaks": [],
         }
     return {
-        "problem": first_nonempty(payload, ("problem", "what_problem", "paper_problem")),
-        "gap": first_nonempty(payload, ("gap", "missing_gap", "research_gap")),
-        "idea": first_nonempty(payload, ("idea", "approach", "core_idea", "method")),
-        "evidence": first_nonempty(payload, ("evidence", "visible_evidence", "main_evidence")),
-        "boundary": first_nonempty(payload, ("boundary", "scope", "limitation", "limits")),
+        "problem": first_nonempty(payload, ("problem", "problem_recoverable", "what_problem", "paper_problem")),
+        "gap": first_nonempty(payload, ("gap", "gap_recoverable", "missing_gap", "research_gap")),
+        "idea": first_nonempty(payload, ("idea", "idea_recoverable", "approach", "core_idea", "method")),
+        "evidence": first_nonempty(payload, ("evidence", "evidence_recoverable", "visible_evidence", "main_evidence")),
+        "boundary": first_nonempty(payload, ("boundary", "boundary_recoverable", "scope", "limitation", "limits")),
         "first_reader_breaks": normalize_id_list(
             payload.get("first_reader_breaks")
+            or payload.get("skim_breaks")
             or payload.get("reader_breaks")
             or payload.get("what_tripped_me")
             or payload.get("breaks"),

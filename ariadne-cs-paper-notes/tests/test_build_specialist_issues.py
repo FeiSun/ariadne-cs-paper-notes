@@ -65,13 +65,13 @@ def test_reference_audit_reduces_to_issue_artifact() -> None:
     assert_issue_artifact_audits(payload, "reference_issues.json")
 
 
-def test_numeric_audit_without_signals_is_skipped() -> None:
+def test_numeric_audit_without_signals_reports_no_signals() -> None:
     module = load_module(SCRIPT, "build_specialist_issues")
     with tempfile.TemporaryDirectory() as tempdir:
         raw = Path(tempdir) / "numeric_audit.json"
         write_json(raw, {"signal_count": 0, "signals": []})
         payload = module.build_numeric(raw)
-    if payload["status"] != "skipped" or payload["issues"]:
+    if payload["status"] != "completed_no_signals" or payload["issues"]:
         raise AssertionError(f"Expected numeric skipped stub, got {payload}")
     assert_issue_artifact_audits(payload, "numeric_issues.json")
 
@@ -98,8 +98,19 @@ def test_layout_needs_main_review_becomes_issue() -> None:
             },
         )
         payload = module.build_layout(raw)
-    if payload["status"] != "completed" or payload["coverage"]["issues"] != 1:
+    if payload["status"] != "completed_with_issues" or payload["coverage"]["issues"] != 1:
         raise AssertionError(f"Expected one layout issue, got {payload}")
+    assert_issue_artifact_audits(payload, "layout_issues.json")
+
+
+def test_layout_without_actionable_observations_reports_no_issues() -> None:
+    module = load_module(SCRIPT, "build_specialist_issues")
+    with tempfile.TemporaryDirectory() as tempdir:
+        raw = Path(tempdir) / "layout_audit.json"
+        write_json(raw, {"pages_checked": [1, 2], "observations": []})
+        payload = module.build_layout(raw)
+    if payload["status"] != "completed_no_issues" or payload["coverage"]["checked"] != 2:
+        raise AssertionError(f"Expected completed_no_issues layout status, got {payload}")
     assert_issue_artifact_audits(payload, "layout_issues.json")
 
 
@@ -300,8 +311,9 @@ def test_figure_caption_target_label_becomes_render_anchor() -> None:
 
 if __name__ == "__main__":
     test_reference_audit_reduces_to_issue_artifact()
-    test_numeric_audit_without_signals_is_skipped()
+    test_numeric_audit_without_signals_reports_no_signals()
     test_layout_needs_main_review_becomes_issue()
+    test_layout_without_actionable_observations_reports_no_issues()
     test_source_hygiene_audit_reduces_to_issue_artifact()
     test_source_hygiene_marks_compiled_pdf_visibility_basis()
     test_source_hygiene_does_not_mark_nonvisible_source_issue_as_compiled_pdf()

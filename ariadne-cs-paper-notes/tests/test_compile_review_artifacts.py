@@ -29,6 +29,18 @@ def write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def prose_fields(anchor: str = "s-intro-p001-s001") -> dict[str, object]:
+    return {
+        "reader_friction": "读者还不知道证据边界，就被要求接受较强主张。",
+        "writing_principle": "文字精确性先于 flow",
+        "self_check": "下一稿能否在这里写清对象、范围和证据边界？",
+        "evidence_refs": [{"source_artifact": "review_units.jsonl", "anchor": anchor}],
+        "confidence": "high",
+        "severity_rationale": "该问题影响读者判断 claim 的可信度。",
+        "downgrade_condition": "补齐范围和证据边界后可降级。",
+    }
+
+
 def specialist_artifact(domain: str = "reference") -> dict[str, object]:
     return {
         "artifact_type": "ariadne_issue_artifact",
@@ -47,7 +59,7 @@ def specialist_artifact(domain: str = "reference") -> dict[str, object]:
                 "title": "Hidden DOI fields",
                 "diagnosis": "Several cited entries use non-standard xdoi fields, so identifiers may not render.",
                 "reader_friction": "Reviewers have to hunt for identifiers manually.",
-                "writing_principle": "verifiable citation metadata",
+                "writing_principle": "特定读者共同体",
                 "self_check": "Do cited entries render DOI or URL fields in the bibliography?",
                 "evidence_refs": ["bib:R1"],
                 "confidence": "high",
@@ -72,11 +84,11 @@ def test_compile_jsonl_and_specialist_artifacts() -> None:
                     "local_id": "P1",
                     "severity": "Minor",
                     "issue_type": "prose",
-                    "title": "Opening sentence overclaims",
-                    "diagnosis": "The sentence states a universal claim before naming the experimental boundary.",
+                    "title": "开头句主张缺少证据边界",
+                    "diagnosis": "这个句子先给出较强主张，但没有说明它由哪些实验设置支撑。",
                     "target_anchors": ["s-intro-p001-s001"],
                     "spans_sections": False,
-                    "confidence": "medium",
+                    **prose_fields("s-intro-p001-s001"),
                 },
                 ensure_ascii=False,
             )
@@ -89,11 +101,17 @@ def test_compile_jsonl_and_specialist_artifacts() -> None:
                     "local_id": "W1",
                     "severity": "Major",
                     "issue_type": "claim_evidence",
-                    "title": "Single-run evidence is used like a stable result",
-                    "diagnosis": "The paper-level story does not separate exploratory evidence from stable claims.",
+                    "title": "整篇主张强于可见证据边界",
+                    "diagnosis": "全稿叙述没有区分探索性证据和稳定结论，使中心 claim 显得比证据更强。",
                     "target_anchors": ["abstract", "experiments"],
                     "spans_sections": True,
+                    "reader_friction": "读者可能接受观察到的趋势，却无法判断它是否足以支撑整篇层面的稳定主张。",
+                    "writing_principle": "改变读者理解状态",
+                    "self_check": "如果不补新证据，下一稿必须收窄哪一个中心 claim？",
+                    "evidence_refs": [{"source_artifact": "phase_b_context.json", "anchor": "abstract"}],
                     "confidence": "medium",
+                    "severity_rationale": "整篇 claim/evidence 边界不清会影响审稿人对贡献强度的判断。",
+                    "downgrade_condition": "当摘要、实验和结论的 claim 边界一致后可降级。",
                 },
                 ensure_ascii=False,
             )
@@ -192,6 +210,7 @@ def test_compiler_hides_source_only_anonymous_front_matter_false_positive() -> N
                     "diagnosis": "正文入口处直接显示作者姓名、单位占位和邮箱占位；若这是 ACL review 版，匿名性在第一页已经破坏。",
                     "target_anchors": ["s-front-p001-s001"],
                     "render_visibility": "student_visible",
+                    **prose_fields("s-front-p001-s001"),
                 },
                 ensure_ascii=False,
             )
@@ -206,6 +225,7 @@ def test_compiler_hides_source_only_anonymous_front_matter_false_positive() -> N
                     "diagnosis": "摘要末尾给出 anonymous.4open.science 链接，但首页作者姓名已经可见，且链接 slug 可能形成可追踪信号。",
                     "target_anchors": ["s-front-p001-s002"],
                     "render_visibility": "student_visible",
+                    **prose_fields("s-front-p001-s002"),
                 },
                 ensure_ascii=False,
             )
@@ -276,10 +296,11 @@ def test_compiler_drops_stale_resolved_float_reference_issue() -> None:
                     "severity": "Major",
                     "issue_type": "figure_reference",
                     "title": "图号引用错误",
-                    "diagnosis": "Old cache claimed this sentence pointed to the wrong figure.",
+                    "diagnosis": "旧缓存声称这句话指向了错误图号，但当前 source HTML 已经解析为正确图。",
                     "target_anchors": ["s-demo"],
                     "primary_anchor": "s-demo",
                     "render_visibility": "student_visible",
+                    **prose_fields("s-demo"),
                 },
                 ensure_ascii=False,
             )

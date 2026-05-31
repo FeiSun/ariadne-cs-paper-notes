@@ -19,6 +19,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from audit_html_report import AriadneHTMLParser, audit as audit_html  # noqa: E402
 from audit_html_report import audit_source_integrity, validate_source_hash  # noqa: E402
+from review_language_contract import is_student_visible_prose_issue, teaching_contract_errors  # noqa: E402
 
 
 SEVERITIES = {"Blocker", "Major", "Minor", "Polish"}
@@ -155,7 +156,20 @@ ISSUE_DOMAINS = {
     "figure_caption",
     "polish",
 }
-ISSUE_STATUSES = {"completed", "skipped", "partial"}
+JSONL_DOMAINS = {
+    "prose_issues": "prose",
+    "whole_paper_findings": "whole_paper",
+}
+ISSUE_STATUSES = {
+    "completed",
+    "skipped",
+    "partial",
+    "completed_with_issues",
+    "completed_no_issues",
+    "completed_no_signals",
+    "skipped_not_requested",
+    "failed",
+}
 REQUIRED_ISSUE_FIELDS = {
     "local_id",
     "severity",
@@ -349,6 +363,9 @@ def audit_findings(payload: Any, layout_audit_payload: Any | None = None) -> tup
         missing = sorted(field for field in REQUIRED_FINDING_FIELDS if not nonempty(finding.get(field)))
         for field in missing:
             errors.append(f"{prefix} {finding_id}: missing required field `{field}`")
+        errors.extend(teaching_contract_errors(finding, prefix=f"{prefix} {finding_id}"))
+        if nonempty(finding.get("compiler_fallback_fields")) and is_student_visible_prose_issue(finding):
+            errors.append(f"{prefix} {finding_id}: visible Prose finding relies on compiler fallback fields {finding.get('compiler_fallback_fields')}")
         if not any(nonempty(finding.get(field)) for field in FINDING_SELF_CHECK_FIELDS):
             errors.append(f"{prefix} {finding_id}: missing required self-check field (`self_check` or `next_draft_question`)")
 
@@ -417,12 +434,34 @@ def artifact_only_finding_ids(payload: Any) -> set[str]:
     return ids
 
 
+def phase_a_receipts_complete(bundle_path: Path | None, coverage_payload: Any | None) -> bool:
+    if bundle_path is None or not isinstance(coverage_payload, dict):
+        return False
+    review_units = next(bundle_path.glob("*.review_units.jsonl"), None)
+    if review_units is None:
+        return False
+    paragraph_order, section_ids = review_units_order(review_units)
+    paragraph_ids = set(paragraph_order)
+    decisions = paragraph_decision_ids(bundle_path / "paragraph_decisions.jsonl")
+    reflections = section_reflection_ids(bundle_path / "section_reflections.json")
+    if paragraph_ids - decisions or section_ids - reflections:
+        return False
+    ordered_decisions = paragraph_decision_order(bundle_path / "paragraph_decisions.jsonl")
+    if ordered_decisions:
+        review_order = {paragraph_id: idx for idx, paragraph_id in enumerate(paragraph_order)}
+        sortable = [review_order[paragraph_id] for paragraph_id in ordered_decisions if paragraph_id in review_order]
+        if sortable != sorted(sortable):
+            return False
+    return True
+
+
 def audit_annotations(
     payload: Any,
     *,
     coverage_payload: Any | None = None,
     manifest_payload: Any | None = None,
     finding_ids: set[str] | None = None,
+    bundle_path: Path | None = None,
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -444,6 +483,7 @@ def audit_annotations(
 
     by_level: Counter[str] = Counter()
     ids: set[str] = set()
+    has_phase_a_receipts = phase_a_receipts_complete(bundle_path, coverage_payload)
     for idx, annotation in enumerate(annotations, 1):
         if not isinstance(annotation, dict):
             errors.append(f"annotation #{idx} must be an object")
@@ -522,7 +562,7 @@ def audit_annotations(
 
             if sentence_reviewed and sentence_reviewed >= 100:
                 minimum_sentence_annotations = max(1, int(sentence_reviewed * 0.15))
-                if by_level["sentence"] < minimum_sentence_annotations:
+                if by_level["sentence"] < minimum_sentence_annotations and not has_phase_a_receipts:
                     errors.append(
                         "full-paper/逐句 coverage reports "
                         f"{sentence_reviewed} reviewed sentences, but annotations.json has only "
@@ -535,7 +575,7 @@ def audit_annotations(
                 )
             if paragraph_reviewed and paragraph_reviewed >= 50:
                 minimum_paragraph_annotations = max(1, int(paragraph_reviewed * 0.15))
-                if by_level["paragraph"] < minimum_paragraph_annotations:
+                if by_level["paragraph"] < minimum_paragraph_annotations and not has_phase_a_receipts:
                     errors.append(
                         "full-paper paragraph coverage reports "
                         f"{paragraph_reviewed} reviewed paragraphs, but annotations.json has only "
@@ -572,16 +612,42 @@ def audit_annotations(
                     "annotations.json `source_hash` does not match render_manifest paper_reader.source_hash; "
                     "regenerate annotations from the current manuscript instead of reusing a prior review"
                 )
-            if full_scope and sentence_reviewed and sentence_reviewed >= 100 and len(annotations) <= 50:
+            if full_scope and sentence_reviewed and sentence_reviewed >= 100 and len(annotations) <= 50 and not has_phase_a_receipts:
                 warnings.append(
                     "overlay-only paper-reader has 50 or fewer annotations; verify this is not a sampled/top-issues run"
                 )
     return errors, warnings
 
 
-def audit_claims(payload: Any, finding_ids: set[str]) -> tuple[list[str], list[str]]:
+def source_to_finding_map(bundle_path: Path | None, issue_artifacts_dir: Path | None = None) -> dict[str, str]:
+    candidates: list[Path] = []
+    if issue_artifacts_dir is not None:
+        candidates.append(issue_artifacts_dir / "compiled_issue_index.json")
+    if bundle_path is not None:
+        candidates.append(bundle_path / "issue_artifacts" / "compiled_issue_index.json")
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            payload = load_json(path)
+        except Exception:
+            continue
+        mapping = payload.get("source_to_finding_id") if isinstance(payload, dict) else None
+        if isinstance(mapping, dict):
+            return {str(key): str(value) for key, value in mapping.items() if key and value}
+    return {}
+
+
+def audit_claims(
+    payload: Any,
+    finding_ids: set[str],
+    *,
+    strict: bool = False,
+    source_mapping: dict[str, str] | None = None,
+) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
+    source_mapping = source_mapping or {}
     claims = list_from_payload(payload, "claims")
     seen: set[str] = set()
     for idx, claim in enumerate(claims, 1):
@@ -594,8 +660,225 @@ def audit_claims(payload: Any, finding_ids: set[str]) -> tuple[list[str], list[s
             if not nonempty(claim.get(field)):
                 errors.append(f"{prefix} {claim_id}: missing required field `{field}`")
         for linked in claim.get("linked_findings", []):
-            if linked not in finding_ids:
-                warnings.append(f"{prefix} {claim_id}: linked finding `{linked}` not present in findings")
+            mapped = source_mapping.get(str(linked))
+            if linked not in finding_ids and mapped not in finding_ids:
+                message = f"{prefix} {claim_id}: linked finding `{linked}` not present in findings"
+                if strict:
+                    errors.append(message)
+                else:
+                    warnings.append(message)
+    return errors, warnings
+
+
+def review_units_ids(path: Path) -> tuple[set[str], set[str]]:
+    paragraphs: set[str] = set()
+    sections: set[str] = set()
+    if not path.exists():
+        return paragraphs, sections
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        kind = compact_text(row.get("kind")).lower()
+        paragraph_id = compact_text(row.get("paragraph_id"))
+        section_id = compact_text(row.get("section_id"))
+        if kind == "paragraph" and paragraph_id:
+            paragraphs.add(paragraph_id)
+        if kind == "section" and section_id:
+            sections.add(section_id)
+    return paragraphs, sections
+
+
+def review_units_order(path: Path) -> tuple[list[str], set[str]]:
+    paragraphs: list[str] = []
+    sections: set[str] = set()
+    if not path.exists():
+        return paragraphs, sections
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        paragraph_id = compact_text(row.get("paragraph_id"))
+        section_id = compact_text(row.get("section_id"))
+        if paragraph_id:
+            paragraphs.append(paragraph_id)
+            if section_id:
+                sections.add(section_id)
+        elif section_id:
+            sections.add(section_id)
+    return paragraphs, sections
+
+
+def paragraph_decision_ids(path: Path) -> set[str]:
+    ids: set[str] = set()
+    if not path.exists():
+        return ids
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            paragraph_id = compact_text(row.get("paragraph_id"))
+            if paragraph_id:
+                ids.add(paragraph_id)
+    return ids
+
+
+def paragraph_decision_order(path: Path) -> list[str]:
+    order: list[str] = []
+    if not path.exists():
+        return order
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            paragraph_id = compact_text(row.get("paragraph_id"))
+            if paragraph_id:
+                order.append(paragraph_id)
+    return order
+
+
+def prose_issue_traceability(path: Path, decision_ids: set[str]) -> list[str]:
+    errors: list[str] = []
+    if not path.exists():
+        return errors
+    for line_idx, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        local_id = compact_text(row.get("local_id") or row.get("id") or row.get("issue_id") or f"line {line_idx}")
+        anchors = row.get("target_anchors") or row.get("anchors")
+        has_anchor = bool(isinstance(anchors, list) and any(compact_text(item) for item in anchors))
+        has_anchor = has_anchor or bool(
+            compact_text(row.get("primary_anchor") or row.get("anchor") or row.get("sentence_id") or row.get("paragraph_id"))
+        )
+        if not has_anchor:
+            errors.append(f"prose_issues.jsonl line {line_idx} `{local_id}` missing anchor/target_anchors")
+        paragraph_id = compact_text(row.get("paragraph_id"))
+        if paragraph_id and paragraph_id not in decision_ids:
+            errors.append(f"prose_issues.jsonl line {line_idx} `{local_id}` paragraph_id `{paragraph_id}` has no paragraph decision receipt")
+    return errors
+
+
+def section_reflection_ids(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        payload = load_json(path)
+    except Exception:
+        return set()
+    rows = payload.get("sections") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return set()
+    return {compact_text(row.get("section_id")) for row in rows if isinstance(row, dict) and compact_text(row.get("section_id"))}
+
+
+def audit_phase_a_receipts(bundle_path: Path | None, coverage_payload: Any | None, *, strict: bool = False) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if bundle_path is None or not isinstance(coverage_payload, dict):
+        return errors, warnings
+    scope_text = " ".join(
+        compact_text(value)
+        for value in (coverage_payload.get("requested_scope"), coverage_payload.get("scope"), coverage_payload.get("review_scope"))
+    ).lower()
+    if not any(cue in scope_text for cue in FULL_REVIEW_CUES):
+        return errors, warnings
+    review_units = next(bundle_path.glob("*.review_units.jsonl"), None)
+    if review_units is None:
+        if strict:
+            errors.append("full-paper strict audit could not audit Phase A receipts because review_units.jsonl was not found")
+        return errors, warnings
+    paragraph_order, section_ids = review_units_order(review_units)
+    paragraph_ids = set(paragraph_order)
+    decisions = paragraph_decision_ids(bundle_path / "paragraph_decisions.jsonl")
+    reflections = section_reflection_ids(bundle_path / "section_reflections.json")
+    missing_paragraphs = sorted(paragraph_ids - decisions)
+    missing_sections = sorted(section_ids - reflections)
+    if missing_paragraphs:
+        sample = ", ".join(missing_paragraphs[:8])
+        errors.append(f"Phase A paragraph_decisions.jsonl missing {len(missing_paragraphs)} paragraph receipt(s): {sample}")
+    if missing_sections:
+        sample = ", ".join(missing_sections[:8])
+        errors.append(f"Phase A section_reflections.json missing {len(missing_sections)} section receipt(s): {sample}")
+    ordered_decisions = paragraph_decision_order(bundle_path / "paragraph_decisions.jsonl")
+    if ordered_decisions:
+        review_order = {paragraph_id: idx for idx, paragraph_id in enumerate(paragraph_order)}
+        sortable = [review_order[paragraph_id] for paragraph_id in ordered_decisions if paragraph_id in review_order]
+        if sortable != sorted(sortable):
+            errors.append("Phase A paragraph_decisions.jsonl is not monotonic in review_units paragraph order")
+    errors.extend(prose_issue_traceability(bundle_path / "issue_artifacts" / "prose_issues.jsonl", decisions))
+    return errors, warnings
+
+
+def audit_agent_provenance(bundle_path: Path | None, *, strict: bool) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if bundle_path is None or not strict:
+        return errors, warnings
+    provenance_path = bundle_path / "agent_provenance.json"
+    summary_path = bundle_path / "prose_agent_summary.json"
+    if not provenance_path.exists():
+        return ["full-paper strict audit requires agent_provenance.json or explicit single-agent provenance"], warnings
+    try:
+        payload = load_json(provenance_path)
+    except Exception as exc:
+        return [f"agent_provenance.json could not be read: {exc}"], warnings
+    if not isinstance(payload, dict):
+        return ["agent_provenance.json must be an object"], warnings
+    if payload.get("context_policy") != "model_readable_agent_provenance_only":
+        errors.append("agent_provenance.json has unexpected context_policy")
+    if payload.get("single_agent") is True:
+        agents = payload.get("agents")
+        if not isinstance(agents, list) or not agents:
+            errors.append("single-agent provenance must list expected artifact receipts")
+        return errors, warnings
+    if not summary_path.exists():
+        errors.append("full-paper strict audit requires prose_agent_summary.json for external prose-agent mode")
+    agents = payload.get("agents")
+    if not isinstance(agents, list) or not agents:
+        errors.append("agent_provenance.json must contain at least one agent")
+        return errors, warnings
+    prose_agents = [agent for agent in agents if isinstance(agent, dict) and agent.get("kind") == "prose"]
+    if not prose_agents:
+        errors.append("agent_provenance.json missing prose agent receipt")
+        return errors, warnings
+    calls: list[dict[str, Any]] = []
+    for agent in prose_agents:
+        raw_calls = agent.get("calls")
+        if isinstance(raw_calls, list):
+            calls.extend(item for item in raw_calls if isinstance(item, dict))
+    if not calls:
+        errors.append("prose agent provenance contains no prompt calls")
+    for idx, call in enumerate(calls, 1):
+        for field in ("packet", "packet_hash", "prompt_file", "prompt_hash", "resolved_rule_refs"):
+            if not nonempty(call.get(field)):
+                errors.append(f"prose agent call #{idx} missing `{field}`")
+        prompt = Path(compact_text(call.get("prompt_file")))
+        if prompt and not prompt.exists():
+            errors.append(f"prose agent call #{idx} prompt file does not exist: {prompt}")
     return errors, warnings
 
 
@@ -955,6 +1238,30 @@ def audit_numeric_signal_payload(payload: Any) -> tuple[list[str], list[str], li
     return errors, warnings, render_required
 
 
+def audit_specialist_blind_spots(coverage_payload: Any) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(coverage_payload, dict):
+        return errors, warnings
+    rows = coverage_payload.get("issue_artifact_coverage")
+    if not isinstance(rows, list):
+        return errors, warnings
+    blind_spots = coverage_payload.get("known_blind_spots")
+    blind_text = "\n".join(str(item) for item in blind_spots).lower() if isinstance(blind_spots, list) else ""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        domain = compact_text(row.get("domain"))
+        status = compact_text(row.get("status")).lower()
+        checked = int(row.get("checked") or 0)
+        requires_blind_spot = status in {"skipped", "skipped_not_requested", "failed"} or (
+            status == "completed_no_signals" and (checked == 0 or domain == "numeric")
+        )
+        if requires_blind_spot and domain and domain.lower() not in blind_text:
+            errors.append(f"coverage.known_blind_spots must mention `{domain}` because specialist status is {status} with checked={checked}")
+    return errors, warnings
+
+
 def audit_numeric_signal_rendering(signals: list[dict[str, Any]], html: str) -> list[str]:
     errors: list[str] = []
     parser = AriadneHTMLParser()
@@ -1063,11 +1370,15 @@ def audit_issue_artifact_payload(payload: Any, path: Path) -> tuple[list[str], l
     if not isinstance(issues, list):
         errors.append(f"{label}: issues must be a list")
         return errors, warnings, issue_ids
-    if status == "skipped":
+    if status in {"skipped", "skipped_not_requested"}:
         if issues:
             errors.append(f"{label}: skipped issue artifact must have an empty issues list")
         if not nonempty(payload.get("skip_reason")):
             errors.append(f"{label}: skipped issue artifact missing skip_reason")
+    if status in {"completed_no_issues", "completed_no_signals"} and issues:
+        errors.append(f"{label}: {status} issue artifact must have an empty issues list")
+    if status == "completed_with_issues" and not issues:
+        errors.append(f"{label}: completed_with_issues issue artifact must contain at least one issue")
     if isinstance(coverage, dict):
         issue_count = coverage.get("issues")
         if isinstance(issue_count, int) and issue_count != len(issues):
@@ -1103,7 +1414,58 @@ def audit_issue_artifact_payload(payload: Any, path: Path) -> tuple[list[str], l
             for field in sorted(HIGH_RISK_ISSUE_FIELDS):
                 if not nonempty(issue.get(field)):
                     errors.append(f"{prefix} {local_id or '<missing>'}: high-risk issue missing `{field}`")
+        errors.extend(
+            teaching_contract_errors(
+                issue,
+                prefix=f"{prefix} {local_id or '<missing>'}",
+                domain=domain,
+            )
+        )
     return errors, warnings, issue_ids
+
+
+def audit_jsonl_issue_shard(path: Path, *, compiled: bool) -> tuple[list[str], list[str], set[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    ids: set[str] = set()
+    domain = JSONL_DOMAINS.get(path.stem, "")
+    if not domain:
+        return errors, warnings, ids
+    for line_idx, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        prefix = f"{path.name}: line {line_idx}"
+        try:
+            issue = json.loads(line)
+        except json.JSONDecodeError as exc:
+            errors.append(f"{prefix}: invalid JSON: {exc}")
+            continue
+        if not isinstance(issue, dict):
+            errors.append(f"{prefix}: issue row must be an object")
+            continue
+        local_id = compact_text(issue.get("local_id") or issue.get("id") or issue.get("issue_id"))
+        if not local_id:
+            errors.append(f"{prefix}: missing local_id")
+            local_id = f"<missing-{line_idx}>"
+        elif local_id in ids:
+            errors.append(f"{path.name}: duplicate local_id `{local_id}`")
+        ids.add(local_id)
+        row_prefix = f"{prefix} {local_id}"
+        for field in sorted(REQUIRED_ISSUE_FIELDS):
+            if field == "local_id":
+                continue
+            if not nonempty(issue.get(field)):
+                errors.append(f"{row_prefix}: missing `{field}`")
+        if domain == "prose" and not nonempty(issue.get("section_id")):
+            errors.append(f"{row_prefix}: missing `section_id`")
+        if domain == "whole_paper" and not isinstance(issue.get("source_issue_ids"), list):
+            errors.append(f"{row_prefix}: whole-paper finding missing `source_issue_ids` list")
+        if not (isinstance(issue.get("target_anchors"), list) and issue.get("target_anchors")) and not nonempty(issue.get("primary_anchor")):
+            errors.append(f"{row_prefix}: missing anchor/target_anchors")
+        errors.extend(teaching_contract_errors(issue, prefix=row_prefix, domain=domain))
+    if not compiled:
+        warnings.append(f"{path.name}: JSONL issue shard not schema-audited by compiled index; compiler should normalize it")
+    return errors, warnings, {f"{domain}:{local_id}" for local_id in ids if not local_id.startswith("<missing-")}
 
 
 def audit_issue_artifacts(issue_artifacts_dir: Path | None, *, legacy_allowed: bool = True) -> tuple[list[str], list[str], set[str]]:
@@ -1145,8 +1507,13 @@ def audit_issue_artifacts(issue_artifacts_dir: Path | None, *, legacy_allowed: b
         warnings.append("issue_artifacts/ exists but contains no *_issues.json or *_issues.jsonl files")
     for path in paths:
         if path.suffix == ".jsonl":
-            if path.name not in compiled_jsonl_shards:
-                warnings.append(f"{path.name}: JSONL issue shard not schema-audited yet; compiler should normalize it")
+            shard_errors, shard_warnings, shard_ids = audit_jsonl_issue_shard(path, compiled=path.name in compiled_jsonl_shards)
+            errors.extend(shard_errors)
+            warnings.extend(shard_warnings)
+            for scoped in shard_ids:
+                if scoped in ids:
+                    errors.append(f"duplicate scoped issue id `{scoped}`")
+                ids.add(scoped)
             continue
         try:
             payload = load_json(path)
@@ -1306,6 +1673,7 @@ def audit_artifacts(
     bundle_path: Path | None = None,
     layout_audit_path: Path | None = None,
     issue_artifacts_dir: Path | None = None,
+    strict_provenance: bool = False,
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -1326,6 +1694,7 @@ def audit_artifacts(
     deferred: set[str] = set()
     rendered_section_ids: set[str] = set()
     required_numeric_signals: list[dict[str, Any]] = []
+    source_mapping = source_to_finding_map(bundle_path, issue_artifacts_dir)
     coverage_payload: Any | None = None
     manifest_payload: Any | None = None
     layout_audit_payload: Any | None = None
@@ -1338,6 +1707,12 @@ def audit_artifacts(
         coverage_errors, coverage_warnings = audit_coverage(coverage_payload)
         errors.extend(coverage_errors)
         warnings.extend(coverage_warnings)
+        blind_errors, blind_warnings = audit_specialist_blind_spots(coverage_payload)
+        errors.extend(blind_errors)
+        warnings.extend(blind_warnings)
+        receipt_errors, receipt_warnings = audit_phase_a_receipts(bundle_path, coverage_payload, strict=strict_provenance)
+        errors.extend(receipt_errors)
+        warnings.extend(receipt_warnings)
     if layout_audit_path:
         layout_audit_payload = load_json(layout_audit_path)
         layout_errors, layout_warnings = audit_layout_audit_payload(layout_audit_payload, coverage_payload, layout_audit_path)
@@ -1356,7 +1731,12 @@ def audit_artifacts(
     deferred.update(artifact_only_finding_ids(findings_payload))
 
     if claims_path:
-        claim_errors, claim_warnings = audit_claims(load_json(claims_path), finding_ids)
+        claim_errors, claim_warnings = audit_claims(
+            load_json(claims_path),
+            finding_ids,
+            strict=strict_provenance,
+            source_mapping=source_mapping,
+        )
         errors.extend(claim_errors)
         warnings.extend(claim_warnings)
     if numeric_audit_path:
@@ -1375,6 +1755,7 @@ def audit_artifacts(
             coverage_payload=coverage_payload,
             manifest_payload=manifest_payload,
             finding_ids=finding_ids,
+            bundle_path=bundle_path,
         )
         errors.extend(annotation_errors)
         warnings.extend(annotation_warnings)
@@ -1401,6 +1782,9 @@ def audit_artifacts(
         integrity_errors, integrity_warnings = audit_manifest_source_integrity(manifest_path, html_path, source_path)
         errors.extend(integrity_errors)
         warnings.extend(integrity_warnings)
+    provenance_errors, provenance_warnings = audit_agent_provenance(bundle_path, strict=strict_provenance)
+    errors.extend(provenance_errors)
+    warnings.extend(provenance_warnings)
 
     return errors, warnings
 
@@ -1419,6 +1803,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--issue-artifacts", type=Path, help="Directory containing curated *_issues.json artifacts")
     parser.add_argument("--html", type=Path)
     parser.add_argument("--source", type=Path, help="Pre-annotation paper-reader source artifact to hash and compare")
+    parser.add_argument("--strict-provenance", action="store_true", help="Require full-paper agent provenance receipts and treat broken claim links as errors")
     args = parser.parse_args(argv)
 
     findings = args.findings
@@ -1430,11 +1815,13 @@ def main(argv: list[str] | None = None) -> int:
     annotations = args.annotations
     layout_audit = args.layout_audit
     issue_artifacts = args.issue_artifacts
-    if args.bundle:
-        bundle = args.bundle
+    bundle = args.bundle
+    if bundle is None and issue_artifacts is not None and issue_artifacts.name == "issue_artifacts":
+        bundle = issue_artifacts.parent
+    if bundle:
         findings = findings or bundle / "findings.json"
-        claims = claims or bundle / "claims.json"
-        numeric_audit = numeric_audit or bundle / "numeric_audit.json"
+        claims = claims or ((bundle / "claims.json") if (bundle / "claims.json").exists() else None)
+        numeric_audit = numeric_audit or ((bundle / "numeric_audit.json") if (bundle / "numeric_audit.json").exists() else None)
         coverage = coverage or bundle / "coverage.json"
         manifest = manifest or bundle / "render_manifest.json"
         pass_observations = pass_observations or bundle / "pass_observations.json"
@@ -1465,9 +1852,10 @@ def main(argv: list[str] | None = None) -> int:
         args.html,
         args.source,
         annotations,
-        args.bundle,
+        bundle,
         layout_audit,
         issue_artifacts,
+        strict_provenance=args.strict_provenance,
     )
     for warning in warnings:
         print(f"WARNING: {warning}")

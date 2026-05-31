@@ -406,6 +406,11 @@ def test_table_numeric_signals_surface_reported_computed_delta() -> None:
     assert_contains(output, "state the concrete reported value")
     assert_contains(output, "instead of using vague")
     assert_not_contains(output.lower(), "wrong")
+    signals, coverage = module.latex_numeric_audit(raw, 50)
+    if not signals or signals[0]["reported_value"] != "95.77" or signals[0]["visible_computed_value"] != "95.52":
+        raise AssertionError(f"Expected structured LaTeX numeric signal, got {signals}")
+    if coverage["tables_seen"] != 1 or coverage["numeric_cells_seen"] < 8:
+        raise AssertionError(f"Expected LaTeX numeric coverage, got {coverage}")
 
 
 def test_numeric_no_signal_message_is_a_caveat_not_a_clean_bill() -> None:
@@ -423,6 +428,9 @@ def test_numeric_no_signal_message_is_a_caveat_not_a_clean_bill() -> None:
 
     pdf_lines, _ = module.summarize_pdf_table_numeric_signals("Table 1\nModel A 1.0 2.0", 50)
     assert_contains("\n".join(pdf_lines), "not a proof that tables are numerically correct")
+    signals, coverage = module.latex_numeric_audit(raw, 50)
+    if signals or coverage["tables_seen"] != 1 or coverage["numeric_cells_seen"] != 2:
+        raise AssertionError(f"Expected no structured signals but visible numeric coverage, got signals={signals} coverage={coverage}")
 
 
 def test_table_numeric_signals_classify_large_gap_as_deterministic() -> None:
@@ -1013,6 +1021,7 @@ def main() -> int:
     test_table_sanity_surfaces_blank_cells()
     test_table_parser_handles_escaped_ampersands_and_dash_placeholders()
     test_table_numeric_signals_surface_reported_computed_delta()
+    test_numeric_no_signal_message_is_a_caveat_not_a_clean_bill()
     test_table_numeric_signals_classify_large_gap_as_deterministic()
     test_symbol_consistency_signals_surface_macro_and_variant_drift()
     test_placeholder_and_identity_signals()

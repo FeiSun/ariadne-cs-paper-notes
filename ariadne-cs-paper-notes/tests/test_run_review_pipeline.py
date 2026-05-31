@@ -46,6 +46,45 @@ def tiny_source_html(path: Path) -> None:
     )
 
 
+def prose_issue(local_id: str = "P1", *, section_id: str = "intro", paragraph_id: str = "p-intro-001", anchor: str = "s-intro-p001-s001") -> dict[str, object]:
+    return {
+        "local_id": local_id,
+        "severity": "Minor",
+        "issue_type": "claim_boundary",
+        "title": "开头主张缺少证据边界",
+        "diagnosis": "这个句子给出主张，但没有说明对象、范围和证据边界。",
+        "target_anchors": [anchor],
+        "section_id": section_id,
+        "paragraph_id": paragraph_id,
+        "reader_friction": "读者还不知道证据边界，就被要求接受这个主张。",
+        "writing_principle": "文字精确性先于 flow",
+        "self_check": "下一稿能否在这里写清对象、范围和证据边界？",
+        "evidence_refs": [{"source_artifact": "review_units.jsonl", "anchor": anchor}],
+        "confidence": "high",
+        "severity_rationale": "该问题影响读者判断 claim 的可信度。",
+        "downgrade_condition": "补齐范围和证据边界后可降级。",
+    }
+
+
+def whole_paper_issue(local_id: str = "W1", *, anchor: str = "s-intro-p001-s001") -> dict[str, object]:
+    return {
+        "local_id": local_id,
+        "severity": "Minor",
+        "issue_type": "claim",
+        "title": "整篇主张缺少可见证据边界",
+        "diagnosis": "全稿主张没有和可见证据边界清楚对齐。",
+        "target_anchors": [anchor],
+        "source_issue_ids": ["prose:P1"],
+        "reader_friction": "读者无法判断这个中心 claim 的可信范围。",
+        "writing_principle": "改变读者理解状态",
+        "self_check": "如果不补新证据，下一稿必须收窄哪一个中心 claim？",
+        "evidence_refs": [{"source_artifact": "phase_b_context.json", "anchor": anchor}],
+        "confidence": "medium",
+        "severity_rationale": "整篇 claim/evidence 边界不清会影响审稿人判断贡献强度。",
+        "downgrade_condition": "当摘要、实验和结论的 claim 边界一致后可降级。",
+    }
+
+
 def base_args(root: Path, tex: Path, bundle: Path, source: Path, **overrides):
     values = {
         "input": tex,
@@ -78,6 +117,7 @@ def base_args(root: Path, tex: Path, bundle: Path, source: Path, **overrides):
         "skip_render": True,
         "prepare_only": False,
         "allow_partial_compile": False,
+        "allow_single_agent": False,
         "full_report": False,
         "skip_final_render": True,
         "skip_audit": True,
@@ -119,6 +159,9 @@ def test_pipeline_prepare_checkpoint_writes_resume_packets() -> None:
         raise AssertionError(f"Unexpected next-step packet: {next_step}")
     if phase_a_packet["phase"] != "phase_a" or phase_a_packet["next_section"]["section_id"] != "intro":
         raise AssertionError(f"Unexpected Phase A prompt packet: {phase_a_packet}")
+    prose_steps = [step for step in status["steps"] if step["name"] == "run_prose_agent"]
+    if not prose_steps or "code-level rule_refs resolution did not run" not in prose_steps[0].get("message", ""):
+        raise AssertionError(f"Pipeline should make skipped Prose rule resolution explicit: {status['steps']}")
     if "phase_a_prompt_packet.json" not in result["next_action"]:
         raise AssertionError(f"Pipeline next action should point to Phase A packet, got {result}")
 
@@ -149,9 +192,9 @@ def test_pipeline_partial_compile_uses_available_specialist_issues() -> None:
                         "issue_type": "copyedit",
                         "title": "Repeated word",
                         "diagnosis": "A repeated word creates surface friction.",
-                        "reader_friction": "The reader notices avoidable copy-editing noise.",
-                        "writing_principle": "surface consistency",
-                        "self_check": "Remove repeated words.",
+                        "reader_friction": "读者会注意到不必要的表面重复词噪声。",
+                        "writing_principle": "文字精确性先于 flow",
+                        "self_check": "下一稿是否已经移除真实重复词，并确认这不是表格抽取噪声？",
                         "evidence_refs": [{"source_artifact": "polish_audit.json", "observation_id": "polish-001"}],
                         "confidence": 0.9,
                         "render_hint": {"anchor": "page:polish", "display_group": "Polish"},
@@ -202,6 +245,137 @@ def test_pipeline_writes_phase_b_packet_when_phase_a_artifacts_exist() -> None:
         raise AssertionError(f"Unexpected Phase B context: {phase_b_context}")
     if phase_b_packet["phase"] != "phase_b" or phase_b_packet["coverage"]["sections_summarized"] != 1:
         raise AssertionError(f"Unexpected Phase B packet: {phase_b_packet}")
+
+
+def test_full_pipeline_without_prose_agent_stops_before_compile() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        tex = root / "main.tex"
+        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        bundle = root / "bundle"
+        source = root / "main.source.html"
+        tiny_source_html(source)
+        (bundle / "issue_artifacts").mkdir(parents=True)
+        write_json(bundle / "cold_skim_frame.json", {"problem": "P", "gap": "G", "idea": "I", "evidence": "E", "boundary": "B"})
+        write_json(
+            bundle / "section_reflections.json",
+            {"sections": [{"section_id": "intro", "one_line": "done", "role_in_argument": "setup", "unresolved_questions": []}]},
+        )
+        write_json(bundle / "claim_candidates.json", {"claim_candidates": [{"id": "C1", "text": "Claim"}]})
+        (bundle / "paragraph_decisions.jsonl").write_text(
+            json.dumps(
+                {
+                    "paragraph_id": "p-intro-001",
+                    "section_id": "intro",
+                    "decision": "keep",
+                    "paragraph_job": "setup",
+                    "next_draft_task": "None",
+                    "all_sentences_reviewed": True,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        write_json(bundle / "argument_map.json", {"central_claim": "Claim"})
+        write_json(
+            bundle / "claims.json",
+            {
+                "claims": [
+                    {
+                        "claim_id": "C1",
+                        "claim_text": "Claim",
+                        "location": "Intro",
+                        "claim_type": "fixture",
+                        "strength": "modest",
+                        "required_evidence": "Evidence",
+                        "visible_evidence": "Sentence",
+                        "status": "supported",
+                        "next_draft_task": "None",
+                        "linked_findings": [],
+                    }
+                ]
+            },
+        )
+        write_json(bundle / "salvageable_core.json", {"core": "ok"})
+        (bundle / "issue_artifacts" / "whole_paper_findings.jsonl").write_text(
+            json.dumps(whole_paper_issue())
+            + "\n",
+            encoding="utf-8",
+        )
+        result = module.run_pipeline(base_args(root, tex, bundle, source))
+
+    if result["state"] != "needs_prose_agent":
+        raise AssertionError(f"Expected strict provenance stop, got {result}")
+    if (bundle / "findings.json").exists():
+        raise AssertionError("Pipeline should not compile final artifacts without prose-agent provenance")
+
+
+def test_full_pipeline_allow_single_agent_writes_provenance() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        tex = root / "main.tex"
+        tex.write_text(r"\documentclass{article}\begin{document}Hello.\end{document}", encoding="utf-8")
+        bundle = root / "bundle"
+        source = root / "main.source.html"
+        tiny_source_html(source)
+        (bundle / "issue_artifacts").mkdir(parents=True)
+        write_json(bundle / "cold_skim_frame.json", {"problem": "P", "gap": "G", "idea": "I", "evidence": "E", "boundary": "B"})
+        write_json(
+            bundle / "section_reflections.json",
+            {"sections": [{"section_id": "intro", "one_line": "done", "role_in_argument": "setup", "unresolved_questions": []}]},
+        )
+        write_json(bundle / "claim_candidates.json", {"claim_candidates": [{"id": "C1", "text": "Claim"}]})
+        (bundle / "paragraph_decisions.jsonl").write_text(
+            json.dumps(
+                {
+                    "paragraph_id": "p-intro-001",
+                    "section_id": "intro",
+                    "decision": "keep",
+                    "paragraph_job": "setup",
+                    "next_draft_task": "None",
+                    "all_sentences_reviewed": True,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        write_json(bundle / "argument_map.json", {"central_claim": "Claim"})
+        write_json(bundle / "salvageable_core.json", {"core": "ok"})
+        write_json(
+            bundle / "claims.json",
+            {
+                "claims": [
+                    {
+                        "claim_id": "C1",
+                        "claim_text": "Claim",
+                        "location": "Intro",
+                        "claim_type": "fixture",
+                        "strength": "modest",
+                        "required_evidence": "Evidence",
+                        "visible_evidence": "Sentence",
+                        "status": "supported",
+                        "next_draft_task": "None",
+                        "linked_findings": [],
+                    }
+                ]
+            },
+        )
+        (bundle / "issue_artifacts" / "whole_paper_findings.jsonl").write_text(
+            json.dumps(whole_paper_issue())
+            + "\n",
+            encoding="utf-8",
+        )
+        result = module.run_pipeline(base_args(root, tex, bundle, source, allow_single_agent=True))
+        provenance = json.loads((bundle / "agent_provenance.json").read_text(encoding="utf-8"))
+
+    if result["state"] != "complete":
+        raise AssertionError(f"Expected explicit single-agent mode to compile, got {result}")
+    if provenance.get("single_agent") is not True:
+        raise AssertionError(f"Expected single-agent provenance marker, got {provenance}")
+    if provenance.get("context_receipt", {}).get("orchestrator_read_full_review_units") is not True:
+        raise AssertionError(f"Single-agent provenance should expose context receipt, got {provenance}")
 
 
 def test_pipeline_builds_shard_manifest_when_review_units_exceed_threshold() -> None:
@@ -311,6 +485,9 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
                             handle.write(encoded + "\\n")
 
 
+                prompt_file = Path(os.environ["ARIADNE_PROMPT_FILE"])
+                assert prompt_file.exists()
+                assert "Ariadne 核心批注原则" in prompt_file.read_text(encoding="utf-8")
                 packet = read_json(Path(os.environ["ARIADNE_PROMPT_PACKET"]))
                 bundle = Path(os.environ["ARIADNE_BUNDLE"])
                 issues_dir = Path(os.environ["ARIADNE_ISSUE_ARTIFACTS"])
@@ -322,11 +499,11 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
                     write_json(
                         bundle / "cold_skim_frame.json",
                         {
-                            "problem": "The draft states a compact test problem.",
-                            "gap": "The reader needs clearer motivation.",
-                            "idea": "Use a minimal fake-agent review.",
-                            "evidence": "One source sentence is available.",
-                            "boundary": "This is a regression fixture, not a real review.",
+                            "problem": "这个 fixture 只写了一个很短的测试问题。",
+                            "gap": "读者需要更清楚的动机。",
+                            "idea": "用一个最小 fake-agent review 验证流程。",
+                            "evidence": "当前只有一个 source sentence。",
+                            "boundary": "这是回归测试 fixture，不是真实论文评阅。",
                         },
                     )
                     append_jsonl(
@@ -346,13 +523,18 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
                             "local_id": "P1",
                             "severity": "Minor",
                             "issue_type": "motivation_gap",
-                            "title": "Opening claim is too compact",
-                            "diagnosis": "The first sentence is grammatically clean but gives reviewers too little motivation to evaluate the contribution.",
+                            "title": "开头主张缺少动机边界",
+                            "diagnosis": "第一句语法上干净，但没有说明这个贡献为什么值得审稿人评估。",
                             "target_anchors": ["s-intro-p001-s001"],
                             "section_id": section_id,
-                            "reader_friction": "The reader has to infer why the test contribution matters.",
-                            "writing_principle": "early claim framing",
-                            "self_check": "Can a reviewer name the paper's contribution after this sentence?",
+                            "paragraph_id": "p-intro-001",
+                            "reader_friction": "读者必须自己推断这个测试贡献为什么重要。",
+                            "writing_principle": "改变读者理解状态",
+                            "self_check": "审稿人读完这句话后能否说出本文贡献和它为什么重要？",
+                            "evidence_refs": [{"source_artifact": "review_units.jsonl", "anchor": "s-intro-p001-s001"}],
+                            "confidence": "high",
+                            "severity_rationale": "动机缺失会削弱审稿人对贡献价值的判断。",
+                            "downgrade_condition": "补齐贡献价值和证据边界后可降级。",
                         },
                     )
                     reflections = read_json(bundle / "section_reflections.json")
@@ -416,14 +598,18 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
                             "local_id": "W1",
                             "severity": "Major",
                             "issue_type": "claim_evidence_alignment",
-                            "title": "The paper-level contribution is not yet self-contained",
-                            "diagnosis": "Across the compact fixture, the contribution remains implicit rather than being stated as a reviewer-checkable claim.",
+                            "title": "整篇贡献主张还没有自解释",
+                            "diagnosis": "在这个精简 fixture 中，贡献仍然是隐含的，没有写成审稿人可检查的 claim。",
                             "source_issue_ids": ["prose:P1"],
                             "target_anchors": ["s-intro-p001-s001"],
                             "claim_ids": ["C1"],
-                            "reader_friction": "A reviewer cannot tell what should be accepted on the basis of the visible text.",
-                            "writing_principle": "claim-evidence alignment",
-                            "self_check": "Can the abstract/introduction state one falsifiable contribution claim?",
+                            "reader_friction": "读者无法判断可见文本到底要求自己接受哪个贡献主张。",
+                            "writing_principle": "改变读者理解状态",
+                            "self_check": "摘要和引言能否写出一个可检验的中心贡献主张？",
+                            "evidence_refs": [{"source_artifact": "phase_b_context.json", "anchor": "s-intro-p001-s001"}],
+                            "confidence": "high",
+                            "severity_rationale": "整篇贡献仍隐含，会影响审稿人判断应该接受什么。",
+                            "downgrade_condition": "当摘要/引言明确一个可检验贡献主张后可降级。",
                         },
                     )
                 else:
@@ -448,6 +634,7 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
         annotations = json.loads((bundle / "annotations.json").read_text(encoding="utf-8"))
         manifest = json.loads((bundle / "render_manifest.json").read_text(encoding="utf-8"))
         status = json.loads((bundle / "pipeline_status.json").read_text(encoding="utf-8"))
+        provenance = json.loads((bundle / "agent_provenance.json").read_text(encoding="utf-8"))
         html = (bundle / "report.html").read_text(encoding="utf-8")
 
     if result["state"] != "complete":
@@ -460,7 +647,7 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
     for required in ("run_prose_agent", "compile_review_artifacts", "render_final_report", "audit_html_report", "audit_review_artifacts"):
         if required not in step_names:
             raise AssertionError(f"Pipeline did not run {required}: {step_names}")
-    if "The paper-level contribution is not yet self-contained" not in html:
+    if "整篇贡献主张还没有自解释" not in html:
         raise AssertionError("Final report did not render the fake whole-paper finding")
     if 'data-report-kind="paper-reader-only"' not in html:
         raise AssertionError("Default pipeline render should be paper-reader-only")
@@ -469,6 +656,9 @@ def test_pipeline_fake_agent_end_to_end_compile_render_audit() -> None:
     section_ids = [section["id"] for section in manifest.get("sections", []) if section.get("status") == "rendered"]
     if section_ids != ["paper-reader", "coverage-receipt"]:
         raise AssertionError(f"Paper-reader manifest should only declare rendered overlay sections, got {section_ids}")
+    first_call = provenance["agents"][0]["calls"][0]
+    if not first_call.get("context_receipt", {}).get("packet_estimated_tokens"):
+        raise AssertionError(f"Prose provenance should include measured context receipt, got {provenance}")
 
 
 def test_full_report_flag_is_opt_in_for_final_render() -> None:

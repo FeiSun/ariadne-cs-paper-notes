@@ -74,8 +74,49 @@ def test_build_prose_shards_writes_manifest_and_packets() -> None:
             packet = json.loads(Path(packet_path).read_text(encoding="utf-8"))
             if packet["phase"] != "phase_a_shard" or not packet["shard"]["section_ids"]:
                 raise AssertionError(f"Bad shard packet: {packet}")
+            rule_ids = [item["id"] for item in packet["rule_refs"]]
+            base_rule_ids = [name for name, _purpose in module.SHARD_BASE_PHASE_A_RULES]
+            if rule_ids != base_rule_ids:
+                raise AssertionError(f"Shard packet missing base prose rules: {packet}")
+            if "method_rules" in rule_ids or "experiment_rules" in rule_ids or "related_work_rules" in rule_ids:
+                raise AssertionError(f"Generic shard should not load section-specific rules: {rule_ids}")
+            minimum_fields = packet["output_contract"]["prose_issues_jsonl"]["minimum_fields"]
+            for required in ("reader_friction", "writing_principle", "self_check", "confidence", "evidence_refs", "severity_rationale", "downgrade_condition"):
+                if required not in minimum_fields:
+                    raise AssertionError(f"Shard prose contract missing {required}: {minimum_fields}")
+            if not any("读者卡点 -> 单一违反原则 -> 自改问题" in instruction for instruction in packet["instructions"]):
+                raise AssertionError(f"Shard instructions missing Chinese teaching contract: {packet['instructions']}")
+
+
+def test_build_prose_shards_adds_section_specific_rule_refs() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tempdir:
+        root = Path(tempdir)
+        bundle = root / "bundle"
+        bundle.mkdir()
+        md = bundle / "review_units.md"
+        jsonl = bundle / "review_units.jsonl"
+        md.write_text("# Method\ntext\n# Experiments\ntext\n# Related Work\ntext\n", encoding="utf-8")
+        write_jsonl(
+            jsonl,
+            [
+                {"kind": "section", "section_id": "method", "text": "Method"},
+                {"kind": "paragraph", "section_id": "method", "text": "m", "sentences": [{"text": "m"}]},
+                {"kind": "section", "section_id": "experiments", "text": "Experiments"},
+                {"kind": "paragraph", "section_id": "experiments", "text": "e", "sentences": [{"text": "e"}]},
+                {"kind": "section", "section_id": "related-work", "text": "Related Work"},
+                {"kind": "paragraph", "section_id": "related-work", "text": "r", "sentences": [{"text": "r"}]},
+            ],
+        )
+        manifest = module.build_manifest(bundle=bundle, review_units_md=md, review_units_jsonl=jsonl, max_tokens=10000)
+        packet = json.loads(Path(manifest["packet_paths"][0]).read_text(encoding="utf-8"))
+    rule_ids = [item["id"] for item in packet["rule_refs"]]
+    for expected in ("method_rules", "experiment_rules", "related_work_rules"):
+        if expected not in rule_ids:
+            raise AssertionError(f"Expected {expected} in section-specific shard rules: {rule_ids}")
 
 
 if __name__ == "__main__":
     test_build_prose_shards_writes_manifest_and_packets()
+    test_build_prose_shards_adds_section_specific_rule_refs()
     print("build_prose_shards regression tests passed")
